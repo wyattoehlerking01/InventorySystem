@@ -68,7 +68,7 @@
     <div id="login-view" class="view active h-screen flex-center">
         <div class="login-card glass-panel flex-col flex-center">
             <div class="login-logo mb-4">
-                <h1>LCHS <span class="version-badge" style="margin-left: 1.25rem;">PRE-RELEASE</span></h1>
+                <h1>LCHS <span id="app-version-login" class="version-badge" style="margin-left: 1.25rem;">PRE-RELEASE</span></h1>
             </div>
             <p class="subtitle">Secure Inventory Management</p>
 
@@ -129,7 +129,7 @@
         <aside class="sidebar glass-panel">
             <div class="sidebar-header">
                 <div class="logo">
-                    <h2>LCHS <span class="version-badge" style="margin-left: 1.25rem;">PRE-RELEASE</span></h2>
+                    <h2>LCHS <span id="app-version-sidebar" class="version-badge" style="margin-left: 1.25rem;">PRE-RELEASE</span></h2>
                 </div>
             </div>
 
@@ -245,6 +245,9 @@
                             <button class="filter-btn">Consumables</button>
                         </div>
                         <div style="display:flex;gap:1rem;">
+                            <button class="btn btn-secondary" id="manage-signout-policy-btn">
+                                <i class="ph ph-timer"></i> Sign-out Window
+                            </button>
                             <button class="btn btn-secondary" id="manage-categories-btn">
                                 <i class="ph ph-tag"></i> Manage Categories
                             </button>
@@ -405,6 +408,7 @@
     </div>
 
     <!-- Data and Application Logic -->
+    <script src="env.js"></script>
     <script src="data.js"></script>
     <script src="app.js"></script>
 </body>

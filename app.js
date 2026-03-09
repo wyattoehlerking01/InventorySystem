@@ -5,6 +5,16 @@
    ======================================= */
 let currentUser = null;
 
+const envConfig = window.APP_ENV || {};
+const appVersion = envConfig.APP_VERSION || 'PRE-RELEASE';
+let signoutPolicy = {
+    defaultSignoutMinutes: 80,
+    periodOneStart: '08:00',
+    periodOneEnd: '08:55',
+    periodOneReturnClassPeriods: 2,
+    classPeriodMinutes: 50
+};
+
 // DOM Elements - Login
 const loginView = document.getElementById('login-view');
 const loginHelpView = document.getElementById('login-help-view');
@@ -84,6 +94,65 @@ function resetInactivityTimer() {
     }
 }
 
+function parseTimeToMinutes(timeString) {
+    const [hours, minutes] = String(timeString || '').split(':').map(Number);
+    if (Number.isNaN(hours) || Number.isNaN(minutes)) return null;
+    return (hours * 60) + minutes;
+}
+
+function isWithinPeriodOneWindow(date) {
+    const startMinutes = parseTimeToMinutes(signoutPolicy.periodOneStart);
+    const endMinutes = parseTimeToMinutes(signoutPolicy.periodOneEnd);
+    if (startMinutes === null || endMinutes === null) return false;
+
+    const currentMinutes = (date.getHours() * 60) + date.getMinutes();
+    return currentMinutes >= startMinutes && currentMinutes <= endMinutes;
+}
+
+function calculateDueDate(signoutDate = new Date()) {
+    const dueDate = new Date(signoutDate);
+
+    if (isWithinPeriodOneWindow(signoutDate)) {
+        dueDate.setMinutes(dueDate.getMinutes() + (signoutPolicy.periodOneReturnClassPeriods * signoutPolicy.classPeriodMinutes));
+    } else {
+        dueDate.setMinutes(dueDate.getMinutes() + signoutPolicy.defaultSignoutMinutes);
+    }
+
+    return dueDate.toISOString();
+}
+
+function getStudentClassForUser(userId) {
+    return studentClasses.find(c => c.students.includes(userId));
+}
+
+function getVisibleItemIdsForClass(cls) {
+    if (!cls) return [];
+    if (Array.isArray(cls.visibleItemIds)) return cls.visibleItemIds;
+    return inventoryItems.map(item => item.id);
+}
+
+function getVisibleItemCountForClass(cls) {
+    return getVisibleItemIdsForClass(cls).length;
+}
+
+function canUserSeeItem(user, item) {
+    if (!user) return false;
+    if (user.role !== 'student') return true;
+
+    const cls = getStudentClassForUser(user.id);
+    if (!cls) return false;
+
+    // Class-level item visibility is owned by the Classes tab.
+    return getVisibleItemIdsForClass(cls).includes(item.id);
+}
+
+function applyVersionBadges() {
+    const loginVersionEl = document.getElementById('app-version-login');
+    const sidebarVersionEl = document.getElementById('app-version-sidebar');
+    if (loginVersionEl) loginVersionEl.textContent = appVersion;
+    if (sidebarVersionEl) sidebarVersionEl.textContent = appVersion;
+}
+
 // Inventory Basket Logic
 let inventoryBasket = [];
 let isBasketOpen = false;
@@ -101,12 +170,17 @@ function toggleBasket(forceOpen = null) {
 }
 
 function addToBasket(itemId) {
-    if (!currentUser.perms?.canSignOut) {
+    if (currentUser.role === 'student' && !currentUser.perms?.canSignOut) {
         showToast('You do not have permission to sign out items.', 'error');
         return;
     }
     const item = inventoryItems.find(i => i.id === itemId);
     if (!item) return;
+
+    if (currentUser.role === 'student' && !canUserSeeItem(currentUser, item)) {
+        showToast('Your class level cannot access this item.', 'error');
+        return;
+    }
 
     if (item.stock <= 0) {
         showToast('Item is out of stock.', 'error');
@@ -188,7 +262,7 @@ async function checkoutBasket() {
                 itemId: item.id,
                 quantity: basketItem.qty,
                 signoutDate: new Date().toISOString(),
-                dueDate: new Date(Date.now() + 86400000 * 7).toISOString() // Default 1 week
+                dueDate: calculateDueDate()
             };
 
             if (project) {
@@ -216,6 +290,8 @@ document.getElementById('checkout-basket-btn')?.addEventListener('click', checko
 
 // Init application
 document.addEventListener('DOMContentLoaded', () => {
+    applyVersionBadges();
+
     // Bring focus to barcode scanner input
     if (barcodeInput) {
         barcodeInput.focus();
@@ -350,6 +426,7 @@ function login(user) {
         navUsers.classList.add('hidden');
         navClasses.classList.add('hidden');
         navRequests?.classList.add('hidden');
+        document.getElementById('manage-signout-policy-btn')?.classList.add('hidden');
         document.getElementById('manage-categories-btn')?.classList.add('hidden');
         document.getElementById('bulk-import-items-btn')?.classList.add('hidden');
     } else {
@@ -357,6 +434,7 @@ function login(user) {
         navUsers.classList.remove('hidden');
         navClasses.classList.remove('hidden');
         navRequests?.classList.remove('hidden');
+        document.getElementById('manage-signout-policy-btn')?.classList.remove('hidden');
         document.getElementById('manage-categories-btn')?.classList.remove('hidden');
         document.getElementById('bulk-import-items-btn')?.classList.remove('hidden');
     }
@@ -691,15 +769,16 @@ function determineStatus(stock, threshold) {
 
 function renderInventory(filterStr = 'All') {
     const tbody = document.getElementById('inventory-table-body');
-    let filtered = inventoryItems;
+    let filtered = currentUser.role === 'student'
+        ? inventoryItems.filter(item => canUserSeeItem(currentUser, item))
+        : inventoryItems;
 
     if (filterStr !== 'All') {
         filtered = inventoryItems.filter(i => i.category === filterStr);
+        if (currentUser.role === 'student') {
+            filtered = filtered.filter(item => canUserSeeItem(currentUser, item));
+        }
     }
-
-    // For students, show all items but maybe indicate which ones they have out
-    // No longer filtering inventory to only items they possess
-
 
     tbody.innerHTML = filtered.map(item => {
         const currentStatus = determineStatus(item.stock, item.threshold);
@@ -893,6 +972,11 @@ function openSignOutModal(itemId) {
     const item = inventoryItems.find(i => i.id === itemId);
     if (!item) return;
 
+    if (currentUser.role === 'student' && !canUserSeeItem(currentUser, item)) {
+        showToast('Your class level cannot access this item.', 'error');
+        return;
+    }
+
     if (item.stock <= 0) {
         showToast('Item out of stock!', 'error');
         return;
@@ -963,7 +1047,7 @@ function openSignOutModal(itemId) {
                 itemId: item.id,
                 quantity: qty,
                 signoutDate: new Date().toISOString(),
-                dueDate: new Date(Date.now() + 86400000 * 7).toISOString() // default 7 days due date
+                dueDate: calculateDueDate()
             });
 
             // Log activity
@@ -988,12 +1072,14 @@ let studentClasses = [
         id: 'CLS-001',
         name: 'Intro to Robotics (Fall)',
         students: ['STU-123', 'STU-999'],
+        visibleItemIds: ['ITM-001', 'ITM-004'],
         defaultPermissions: { canCreateProjects: false, canJoinProjects: true, canSignOut: true }
     },
     {
         id: 'CLS-002',
         name: 'Advanced Electronics',
         students: ['STU-555'],
+        visibleItemIds: inventoryItems.map(item => item.id),
         defaultPermissions: { canCreateProjects: true, canJoinProjects: true, canSignOut: true }
     }
 ];
@@ -1004,6 +1090,7 @@ function renderClasses() {
 
     container.innerHTML = studentClasses.map(cls => {
         const studentCount = cls.students.length;
+        const visibleItemCount = getVisibleItemCountForClass(cls);
         const teacher = mockUsers.find(u => u.id === cls.teacherId);
 
         return `
@@ -1016,6 +1103,7 @@ function renderClasses() {
                     <h3 style="color: var(--accent-secondary)">${cls.name}</h3>
                 </div>
                 <div class="text-sm mt-4"><strong>${studentCount}</strong> Students Enrolled</div>
+                <div class="text-sm"><strong>Visible Items:</strong> ${visibleItemCount}</div>
                 <div class="project-meta text-sm">
                     <span class="text-muted">Teacher: ${teacher ? teacher.name : 'Unknown'}</span>
                 </div>
@@ -1065,6 +1153,16 @@ function openEditClassModal(classId) {
         </div>`
     ).join('');
 
+    const visibleItemIds = getVisibleItemIdsForClass(cls);
+    const itemOptions = inventoryItems.map(item =>
+        `<div style="margin-bottom:0.5rem">
+            <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">
+                <input type="checkbox" value="${item.id}" class="edit-class-item-checkbox" ${visibleItemIds.includes(item.id) ? 'checked' : ''}>
+                ${item.name} (${item.id})
+            </label>
+        </div>`
+    ).join('');
+
     const html = `
         <div class="modal-header">
             <h3>Edit Class: ${cls.name}</h3>
@@ -1081,6 +1179,12 @@ function openEditClassModal(classId) {
                     ${studentOptions || '<p class="text-muted">No students available.</p>'}
                 </div>
             </div>
+            <div class="form-group">
+                <label>Visible Inventory Items</label>
+                <div class="glass-panel" style="padding:1rem; max-height:220px; overflow-y:auto">
+                    ${itemOptions || '<p class="text-muted">No items available.</p>'}
+                </div>
+            </div>
         </div>
         <div class="modal-footer">
             <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
@@ -1093,10 +1197,12 @@ function openEditClassModal(classId) {
     document.getElementById('confirm-edit-class').addEventListener('click', () => {
         const name = document.getElementById('edit-class-name').value.trim();
         const checkedStudents = Array.from(document.querySelectorAll('.edit-class-student-checkbox:checked')).map(cb => cb.value);
+        const checkedItems = Array.from(document.querySelectorAll('.edit-class-item-checkbox:checked')).map(cb => cb.value);
 
         if (name) {
             cls.name = name;
             cls.students = checkedStudents;
+            cls.visibleItemIds = checkedItems;
             showToast(`Class ${name} updated.`, 'success');
             addLog(currentUser.id, 'Edit Class', `Updated class ${name} with ${checkedStudents.length} students.`);
             closeModal();
@@ -1119,6 +1225,15 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
         </div>`
     ).join('');
 
+    const itemOptions = inventoryItems.map(item =>
+        `<div style="margin-bottom:0.5rem">
+            <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">
+                <input type="checkbox" value="${item.id}" class="class-item-checkbox" checked>
+                ${item.name} (${item.id})
+            </label>
+        </div>`
+    ).join('');
+
     const html = `
         <div class="modal-header">
             <h3>Create New Class</h3>
@@ -1135,6 +1250,12 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
                     ${studentOptions}
                 </div>
             </div>
+            <div class="form-group">
+                <label>Visible Inventory Items</label>
+                <div class="glass-panel" style="padding:1rem; max-height:220px; overflow-y:auto">
+                    ${itemOptions}
+                </div>
+            </div>
         </div>
         <div class="modal-footer">
             <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
@@ -1147,13 +1268,15 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
     document.getElementById('confirm-add-class').addEventListener('click', () => {
         const name = document.getElementById('add-class-name').value.trim();
         const checkedStudents = Array.from(document.querySelectorAll('.student-checkbox:checked')).map(cb => cb.value);
+        const checkedItems = Array.from(document.querySelectorAll('.class-item-checkbox:checked')).map(cb => cb.value);
 
         if (name) {
             studentClasses.unshift({
                 id: generateId('CLS'),
                 name: name,
                 teacherId: currentUser.id,
-                students: checkedStudents
+                students: checkedStudents,
+                visibleItemIds: checkedItems
             });
             showToast(`Class ${name} created with ${checkedStudents.length} students.`, 'success');
             addLog(currentUser.id, 'Create Class', `Created class ${name} with ${checkedStudents.length} students.`);
@@ -2157,6 +2280,71 @@ document.getElementById('bulk-import-items-btn')?.addEventListener('click', () =
         if (document.getElementById('page-inventory').classList.contains('active')) {
             renderInventory();
         }
+    });
+});
+
+/* =======================================
+   SIGN-OUT POLICY SETTINGS
+   ======================================= */
+document.getElementById('manage-signout-policy-btn')?.addEventListener('click', () => {
+    const html = `
+        <div class="modal-header">
+            <h3><i class="ph ph-timer"></i> Sign-out Window Settings</h3>
+            <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
+        </div>
+        <div class="modal-body">
+            <div class="form-group">
+                <label>Default Return Window (minutes)</label>
+                <input type="number" id="policy-default-mins" class="form-control" min="1" value="${signoutPolicy.defaultSignoutMinutes}">
+                <small class="text-muted">Used outside the Period 1 window.</small>
+            </div>
+            <div class="grid-2-col" style="gap:1rem">
+                <div class="form-group">
+                    <label>Period 1 Start (HH:MM)</label>
+                    <input type="time" id="policy-p1-start" class="form-control" value="${signoutPolicy.periodOneStart}">
+                </div>
+                <div class="form-group">
+                    <label>Period 1 End (HH:MM)</label>
+                    <input type="time" id="policy-p1-end" class="form-control" value="${signoutPolicy.periodOneEnd}">
+                </div>
+            </div>
+            <div class="grid-2-col" style="gap:1rem">
+                <div class="form-group">
+                    <label>Return After Class Periods</label>
+                    <input type="number" id="policy-p1-periods" class="form-control" min="1" value="${signoutPolicy.periodOneReturnClassPeriods}">
+                </div>
+                <div class="form-group">
+                    <label>Minutes Per Class Period</label>
+                    <input type="number" id="policy-class-mins" class="form-control" min="1" value="${signoutPolicy.classPeriodMinutes}">
+                </div>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            <button class="btn btn-primary" id="save-signout-policy-btn">Save Policy</button>
+        </div>
+    `;
+
+    openModal(html);
+
+    document.getElementById('save-signout-policy-btn')?.addEventListener('click', () => {
+        const defaultMins = Math.max(1, parseInt(document.getElementById('policy-default-mins').value, 10) || 80);
+        const p1Start = document.getElementById('policy-p1-start').value || '08:00';
+        const p1End = document.getElementById('policy-p1-end').value || '08:55';
+        const p1Periods = Math.max(1, parseInt(document.getElementById('policy-p1-periods').value, 10) || 2);
+        const classMins = Math.max(1, parseInt(document.getElementById('policy-class-mins').value, 10) || 50);
+
+        signoutPolicy = {
+            defaultSignoutMinutes: defaultMins,
+            periodOneStart: p1Start,
+            periodOneEnd: p1End,
+            periodOneReturnClassPeriods: p1Periods,
+            classPeriodMinutes: classMins
+        };
+
+        addLog(currentUser.id, 'Update Sign-out Policy', `Updated sign-out policy: default ${defaultMins} min, Period 1 ${p1Start}-${p1End}, ${p1Periods} periods @ ${classMins} min.`);
+        showToast('Sign-out policy updated.', 'success');
+        closeModal();
     });
 });
 
