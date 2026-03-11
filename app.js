@@ -7,12 +7,19 @@ let currentUser = null;
 
 const envConfig = window.APP_ENV || {};
 const appVersion = envConfig.APP_VERSION || 'PRE-RELEASE';
-let signoutPolicy = {
+
+const defaultDuePolicy = {
     defaultSignoutMinutes: 80,
-    periodOneStart: '08:00',
-    periodOneEnd: '08:55',
-    periodOneReturnClassPeriods: 2,
-    classPeriodMinutes: 50
+    classPeriodMinutes: 50,
+    periodRanges: [
+        { start: '08:00', end: '08:55', returnClassPeriods: 2 }
+    ]
+};
+
+let signoutPolicy = {
+    defaultSignoutMinutes: defaultDuePolicy.defaultSignoutMinutes,
+    classPeriodMinutes: defaultDuePolicy.classPeriodMinutes,
+    periodRanges: defaultDuePolicy.periodRanges.map(range => ({ ...range }))
 };
 
 // DOM Elements - Login
@@ -100,25 +107,76 @@ function parseTimeToMinutes(timeString) {
     return (hours * 60) + minutes;
 }
 
-function isWithinPeriodOneWindow(date) {
-    const startMinutes = parseTimeToMinutes(signoutPolicy.periodOneStart);
-    const endMinutes = parseTimeToMinutes(signoutPolicy.periodOneEnd);
-    if (startMinutes === null || endMinutes === null) return false;
+function normalizeDuePolicy(policy) {
+    const fallbackRanges = defaultDuePolicy.periodRanges.map(range => ({ ...range }));
+    const ranges = Array.isArray(policy?.periodRanges) ? policy.periodRanges : fallbackRanges;
+    const normalizedRanges = ranges
+        .map(range => ({
+            start: range?.start || '',
+            end: range?.end || '',
+            returnClassPeriods: Math.max(1, parseInt(range?.returnClassPeriods, 10) || 1)
+        }))
+        .filter(range => parseTimeToMinutes(range.start) !== null && parseTimeToMinutes(range.end) !== null);
 
-    const currentMinutes = (date.getHours() * 60) + date.getMinutes();
-    return currentMinutes >= startMinutes && currentMinutes <= endMinutes;
+    return {
+        defaultSignoutMinutes: Math.max(1, parseInt(policy?.defaultSignoutMinutes, 10) || defaultDuePolicy.defaultSignoutMinutes),
+        classPeriodMinutes: Math.max(1, parseInt(policy?.classPeriodMinutes, 10) || defaultDuePolicy.classPeriodMinutes),
+        periodRanges: normalizedRanges.length > 0 ? normalizedRanges : fallbackRanges
+    };
 }
 
-function calculateDueDate(signoutDate = new Date()) {
+function getEffectiveDuePolicyForUser(user) {
+    if (user?.role === 'student') {
+        const cls = getStudentClassForUser(user.id);
+        if (cls?.duePolicy) return normalizeDuePolicy(cls.duePolicy);
+    }
+    return normalizeDuePolicy(signoutPolicy);
+}
+
+function getMatchingPolicyRange(date, policy) {
+    const currentMinutes = (date.getHours() * 60) + date.getMinutes();
+    return policy.periodRanges.find(range => {
+        const startMinutes = parseTimeToMinutes(range.start);
+        const endMinutes = parseTimeToMinutes(range.end);
+        if (startMinutes === null || endMinutes === null) return false;
+        return currentMinutes >= startMinutes && currentMinutes <= endMinutes;
+    }) || null;
+}
+
+function calculateDueDate(signoutDate = new Date(), user = currentUser) {
+    const duePolicy = getEffectiveDuePolicyForUser(user);
     const dueDate = new Date(signoutDate);
 
-    if (isWithinPeriodOneWindow(signoutDate)) {
-        dueDate.setMinutes(dueDate.getMinutes() + (signoutPolicy.periodOneReturnClassPeriods * signoutPolicy.classPeriodMinutes));
+    const matchingRange = getMatchingPolicyRange(signoutDate, duePolicy);
+    if (matchingRange) {
+        dueDate.setMinutes(dueDate.getMinutes() + (matchingRange.returnClassPeriods * duePolicy.classPeriodMinutes));
     } else {
-        dueDate.setMinutes(dueDate.getMinutes() + signoutPolicy.defaultSignoutMinutes);
+        dueDate.setMinutes(dueDate.getMinutes() + duePolicy.defaultSignoutMinutes);
     }
 
     return dueDate.toISOString();
+}
+
+function formatPeriodRangesForInput(periodRanges) {
+    return periodRanges.map(range => `${range.start}-${range.end}=${range.returnClassPeriods}`).join('\n');
+}
+
+function parsePeriodRangesFromInput(rawText) {
+    const lines = rawText.split('\n').map(line => line.trim()).filter(Boolean);
+    const parsedRanges = [];
+
+    lines.forEach(line => {
+        const [timePart, periodsPart] = line.split('=');
+        if (!timePart || !periodsPart) return;
+
+        const [start, end] = timePart.split('-').map(part => part.trim());
+        const returnClassPeriods = Math.max(1, parseInt(periodsPart.trim(), 10) || 1);
+        if (parseTimeToMinutes(start) === null || parseTimeToMinutes(end) === null) return;
+
+        parsedRanges.push({ start, end, returnClassPeriods });
+    });
+
+    return parsedRanges;
 }
 
 function getStudentClassForUser(userId) {
@@ -248,10 +306,27 @@ function renderBasket() {
         myProjects.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
 }
 
+function getOrCreatePersonalProject(userId) {
+    const personalId = `PERS-${userId}`;
+    let personalProject = projects.find(p => p.id === personalId);
+    if (!personalProject) {
+        personalProject = {
+            id: personalId,
+            name: 'Personal Use',
+            ownerId: userId,
+            collaborators: [],
+            itemsOut: [],
+            status: 'Active'
+        };
+        projects.push(personalProject);
+    }
+    return personalProject;
+}
+
 // Global checkout function
 async function checkoutBasket() {
     const projectId = document.getElementById('basket-project-select').value;
-    const project = projectId ? projects.find(p => p.id === projectId) : null;
+    const project = projectId ? projects.find(p => p.id === projectId) : getOrCreatePersonalProject(currentUser.id);
 
     inventoryBasket.forEach(basketItem => {
         const item = inventoryItems.find(i => i.id === basketItem.id);
@@ -259,18 +334,21 @@ async function checkoutBasket() {
             item.stock -= basketItem.qty;
 
             const signoutData = {
+                id: generateId('OUT'),
                 itemId: item.id,
                 quantity: basketItem.qty,
                 signoutDate: new Date().toISOString(),
-                dueDate: calculateDueDate()
+                dueDate: calculateDueDate(new Date(), currentUser),
+                assignedToUserId: project.ownerId,
+                signedOutByUserId: currentUser.id
             };
 
-            if (project) {
-                project.itemsOut.push(signoutData);
-                addLog(currentUser.id, 'Project Sign-out', `Bulk signed out ${basketItem.qty}x ${item.name} for project ${project.name}`);
-            } else {
-                // Personal sign-out logic
+            project.itemsOut.push(signoutData);
+
+            if (project.id.startsWith('PERS-')) {
                 addLog(currentUser.id, 'Personal Sign-out', `Bulk signed out ${basketItem.qty}x ${item.name} to self`);
+            } else {
+                addLog(currentUser.id, 'Project Sign-out', `Bulk signed out ${basketItem.qty}x ${item.name} for project ${project.name}`);
             }
         }
     });
@@ -280,7 +358,7 @@ async function checkoutBasket() {
     toggleBasket(false);
     renderInventory();
     renderDashboard();
-    if (project) renderProjects();
+    renderProjects();
 }
 
 // Event Listeners for Basket
@@ -426,7 +504,6 @@ function login(user) {
         navUsers.classList.add('hidden');
         navClasses.classList.add('hidden');
         navRequests?.classList.add('hidden');
-        document.getElementById('manage-signout-policy-btn')?.classList.add('hidden');
         document.getElementById('manage-categories-btn')?.classList.add('hidden');
         document.getElementById('bulk-import-items-btn')?.classList.add('hidden');
     } else {
@@ -434,7 +511,6 @@ function login(user) {
         navUsers.classList.remove('hidden');
         navClasses.classList.remove('hidden');
         navRequests?.classList.remove('hidden');
-        document.getElementById('manage-signout-policy-btn')?.classList.remove('hidden');
         document.getElementById('manage-categories-btn')?.classList.remove('hidden');
         document.getElementById('bulk-import-items-btn')?.classList.remove('hidden');
     }
@@ -887,6 +963,51 @@ filterBtns.forEach(btn => {
 /* =======================================
    PROJECTS & SIGNOUT LOGIC
    ======================================= */
+function canCurrentUserReturnProjectItem(project) {
+    if (!currentUser) return false;
+    if (currentUser.role !== 'student') return true;
+    return project.ownerId === currentUser.id || project.collaborators.includes(currentUser.id);
+}
+
+function findSignoutIndex(project, signoutId) {
+    return project.itemsOut.findIndex(io => (io.id || `${io.itemId}-${io.signoutDate}-${io.quantity}`) === signoutId);
+}
+
+function returnProjectItem(projectId, signoutId) {
+    const project = projects.find(p => p.id === projectId);
+    if (!project) return;
+
+    const ioIndex = findSignoutIndex(project, signoutId);
+    if (ioIndex < 0) return;
+
+    const io = project.itemsOut[ioIndex];
+    const item = inventoryItems.find(i => i.id === io.itemId);
+    const assignedToUserId = io.assignedToUserId || project.ownerId;
+    const assignedToUser = mockUsers.find(u => u.id === assignedToUserId);
+
+    if (currentUser.role === 'student' && currentUser.id !== assignedToUserId) {
+        const assignedName = assignedToUser ? assignedToUser.name : assignedToUserId;
+        const confirmOnBehalf = confirm(`This item is assigned to ${assignedName}. Sign it back in on their behalf?`);
+        if (!confirmOnBehalf) return;
+    }
+
+    if (item) item.stock += io.quantity;
+    project.itemsOut.splice(ioIndex, 1);
+
+    if (currentUser.id !== assignedToUserId) {
+        const assignedName = assignedToUser ? assignedToUser.name : assignedToUserId;
+        addLog(currentUser.id, 'Return On Behalf', `Returned ${io.quantity}x ${item ? item.name : io.itemId} for ${assignedName} in ${project.name}`);
+        showToast(`Returned on behalf of ${assignedName}.`, 'warning');
+    } else {
+        addLog(currentUser.id, 'Return Item', `Returned ${io.quantity}x ${item ? item.name : io.itemId} in ${project.name}`);
+        showToast('Item signed back in.', 'success');
+    }
+
+    renderProjects();
+    renderInventory();
+    renderDashboard();
+}
+
 function renderProjects() {
     const container = document.getElementById('projects-container');
 
@@ -914,10 +1035,19 @@ function renderProjects() {
                 <div style="display:flex; flex-direction:column; gap:0.5rem">
                     ${proj.itemsOut.map(io => {
             const item = inventoryItems.find(i => i.id === io.itemId);
+            const assignedUserId = io.assignedToUserId || proj.ownerId;
+            const assignedUser = mockUsers.find(u => u.id === assignedUserId);
+            const signoutId = io.id || `${io.itemId}-${io.signoutDate}-${io.quantity}`;
             return `
-                            <div class="flex justify-between items-center text-sm">
-                                <span>${io.quantity}x <strong>${item ? item.name : 'Unknown'}</strong></span>
-                                <span class="text-muted font-mono" style="font-size:0.75rem">${item ? item.sku : 'N/A'}</span>
+                            <div class="flex justify-between items-center text-sm" style="gap:0.75rem;">
+                                <div>
+                                    <span>${io.quantity}x <strong>${item ? item.name : 'Unknown'}</strong></span>
+                                    <div class="text-xs text-muted">Assigned: ${assignedUser ? assignedUser.name : assignedUserId}</div>
+                                </div>
+                                <div style="display:flex;align-items:center;gap:0.5rem;">
+                                    <span class="text-muted font-mono" style="font-size:0.75rem">${item ? item.sku : 'N/A'}</span>
+                                    ${canCurrentUserReturnProjectItem(proj) ? `<button class="btn btn-secondary text-sm return-project-item-btn" data-project-id="${proj.id}" data-signout-id="${signoutId}" style="padding:0.2rem 0.5rem;font-size:0.75rem;"><i class="ph ph-arrow-counter-clockwise"></i> Sign In</button>` : ''}
+                                </div>
                             </div>
                         `;
         }).join('')}
@@ -930,15 +1060,15 @@ function renderProjects() {
                 <div class="project-header">
                     <div>
                         <h4>${proj.name}</h4>
-                        <p class="text-muted text-sm">Owner: ${owner ? owner.name : 'Unknown'}</p>
                     </div>
                     <span class="status-badge status-instock">${proj.status}</span>
                 </div>
+                <p class="text-muted text-sm mb-2">Owner: ${owner ? owner.name : 'Unknown'}</p>
                 <p class="project-desc mb-4">${proj.description}</p>
+                <div class="project-footer"><strong>${outCount}</strong> items signed out</div>
                 ${itemsOutHtml}
-                <div class="project-footer mt-auto pt-4"><strong>${outCount}</strong> items signed out</div>
                 <div class="project-meta">
-                    <span class="text-muted text-sm">Owner: ${mockUsers.find(u => u.id === proj.ownerId)?.name || 'Unknown'}</span>
+                    <span class="text-muted text-sm">${proj.itemsOut.length > 0 ? 'Use Sign In to return tools.' : 'No items currently signed out.'}</span>
                     <button class="btn btn-secondary text-sm edit-proj-btn" data-id="${proj.id}">
                         <i class="ph ph-pencil-simple"></i> Edit
                     </button>
@@ -959,6 +1089,14 @@ function renderProjects() {
         btn.addEventListener('click', (e) => {
             const id = e.currentTarget.getAttribute('data-id');
             showToast(`Project details for ${id} clicked.`);
+        });
+    });
+
+    document.querySelectorAll('.return-project-item-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const projectId = e.currentTarget.getAttribute('data-project-id');
+            const signoutId = e.currentTarget.getAttribute('data-signout-id');
+            returnProjectItem(projectId, signoutId);
         });
     });
 }
@@ -1026,28 +1164,19 @@ function openSignOutModal(itemId) {
             let project;
             if (projId === 'personal') {
                 // Ensure personal project exists for this user
-                const personalId = `PERS-${currentUser.id}`;
-                project = projects.find(p => p.id === personalId);
-                if (!project) {
-                    project = {
-                        id: personalId,
-                        name: 'Personal Use',
-                        ownerId: currentUser.id,
-                        collaborators: [],
-                        itemsOut: [],
-                        status: 'Active'
-                    };
-                    projects.push(project);
-                }
+                project = getOrCreatePersonalProject(currentUser.id);
             } else {
                 project = projects.find(p => p.id === projId);
             }
 
             project.itemsOut.push({
+                id: generateId('OUT'),
                 itemId: item.id,
                 quantity: qty,
                 signoutDate: new Date().toISOString(),
-                dueDate: calculateDueDate()
+                dueDate: calculateDueDate(new Date(), currentUser),
+                assignedToUserId: project.ownerId,
+                signedOutByUserId: currentUser.id
             });
 
             // Log activity
@@ -1073,6 +1202,13 @@ let studentClasses = [
         name: 'Intro to Robotics (Fall)',
         students: ['STU-123', 'STU-999'],
         visibleItemIds: ['ITM-001', 'ITM-004'],
+        duePolicy: {
+            defaultSignoutMinutes: 80,
+            classPeriodMinutes: 50,
+            periodRanges: [
+                { start: '08:00', end: '08:55', returnClassPeriods: 2 }
+            ]
+        },
         defaultPermissions: { canCreateProjects: false, canJoinProjects: true, canSignOut: true }
     },
     {
@@ -1080,6 +1216,14 @@ let studentClasses = [
         name: 'Advanced Electronics',
         students: ['STU-555'],
         visibleItemIds: inventoryItems.map(item => item.id),
+        duePolicy: {
+            defaultSignoutMinutes: 80,
+            classPeriodMinutes: 50,
+            periodRanges: [
+                { start: '08:00', end: '08:55', returnClassPeriods: 3 },
+                { start: '09:00', end: '09:50', returnClassPeriods: 2 }
+            ]
+        },
         defaultPermissions: { canCreateProjects: true, canJoinProjects: true, canSignOut: true }
     }
 ];
@@ -1091,6 +1235,7 @@ function renderClasses() {
     container.innerHTML = studentClasses.map(cls => {
         const studentCount = cls.students.length;
         const visibleItemCount = getVisibleItemCountForClass(cls);
+        const classDuePolicy = normalizeDuePolicy(cls.duePolicy);
         const teacher = mockUsers.find(u => u.id === cls.teacherId);
 
         return `
@@ -1104,6 +1249,7 @@ function renderClasses() {
                 </div>
                 <div class="text-sm mt-4"><strong>${studentCount}</strong> Students Enrolled</div>
                 <div class="text-sm"><strong>Visible Items:</strong> ${visibleItemCount}</div>
+                <div class="text-sm"><strong>Default Due Minutes:</strong> ${classDuePolicy.defaultSignoutMinutes}</div>
                 <div class="project-meta text-sm">
                     <span class="text-muted">Teacher: ${teacher ? teacher.name : 'Unknown'}</span>
                 </div>
@@ -1154,6 +1300,7 @@ function openEditClassModal(classId) {
     ).join('');
 
     const visibleItemIds = getVisibleItemIdsForClass(cls);
+    const classDuePolicy = normalizeDuePolicy(cls.duePolicy);
     const itemOptions = inventoryItems.map(item =>
         `<div style="margin-bottom:0.5rem">
             <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">
@@ -1185,6 +1332,19 @@ function openEditClassModal(classId) {
                     ${itemOptions || '<p class="text-muted">No items available.</p>'}
                 </div>
             </div>
+            <div class="form-group">
+                <label>Default Return Window (minutes)</label>
+                <input type="number" id="edit-class-default-due" class="form-control" min="1" value="${classDuePolicy.defaultSignoutMinutes}">
+            </div>
+            <div class="form-group">
+                <label>Minutes Per Class Period</label>
+                <input type="number" id="edit-class-period-mins" class="form-control" min="1" value="${classDuePolicy.classPeriodMinutes}">
+            </div>
+            <div class="form-group">
+                <label>Time Ranges (one per line: HH:MM-HH:MM=Periods)</label>
+                <textarea id="edit-class-period-ranges" class="form-control" rows="4" placeholder="08:00-08:55=2">${formatPeriodRangesForInput(classDuePolicy.periodRanges)}</textarea>
+                <small class="text-muted">When sign-out time falls in a range, due date uses periods x minutes per period.</small>
+            </div>
         </div>
         <div class="modal-footer">
             <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
@@ -1198,11 +1358,19 @@ function openEditClassModal(classId) {
         const name = document.getElementById('edit-class-name').value.trim();
         const checkedStudents = Array.from(document.querySelectorAll('.edit-class-student-checkbox:checked')).map(cb => cb.value);
         const checkedItems = Array.from(document.querySelectorAll('.edit-class-item-checkbox:checked')).map(cb => cb.value);
+        const defaultDueMinutes = Math.max(1, parseInt(document.getElementById('edit-class-default-due').value, 10) || 80);
+        const classPeriodMinutes = Math.max(1, parseInt(document.getElementById('edit-class-period-mins').value, 10) || 50);
+        const parsedRanges = parsePeriodRangesFromInput(document.getElementById('edit-class-period-ranges').value || '');
 
         if (name) {
             cls.name = name;
             cls.students = checkedStudents;
             cls.visibleItemIds = checkedItems;
+            cls.duePolicy = normalizeDuePolicy({
+                defaultSignoutMinutes: defaultDueMinutes,
+                classPeriodMinutes: classPeriodMinutes,
+                periodRanges: parsedRanges
+            });
             showToast(`Class ${name} updated.`, 'success');
             addLog(currentUser.id, 'Edit Class', `Updated class ${name} with ${checkedStudents.length} students.`);
             closeModal();
@@ -1234,6 +1402,8 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
         </div>`
     ).join('');
 
+    const defaultRangesText = formatPeriodRangesForInput(defaultDuePolicy.periodRanges);
+
     const html = `
         <div class="modal-header">
             <h3>Create New Class</h3>
@@ -1256,6 +1426,18 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
                     ${itemOptions}
                 </div>
             </div>
+            <div class="form-group">
+                <label>Default Return Window (minutes)</label>
+                <input type="number" id="add-class-default-due" class="form-control" min="1" value="${defaultDuePolicy.defaultSignoutMinutes}">
+            </div>
+            <div class="form-group">
+                <label>Minutes Per Class Period</label>
+                <input type="number" id="add-class-period-mins" class="form-control" min="1" value="${defaultDuePolicy.classPeriodMinutes}">
+            </div>
+            <div class="form-group">
+                <label>Time Ranges (one per line: HH:MM-HH:MM=Periods)</label>
+                <textarea id="add-class-period-ranges" class="form-control" rows="4" placeholder="08:00-08:55=2">${defaultRangesText}</textarea>
+            </div>
         </div>
         <div class="modal-footer">
             <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
@@ -1269,6 +1451,9 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
         const name = document.getElementById('add-class-name').value.trim();
         const checkedStudents = Array.from(document.querySelectorAll('.student-checkbox:checked')).map(cb => cb.value);
         const checkedItems = Array.from(document.querySelectorAll('.class-item-checkbox:checked')).map(cb => cb.value);
+        const defaultDueMinutes = Math.max(1, parseInt(document.getElementById('add-class-default-due').value, 10) || 80);
+        const classPeriodMinutes = Math.max(1, parseInt(document.getElementById('add-class-period-mins').value, 10) || 50);
+        const parsedRanges = parsePeriodRangesFromInput(document.getElementById('add-class-period-ranges').value || '');
 
         if (name) {
             studentClasses.unshift({
@@ -1276,7 +1461,12 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
                 name: name,
                 teacherId: currentUser.id,
                 students: checkedStudents,
-                visibleItemIds: checkedItems
+                visibleItemIds: checkedItems,
+                duePolicy: normalizeDuePolicy({
+                    defaultSignoutMinutes: defaultDueMinutes,
+                    classPeriodMinutes: classPeriodMinutes,
+                    periodRanges: parsedRanges
+                })
             });
             showToast(`Class ${name} created with ${checkedStudents.length} students.`, 'success');
             addLog(currentUser.id, 'Create Class', `Created class ${name} with ${checkedStudents.length} students.`);
@@ -2280,71 +2470,6 @@ document.getElementById('bulk-import-items-btn')?.addEventListener('click', () =
         if (document.getElementById('page-inventory').classList.contains('active')) {
             renderInventory();
         }
-    });
-});
-
-/* =======================================
-   SIGN-OUT POLICY SETTINGS
-   ======================================= */
-document.getElementById('manage-signout-policy-btn')?.addEventListener('click', () => {
-    const html = `
-        <div class="modal-header">
-            <h3><i class="ph ph-timer"></i> Sign-out Window Settings</h3>
-            <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
-        </div>
-        <div class="modal-body">
-            <div class="form-group">
-                <label>Default Return Window (minutes)</label>
-                <input type="number" id="policy-default-mins" class="form-control" min="1" value="${signoutPolicy.defaultSignoutMinutes}">
-                <small class="text-muted">Used outside the Period 1 window.</small>
-            </div>
-            <div class="grid-2-col" style="gap:1rem">
-                <div class="form-group">
-                    <label>Period 1 Start (HH:MM)</label>
-                    <input type="time" id="policy-p1-start" class="form-control" value="${signoutPolicy.periodOneStart}">
-                </div>
-                <div class="form-group">
-                    <label>Period 1 End (HH:MM)</label>
-                    <input type="time" id="policy-p1-end" class="form-control" value="${signoutPolicy.periodOneEnd}">
-                </div>
-            </div>
-            <div class="grid-2-col" style="gap:1rem">
-                <div class="form-group">
-                    <label>Return After Class Periods</label>
-                    <input type="number" id="policy-p1-periods" class="form-control" min="1" value="${signoutPolicy.periodOneReturnClassPeriods}">
-                </div>
-                <div class="form-group">
-                    <label>Minutes Per Class Period</label>
-                    <input type="number" id="policy-class-mins" class="form-control" min="1" value="${signoutPolicy.classPeriodMinutes}">
-                </div>
-            </div>
-        </div>
-        <div class="modal-footer">
-            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-            <button class="btn btn-primary" id="save-signout-policy-btn">Save Policy</button>
-        </div>
-    `;
-
-    openModal(html);
-
-    document.getElementById('save-signout-policy-btn')?.addEventListener('click', () => {
-        const defaultMins = Math.max(1, parseInt(document.getElementById('policy-default-mins').value, 10) || 80);
-        const p1Start = document.getElementById('policy-p1-start').value || '08:00';
-        const p1End = document.getElementById('policy-p1-end').value || '08:55';
-        const p1Periods = Math.max(1, parseInt(document.getElementById('policy-p1-periods').value, 10) || 2);
-        const classMins = Math.max(1, parseInt(document.getElementById('policy-class-mins').value, 10) || 50);
-
-        signoutPolicy = {
-            defaultSignoutMinutes: defaultMins,
-            periodOneStart: p1Start,
-            periodOneEnd: p1End,
-            periodOneReturnClassPeriods: p1Periods,
-            classPeriodMinutes: classMins
-        };
-
-        addLog(currentUser.id, 'Update Sign-out Policy', `Updated sign-out policy: default ${defaultMins} min, Period 1 ${p1Start}-${p1End}, ${p1Periods} periods @ ${classMins} min.`);
-        showToast('Sign-out policy updated.', 'success');
-        closeModal();
     });
 });
 
