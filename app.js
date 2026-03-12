@@ -11,6 +11,7 @@ const appVersion = envConfig.APP_VERSION || 'PRE-RELEASE';
 const defaultDuePolicy = {
     defaultSignoutMinutes: 80,
     classPeriodMinutes: 50,
+    timezone: 'America/Edmonton',
     periodRanges: [
         { start: '08:00', end: '08:55', returnClassPeriods: 2 }
     ]
@@ -19,6 +20,7 @@ const defaultDuePolicy = {
 let signoutPolicy = {
     defaultSignoutMinutes: defaultDuePolicy.defaultSignoutMinutes,
     classPeriodMinutes: defaultDuePolicy.classPeriodMinutes,
+    timezone: defaultDuePolicy.timezone,
     periodRanges: defaultDuePolicy.periodRanges.map(range => ({ ...range }))
 };
 
@@ -121,6 +123,7 @@ function normalizeDuePolicy(policy) {
     return {
         defaultSignoutMinutes: Math.max(1, parseInt(policy?.defaultSignoutMinutes, 10) || defaultDuePolicy.defaultSignoutMinutes),
         classPeriodMinutes: Math.max(1, parseInt(policy?.classPeriodMinutes, 10) || defaultDuePolicy.classPeriodMinutes),
+        timezone: policy?.timezone || defaultDuePolicy.timezone,
         periodRanges: normalizedRanges.length > 0 ? normalizedRanges : fallbackRanges
     };
 }
@@ -133,8 +136,24 @@ function getEffectiveDuePolicyForUser(user) {
     return normalizeDuePolicy(signoutPolicy);
 }
 
+function getLocalTimeMinutes(date, timezone) {
+    try {
+        const parts = new Intl.DateTimeFormat('en-CA', {
+            timeZone: timezone,
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false
+        }).formatToParts(date);
+        const hour = parseInt(parts.find(p => p.type === 'hour').value, 10);
+        const minute = parseInt(parts.find(p => p.type === 'minute').value, 10);
+        return (hour * 60) + minute;
+    } catch {
+        return (date.getHours() * 60) + date.getMinutes();
+    }
+}
+
 function getMatchingPolicyRange(date, policy) {
-    const currentMinutes = (date.getHours() * 60) + date.getMinutes();
+    const currentMinutes = getLocalTimeMinutes(date, policy.timezone || defaultDuePolicy.timezone);
     return policy.periodRanges.find(range => {
         const startMinutes = parseTimeToMinutes(range.start);
         const endMinutes = parseTimeToMinutes(range.end);
@@ -157,26 +176,71 @@ function calculateDueDate(signoutDate = new Date(), user = currentUser) {
     return dueDate.toISOString();
 }
 
-function formatPeriodRangesForInput(periodRanges) {
-    return periodRanges.map(range => `${range.start}-${range.end}=${range.returnClassPeriods}`).join('\n');
+const TIMEZONE_OPTIONS = [
+    { value: 'America/Edmonton',     label: 'Mountain Time — Edmonton / Calgary' },
+    { value: 'America/Vancouver',    label: 'Pacific Time — Vancouver / Victoria' },
+    { value: 'America/Winnipeg',     label: 'Central Time — Winnipeg' },
+    { value: 'America/Toronto',      label: 'Eastern Time — Toronto / Ottawa' },
+    { value: 'America/Halifax',      label: 'Atlantic Time — Halifax' },
+    { value: 'America/St_Johns',     label: "Newfoundland Time — St. John's" },
+    { value: 'America/Los_Angeles',  label: 'Pacific Time — US West' },
+    { value: 'America/Denver',       label: 'Mountain Time — US' },
+    { value: 'America/Chicago',      label: 'Central Time — US' },
+    { value: 'America/New_York',     label: 'Eastern Time — US' },
+    { value: 'UTC',                  label: 'UTC' },
+];
+
+function buildTimezoneOptionsHtml(selectedTz) {
+    return TIMEZONE_OPTIONS.map(tz =>
+        `<option value="${tz.value}"${tz.value === selectedTz ? ' selected' : ''}>${tz.label}</option>`
+    ).join('');
 }
 
-function parsePeriodRangesFromInput(rawText) {
-    const lines = rawText.split('\n').map(line => line.trim()).filter(Boolean);
-    const parsedRanges = [];
+function buildPeriodRowHtml(start = '', end = '', returnClassPeriods = 1) {
+    return `
+        <div class="period-row" style="display:grid;grid-template-columns:1fr 1fr 110px 36px;gap:0.5rem;align-items:center;margin-bottom:0.5rem">
+            <input type="time" class="form-control period-start" value="${start}" title="Period start time">
+            <input type="time" class="form-control period-end" value="${end}" title="Period end time">
+            <input type="number" class="form-control period-return-periods" min="1" value="${returnClassPeriods}" title="Number of class periods before item is due">
+            <button type="button" class="btn btn-secondary remove-period-row-btn" style="padding:0.25rem 0.5rem" title="Remove period"><i class="ph ph-trash"></i></button>
+        </div>`;
+}
 
-    lines.forEach(line => {
-        const [timePart, periodsPart] = line.split('=');
-        if (!timePart || !periodsPart) return;
+function buildPeriodRowsHtml(periodRanges) {
+    return periodRanges.map(r => buildPeriodRowHtml(r.start, r.end, r.returnClassPeriods)).join('');
+}
 
-        const [start, end] = timePart.split('-').map(part => part.trim());
-        const returnClassPeriods = Math.max(1, parseInt(periodsPart.trim(), 10) || 1);
-        if (parseTimeToMinutes(start) === null || parseTimeToMinutes(end) === null) return;
-
-        parsedRanges.push({ start, end, returnClassPeriods });
+function collectPeriodRowsFromModal(containerId) {
+    const rows = document.querySelectorAll(`#${containerId} .period-row`);
+    const ranges = [];
+    rows.forEach(row => {
+        const start = row.querySelector('.period-start').value;
+        const end = row.querySelector('.period-end').value;
+        const returnClassPeriods = Math.max(1, parseInt(row.querySelector('.period-return-periods').value, 10) || 1);
+        if (parseTimeToMinutes(start) !== null && parseTimeToMinutes(end) !== null) {
+            ranges.push({ start, end, returnClassPeriods });
+        }
     });
+    return ranges;
+}
 
-    return parsedRanges;
+function attachPeriodRowHandlers(containerId, addBtnId) {
+    const container = document.getElementById(containerId);
+    const addBtn = document.getElementById(addBtnId);
+    if (container) {
+        container.addEventListener('click', e => {
+            const removeBtn = e.target.closest('.remove-period-row-btn');
+            if (removeBtn) removeBtn.closest('.period-row').remove();
+        });
+    }
+    if (addBtn) {
+        addBtn.addEventListener('click', () => {
+            if (!container) return;
+            const div = document.createElement('div');
+            div.innerHTML = buildPeriodRowHtml('', '', 1);
+            container.appendChild(div.firstElementChild);
+        });
+    }
 }
 
 function getStudentClassForUser(userId) {
@@ -1333,17 +1397,35 @@ function openEditClassModal(classId) {
                 </div>
             </div>
             <div class="form-group">
+                <label>Time Zone</label>
+                <select id="edit-class-timezone" class="form-control">
+                    ${buildTimezoneOptionsHtml(classDuePolicy.timezone)}
+                </select>
+                <small class="text-muted">Used to determine which class period a sign-out falls in.</small>
+            </div>
+            <div class="form-group">
                 <label>Default Return Window (minutes)</label>
                 <input type="number" id="edit-class-default-due" class="form-control" min="1" value="${classDuePolicy.defaultSignoutMinutes}">
+                <small class="text-muted">Used when a sign-out happens outside any class period — student gets this many minutes to return the item.</small>
             </div>
             <div class="form-group">
                 <label>Minutes Per Class Period</label>
                 <input type="number" id="edit-class-period-mins" class="form-control" min="1" value="${classDuePolicy.classPeriodMinutes}">
+                <small class="text-muted">Used with class periods below — due time = return periods × this value.</small>
             </div>
             <div class="form-group">
-                <label>Time Ranges (one per line: HH:MM-HH:MM=Periods)</label>
-                <textarea id="edit-class-period-ranges" class="form-control" rows="4" placeholder="08:00-08:55=2">${formatPeriodRangesForInput(classDuePolicy.periodRanges)}</textarea>
-                <small class="text-muted">When sign-out time falls in a range, due date uses periods x minutes per period.</small>
+                <label>Class Periods</label>
+                <div style="display:grid;grid-template-columns:1fr 1fr 110px 36px;gap:0.5rem;margin-bottom:0.25rem">
+                    <span class="text-muted" style="font-size:0.8rem">Start</span>
+                    <span class="text-muted" style="font-size:0.8rem">End</span>
+                    <span class="text-muted" style="font-size:0.8rem">Return Periods</span>
+                    <span></span>
+                </div>
+                <div id="edit-class-period-rows">${buildPeriodRowsHtml(classDuePolicy.periodRanges)}</div>
+                <button type="button" id="edit-class-add-period-btn" class="btn btn-secondary" style="margin-top:0.5rem">
+                    <i class="ph ph-plus"></i> Add Period
+                </button>
+                <small class="text-muted" style="display:block;margin-top:0.4rem">When a sign-out falls within a period window, the return deadline = return periods × minutes per class period.</small>
             </div>
         </div>
         <div class="modal-footer">
@@ -1354,13 +1436,16 @@ function openEditClassModal(classId) {
 
     openModal(html);
 
+    attachPeriodRowHandlers('edit-class-period-rows', 'edit-class-add-period-btn');
+
     document.getElementById('confirm-edit-class').addEventListener('click', () => {
         const name = document.getElementById('edit-class-name').value.trim();
         const checkedStudents = Array.from(document.querySelectorAll('.edit-class-student-checkbox:checked')).map(cb => cb.value);
         const checkedItems = Array.from(document.querySelectorAll('.edit-class-item-checkbox:checked')).map(cb => cb.value);
         const defaultDueMinutes = Math.max(1, parseInt(document.getElementById('edit-class-default-due').value, 10) || 80);
         const classPeriodMinutes = Math.max(1, parseInt(document.getElementById('edit-class-period-mins').value, 10) || 50);
-        const parsedRanges = parsePeriodRangesFromInput(document.getElementById('edit-class-period-ranges').value || '');
+        const timezone = document.getElementById('edit-class-timezone').value;
+        const parsedRanges = collectPeriodRowsFromModal('edit-class-period-rows');
 
         if (name) {
             cls.name = name;
@@ -1369,6 +1454,7 @@ function openEditClassModal(classId) {
             cls.duePolicy = normalizeDuePolicy({
                 defaultSignoutMinutes: defaultDueMinutes,
                 classPeriodMinutes: classPeriodMinutes,
+                timezone,
                 periodRanges: parsedRanges
             });
             showToast(`Class ${name} updated.`, 'success');
@@ -1402,7 +1488,7 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
         </div>`
     ).join('');
 
-    const defaultRangesText = formatPeriodRangesForInput(defaultDuePolicy.periodRanges);
+    const defaultRangesHtml = buildPeriodRowsHtml(defaultDuePolicy.periodRanges);
 
     const html = `
         <div class="modal-header">
@@ -1427,16 +1513,35 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
                 </div>
             </div>
             <div class="form-group">
+                <label>Time Zone</label>
+                <select id="add-class-timezone" class="form-control">
+                    ${buildTimezoneOptionsHtml(defaultDuePolicy.timezone)}
+                </select>
+                <small class="text-muted">Used to determine which class period a sign-out falls in.</small>
+            </div>
+            <div class="form-group">
                 <label>Default Return Window (minutes)</label>
                 <input type="number" id="add-class-default-due" class="form-control" min="1" value="${defaultDuePolicy.defaultSignoutMinutes}">
+                <small class="text-muted">Used when a sign-out happens outside any class period — student gets this many minutes to return the item.</small>
             </div>
             <div class="form-group">
                 <label>Minutes Per Class Period</label>
                 <input type="number" id="add-class-period-mins" class="form-control" min="1" value="${defaultDuePolicy.classPeriodMinutes}">
+                <small class="text-muted">Used with class periods below — due time = return periods × this value.</small>
             </div>
             <div class="form-group">
-                <label>Time Ranges (one per line: HH:MM-HH:MM=Periods)</label>
-                <textarea id="add-class-period-ranges" class="form-control" rows="4" placeholder="08:00-08:55=2">${defaultRangesText}</textarea>
+                <label>Class Periods</label>
+                <div style="display:grid;grid-template-columns:1fr 1fr 110px 36px;gap:0.5rem;margin-bottom:0.25rem">
+                    <span class="text-muted" style="font-size:0.8rem">Start</span>
+                    <span class="text-muted" style="font-size:0.8rem">End</span>
+                    <span class="text-muted" style="font-size:0.8rem">Return Periods</span>
+                    <span></span>
+                </div>
+                <div id="add-class-period-rows">${defaultRangesHtml}</div>
+                <button type="button" id="add-class-add-period-btn" class="btn btn-secondary" style="margin-top:0.5rem">
+                    <i class="ph ph-plus"></i> Add Period
+                </button>
+                <small class="text-muted" style="display:block;margin-top:0.4rem">When a sign-out falls within a period window, the return deadline = return periods × minutes per class period.</small>
             </div>
         </div>
         <div class="modal-footer">
@@ -1446,6 +1551,7 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
     `;
 
     openModal(html);
+    attachPeriodRowHandlers('add-class-period-rows', 'add-class-add-period-btn');
 
     document.getElementById('confirm-add-class').addEventListener('click', () => {
         const name = document.getElementById('add-class-name').value.trim();
@@ -1453,7 +1559,8 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
         const checkedItems = Array.from(document.querySelectorAll('.class-item-checkbox:checked')).map(cb => cb.value);
         const defaultDueMinutes = Math.max(1, parseInt(document.getElementById('add-class-default-due').value, 10) || 80);
         const classPeriodMinutes = Math.max(1, parseInt(document.getElementById('add-class-period-mins').value, 10) || 50);
-        const parsedRanges = parsePeriodRangesFromInput(document.getElementById('add-class-period-ranges').value || '');
+        const timezone = document.getElementById('add-class-timezone').value;
+        const parsedRanges = collectPeriodRowsFromModal('add-class-period-rows');
 
         if (name) {
             studentClasses.unshift({
@@ -1465,6 +1572,7 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
                 duePolicy: normalizeDuePolicy({
                     defaultSignoutMinutes: defaultDueMinutes,
                     classPeriodMinutes: classPeriodMinutes,
+                    timezone,
                     periodRanges: parsedRanges
                 })
             });
