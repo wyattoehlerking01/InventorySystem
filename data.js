@@ -1,4 +1,4 @@
-// Mock Data for Nexus Inventory System
+// Mock Data for LCHS Inventory System
 
 const mockUsers = [
     { id: 'STU-123', name: 'Alex Freeman', role: 'student', status: 'Active' },
@@ -16,13 +16,17 @@ let extensionRequests = [];
 
 let categories = ['Electronics', 'Hardware', 'Consumables'];
 
+// Visibility tags are separate from categories.
+// Items are tagged; classes declare which tags their students may see.
+let visibilityTags = ['Public', 'Advanced', 'Restricted', 'Staff Only'];
+
 let inventoryItems = [
-    { id: 'ITM-001', name: 'Arduino Uno R3', category: 'Electronics', sku: 'ARD-001', stock: 45, threshold: 10, status: 'In Stock' },
-    { id: 'ITM-002', name: 'Raspberry Pi 4 8GB', category: 'Electronics', sku: 'RPI-004', stock: 12, threshold: 15, status: 'Low Stock' },
-    { id: 'ITM-003', name: 'Soldering Iron Station', category: 'Hardware', sku: 'SLD-001', stock: 5, threshold: 5, status: 'Low Stock' },
-    { id: 'ITM-004', name: 'Resistor Kit (10k Ohm)', category: 'Consumables', sku: 'RES-10K', stock: 200, threshold: 50, status: 'In Stock' },
-    { id: 'ITM-005', name: '3D Printer Filament (PLA)', category: 'Consumables', sku: 'PLA-BLK', stock: 2, threshold: 5, status: 'Critical' },
-    { id: 'ITM-006', name: 'Digital Multimeter', category: 'Hardware', sku: 'DMM-001', stock: 15, threshold: 5, status: 'In Stock' },
+    { id: 'ITM-001', name: 'Arduino Uno R3', category: 'Electronics', sku: 'ARD-001', stock: 45, threshold: 10, status: 'In Stock', visibilityTags: ['Public'] },
+    { id: 'ITM-002', name: 'Raspberry Pi 4 8GB', category: 'Electronics', sku: 'RPI-004', stock: 12, threshold: 15, status: 'Low Stock', visibilityTags: ['Advanced'] },
+    { id: 'ITM-003', name: 'Soldering Iron Station', category: 'Hardware', sku: 'SLD-001', stock: 5, threshold: 5, status: 'Low Stock', visibilityTags: ['Advanced'] },
+    { id: 'ITM-004', name: 'Resistor Kit (10k Ohm)', category: 'Consumables', sku: 'RES-10K', stock: 200, threshold: 50, status: 'In Stock', visibilityTags: ['Public'] },
+    { id: 'ITM-005', name: '3D Printer Filament (PLA)', category: 'Consumables', sku: 'PLA-BLK', stock: 2, threshold: 5, status: 'Critical', visibilityTags: ['Restricted'] },
+    { id: 'ITM-006', name: 'Digital Multimeter', category: 'Hardware', sku: 'DMM-001', stock: 15, threshold: 5, status: 'In Stock', visibilityTags: ['Public'] },
 ];
 
 let projects = [

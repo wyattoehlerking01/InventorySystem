@@ -1,4 +1,4 @@
-// Nexus Inventory System - Application Logic
+// LCHS Inventory System - Application Logic
 
 /* =======================================
    STATE & INITIALIZATION
@@ -101,6 +101,46 @@ function resetInactivityTimer() {
         inactivityTimeRemaining = 3 * 60;
         updateTimerUI();
     }
+}
+
+/* =======================================
+   LOGIN RATE LIMITING
+   ======================================= */
+const loginRateLimit = {
+    attempts: [],
+    maxAttempts: 5,
+    windowMs: 30000,   // 30-second sliding window
+    lockoutMs: 60000,  // 1-minute hard lockout after breaching limit
+    lockedUntil: null
+};
+
+function checkLoginRateLimit() {
+    const now = Date.now();
+
+    // Still in lockout?
+    if (loginRateLimit.lockedUntil && now < loginRateLimit.lockedUntil) {
+        const remaining = Math.ceil((loginRateLimit.lockedUntil - now) / 1000);
+        showToast(`Too many attempts. Try again in ${remaining}s.`, 'error');
+        return false;
+    }
+
+    // Lockout expired — reset
+    if (loginRateLimit.lockedUntil && now >= loginRateLimit.lockedUntil) {
+        loginRateLimit.lockedUntil = null;
+        loginRateLimit.attempts = [];
+    }
+
+    // Slide the window: discard old attempts
+    loginRateLimit.attempts = loginRateLimit.attempts.filter(t => now - t < loginRateLimit.windowMs);
+    loginRateLimit.attempts.push(now);
+
+    if (loginRateLimit.attempts.length > loginRateLimit.maxAttempts) {
+        loginRateLimit.lockedUntil = now + loginRateLimit.lockoutMs;
+        showToast('Too many login attempts. Locked for 60 seconds.', 'error');
+        return false;
+    }
+
+    return true;
 }
 
 function parseTimeToMinutes(timeString) {
@@ -244,7 +284,42 @@ function attachPeriodRowHandlers(containerId, addBtnId) {
 }
 
 function getStudentClassForUser(userId) {
+    // Returns the first class — used for due-policy resolution (single-class context).
     return studentClasses.find(c => c.students.includes(userId));
+}
+
+// Returns ALL classes a student belongs to (a student can be in more than one).
+function getStudentClassesForUser(userId) {
+    return studentClasses.filter(c => c.students.includes(userId));
+}
+
+/*
+ * MULTI-CLASS CONFLICT RESOLUTION
+ * ─────────────────────────────────
+ * If a student is enrolled in two classes that have different settings:
+ *
+ *  • Visible items  → UNION: an item is visible if it appears in ANY class's
+ *                     visibleItemIds list.
+ *  • Visibility tags → UNION: a tag is allowed if ANY of the student's classes
+ *                     include it in allowedVisibilityTags, so the student sees
+ *                     the most content they're entitled to.
+ *  • Permissions    → MOST PERMISSIVE: a student gets a permission if ANY of
+ *                     their classes (or their own stored perms) grants it.
+ *                     E.g. Class A allows sign-out, Class B doesn't →
+ *                     the student CAN sign out.
+ *  • Due policy     → First enrolled class wins (lowest index in the array).
+ *                     Admins should ensure classes that share students have
+ *                     compatible due policies, or use per-student overrides.
+ */
+function getMergedPermissionsForStudent(user) {
+    const classes = getStudentClassesForUser(user.id);
+    if (classes.length === 0) return user.perms || { canCreateProjects: false, canJoinProjects: false, canSignOut: false };
+
+    return {
+        canCreateProjects: classes.some(c => c.defaultPermissions?.canCreateProjects) || (user.perms?.canCreateProjects ?? false),
+        canJoinProjects:   classes.some(c => c.defaultPermissions?.canJoinProjects)   || (user.perms?.canJoinProjects   ?? false),
+        canSignOut:        classes.some(c => c.defaultPermissions?.canSignOut)        || (user.perms?.canSignOut         ?? false)
+    };
 }
 
 function getVisibleItemIdsForClass(cls) {
@@ -261,11 +336,23 @@ function canUserSeeItem(user, item) {
     if (!user) return false;
     if (user.role !== 'student') return true;
 
-    const cls = getStudentClassForUser(user.id);
-    if (!cls) return false;
+    const classes = getStudentClassesForUser(user.id);
+    if (classes.length === 0) return false;
 
-    // Class-level item visibility is owned by the Classes tab.
-    return getVisibleItemIdsForClass(cls).includes(item.id);
+    // Step 1: item must be in at least one class's visibleItemIds (union)
+    const inVisibleIds = classes.some(cls => getVisibleItemIdsForClass(cls).includes(item.id));
+    if (!inVisibleIds) return false;
+
+    // Step 2: if the item carries visibility tags, at least one class must allow
+    //         at least one of those tags (union across both axes).
+    //         Items with NO tags are always visible once step 1 passes.
+    const itemTags = item.visibilityTags || [];
+    if (itemTags.length === 0) return true;
+
+    return classes.some(cls => {
+        const allowed = cls.allowedVisibilityTags || [];
+        return itemTags.some(tag => allowed.includes(tag));
+    });
 }
 
 function applyVersionBadges() {
@@ -396,6 +483,7 @@ async function checkoutBasket() {
         const item = inventoryItems.find(i => i.id === basketItem.id);
         if (item) {
             item.stock -= basketItem.qty;
+            _trackItemSignout(item, basketItem.qty);
 
             const signoutData = {
                 id: generateId('OUT'),
@@ -506,6 +594,8 @@ barcodeInput.addEventListener('keydown', (e) => {
         const id = barcodeInput.value.trim().toUpperCase();
         barcodeInput.value = '';
 
+        if (!checkLoginRateLimit()) return;
+
         const user = mockUsers.find(u => u.id === id);
         if (user) {
             if (user.status === 'Suspended') {
@@ -535,6 +625,7 @@ function getRoleIcon(role) {
 
 function login(user) {
     currentUser = user;
+    _trackLogin();
     startCountdown();
 
     // Update Profile UI
@@ -547,9 +638,11 @@ function login(user) {
     // Student Class Visibility
     const userClassEl = document.getElementById('user-class');
     if (user.role === 'student') {
-        const userClass = studentClasses.find(c => c.students.includes(user.id));
+        const userClasses = getStudentClassesForUser(user.id);
         if (userClassEl) {
-            userClassEl.textContent = userClass ? userClass.name : 'No Class Assigned';
+            userClassEl.textContent = userClasses.length > 0
+                ? userClasses.map(c => c.name).join(', ')
+                : 'No Class Assigned';
             userClassEl.classList.remove('hidden');
         }
     } else {
@@ -569,6 +662,7 @@ function login(user) {
         navClasses.classList.add('hidden');
         navRequests?.classList.add('hidden');
         document.getElementById('manage-categories-btn')?.classList.add('hidden');
+        document.getElementById('manage-visibility-tags-btn')?.classList.add('hidden');
         document.getElementById('bulk-import-items-btn')?.classList.add('hidden');
     } else {
         navLogs.classList.remove('hidden');
@@ -576,6 +670,7 @@ function login(user) {
         navClasses.classList.remove('hidden');
         navRequests?.classList.remove('hidden');
         document.getElementById('manage-categories-btn')?.classList.remove('hidden');
+        document.getElementById('manage-visibility-tags-btn')?.classList.remove('hidden');
         document.getElementById('bulk-import-items-btn')?.classList.remove('hidden');
     }
 
@@ -611,6 +706,7 @@ function login(user) {
 }
 
 function logout(message = 'Logged out successfully') {
+    _trackLogout();
     currentUser = null;
     clearInterval(countdownInterval);
     mainView.classList.remove('active');
@@ -644,6 +740,7 @@ navBtns.forEach(btn => {
 });
 
 function switchPage(targetId, title) {
+    _trackPageVisit(targetId);
     pageTitle.textContent = title;
 
     pages.forEach(page => {
@@ -925,12 +1022,17 @@ function renderInventory(filterStr = 'All') {
         const statusClass = currentStatus === 'In Stock' ? 'status-instock' : currentStatus === 'Low Stock' ? 'status-lowstock' : 'status-critical';
         const canSignOut = currentUser.perms?.canSignOut !== false;
 
+        const tagsHtml = (item.visibilityTags || []).map(tag =>
+            `<span class="visibility-tag">${tag}</span>`
+        ).join('');
+
         return `
             <tr>
                 <td><input type="checkbox" class="item-select-cb" data-id="${item.id}"></td>
                 <td>
                     <div class="font-bold">${item.name}</div>
                     <small class="text-xs text-muted">ID: ${item.id}</small>
+                    ${tagsHtml ? `<div class="visibility-tags-row">${tagsHtml}</div>` : ''}
                 </td>
                 <td>${item.category}</td>
                 <td class="text-muted font-mono" style="font-size:0.8rem">${item.sku}</td>
@@ -1243,6 +1345,7 @@ function openSignOutModal(itemId) {
                 signedOutByUserId: currentUser.id
             });
 
+            _trackItemSignout(item, qty);
             // Log activity
             addLog(currentUser.id, 'Sign Out', `Signed out ${qty}x ${item.name} (SKU: ${item.sku}) for Project: ${project.name === 'Personal Use' ? 'Personal' : project.name}`);
 
@@ -1266,6 +1369,7 @@ let studentClasses = [
         name: 'Intro to Robotics (Fall)',
         students: ['STU-123', 'STU-999'],
         visibleItemIds: ['ITM-001', 'ITM-004'],
+        allowedVisibilityTags: ['Public'],
         duePolicy: {
             defaultSignoutMinutes: 80,
             classPeriodMinutes: 50,
@@ -1280,6 +1384,7 @@ let studentClasses = [
         name: 'Advanced Electronics',
         students: ['STU-555'],
         visibleItemIds: inventoryItems.map(item => item.id),
+        allowedVisibilityTags: ['Public', 'Advanced'],
         duePolicy: {
             defaultSignoutMinutes: 80,
             classPeriodMinutes: 50,
@@ -1301,6 +1406,10 @@ function renderClasses() {
         const visibleItemCount = getVisibleItemCountForClass(cls);
         const classDuePolicy = normalizeDuePolicy(cls.duePolicy);
         const teacher = mockUsers.find(u => u.id === cls.teacherId);
+        const allowedTags = cls.allowedVisibilityTags || [];
+        const tagsDisplay = allowedTags.length > 0
+            ? allowedTags.map(t => `<span class="visibility-tag">${t}</span>`).join('')
+            : '<span class="text-muted text-sm">None (all untagged items visible)</span>';
 
         return `
             <div class="project-card glass-panel" style="position:relative">
@@ -1314,6 +1423,7 @@ function renderClasses() {
                 <div class="text-sm mt-4"><strong>${studentCount}</strong> Students Enrolled</div>
                 <div class="text-sm"><strong>Visible Items:</strong> ${visibleItemCount}</div>
                 <div class="text-sm"><strong>Default Due Minutes:</strong> ${classDuePolicy.defaultSignoutMinutes}</div>
+                <div class="text-sm" style="margin-top:0.4rem"><strong>Allowed Visibility Tags:</strong><br><div style="margin-top:0.25rem;display:flex;flex-wrap:wrap;gap:0.3rem">${tagsDisplay}</div></div>
                 <div class="project-meta text-sm">
                     <span class="text-muted">Teacher: ${teacher ? teacher.name : 'Unknown'}</span>
                 </div>
@@ -1374,6 +1484,13 @@ function openEditClassModal(classId) {
         </div>`
     ).join('');
 
+    const allowedTagSet = new Set(cls.allowedVisibilityTags || []);
+    const tagOptions = visibilityTags.map(tag =>
+        `<label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;margin-bottom:0.4rem">
+            <input type="checkbox" class="edit-class-tag-cb" value="${tag}" ${allowedTagSet.has(tag) ? 'checked' : ''}> ${tag}
+        </label>`
+    ).join('');
+
     const html = `
         <div class="modal-header">
             <h3>Edit Class: ${cls.name}</h3>
@@ -1394,6 +1511,13 @@ function openEditClassModal(classId) {
                 <label>Visible Inventory Items</label>
                 <div class="glass-panel" style="padding:1rem; max-height:220px; overflow-y:auto">
                     ${itemOptions || '<p class="text-muted">No items available.</p>'}
+                </div>
+            </div>
+            <div class="form-group">
+                <label>Allowed Visibility Tags</label>
+                <small class="text-muted" style="display:block;margin-bottom:0.5rem">Students in this class will see items that carry ANY of the checked tags (union). Items with no tags are always visible.</small>
+                <div class="glass-panel" style="padding:0.75rem">
+                    ${tagOptions || '<p class="text-muted text-sm">No visibility tags defined.</p>'}
                 </div>
             </div>
             <div class="form-group">
@@ -1442,6 +1566,7 @@ function openEditClassModal(classId) {
         const name = document.getElementById('edit-class-name').value.trim();
         const checkedStudents = Array.from(document.querySelectorAll('.edit-class-student-checkbox:checked')).map(cb => cb.value);
         const checkedItems = Array.from(document.querySelectorAll('.edit-class-item-checkbox:checked')).map(cb => cb.value);
+        const checkedTags = Array.from(document.querySelectorAll('.edit-class-tag-cb:checked')).map(cb => cb.value);
         const defaultDueMinutes = Math.max(1, parseInt(document.getElementById('edit-class-default-due').value, 10) || 80);
         const classPeriodMinutes = Math.max(1, parseInt(document.getElementById('edit-class-period-mins').value, 10) || 50);
         const timezone = document.getElementById('edit-class-timezone').value;
@@ -1451,6 +1576,7 @@ function openEditClassModal(classId) {
             cls.name = name;
             cls.students = checkedStudents;
             cls.visibleItemIds = checkedItems;
+            cls.allowedVisibilityTags = checkedTags;
             cls.duePolicy = normalizeDuePolicy({
                 defaultSignoutMinutes: defaultDueMinutes,
                 classPeriodMinutes: classPeriodMinutes,
@@ -1488,6 +1614,12 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
         </div>`
     ).join('');
 
+    const newClassTagOptions = visibilityTags.map(tag =>
+        `<label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;margin-bottom:0.4rem">
+            <input type="checkbox" class="add-class-tag-cb" value="${tag}"> ${tag}
+        </label>`
+    ).join('');
+
     const defaultRangesHtml = buildPeriodRowsHtml(defaultDuePolicy.periodRanges);
 
     const html = `
@@ -1510,6 +1642,13 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
                 <label>Visible Inventory Items</label>
                 <div class="glass-panel" style="padding:1rem; max-height:220px; overflow-y:auto">
                     ${itemOptions}
+                </div>
+            </div>
+            <div class="form-group">
+                <label>Allowed Visibility Tags</label>
+                <small class="text-muted" style="display:block;margin-bottom:0.5rem">Students in this class will see items that carry ANY of the checked tags. Items with no tags are always visible.</small>
+                <div class="glass-panel" style="padding:0.75rem">
+                    ${newClassTagOptions || '<p class="text-muted text-sm">No visibility tags defined.</p>'}
                 </div>
             </div>
             <div class="form-group">
@@ -1557,6 +1696,7 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
         const name = document.getElementById('add-class-name').value.trim();
         const checkedStudents = Array.from(document.querySelectorAll('.student-checkbox:checked')).map(cb => cb.value);
         const checkedItems = Array.from(document.querySelectorAll('.class-item-checkbox:checked')).map(cb => cb.value);
+        const checkedTags = Array.from(document.querySelectorAll('.add-class-tag-cb:checked')).map(cb => cb.value);
         const defaultDueMinutes = Math.max(1, parseInt(document.getElementById('add-class-default-due').value, 10) || 80);
         const classPeriodMinutes = Math.max(1, parseInt(document.getElementById('add-class-period-mins').value, 10) || 50);
         const timezone = document.getElementById('add-class-timezone').value;
@@ -1569,6 +1709,7 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
                 teacherId: currentUser.id,
                 students: checkedStudents,
                 visibleItemIds: checkedItems,
+                allowedVisibilityTags: checkedTags,
                 duePolicy: normalizeDuePolicy({
                     defaultSignoutMinutes: defaultDueMinutes,
                     classPeriodMinutes: classPeriodMinutes,
@@ -2091,6 +2232,7 @@ function openModal(contentHtml) {
 function closeModal() {
     modalContainer.classList.add('hidden');
     dynamicModal.innerHTML = '';
+    dynamicModal.classList.remove('debug-modal');
 }
 
 function showToast(message, type = 'success') {
@@ -2445,6 +2587,13 @@ function openEditItemModal(itemId) {
         `<option value="${c}" ${item.category === c ? 'selected' : ''}>${c}</option>`
     ).join('');
 
+    const itemTagSet = new Set(item.visibilityTags || []);
+    const tagOptions = visibilityTags.map(tag =>
+        `<label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;margin-bottom:0.4rem">
+            <input type="checkbox" class="edit-item-tag-cb" value="${tag}" ${itemTagSet.has(tag) ? 'checked' : ''}> ${tag}
+        </label>`
+    ).join('');
+
     const html = `
         <div class="modal-header">
             <h3>Edit Item: ${item.name}</h3>
@@ -2475,6 +2624,13 @@ function openEditItemModal(itemId) {
                     <input type="number" id="edit-item-threshold" class="form-control" value="${item.threshold}">
                 </div>
             </div>
+            <div class="form-group">
+                <label>Visibility Tags</label>
+                <small class="text-muted" style="display:block;margin-bottom:0.5rem">Control which classes can see this item based on their allowed tags. Items with no tags are always visible.</small>
+                <div class="glass-panel" style="padding:0.75rem">
+                    ${tagOptions || '<p class="text-muted text-sm">No visibility tags defined. Use Manage Visibility Tags to create some.</p>'}
+                </div>
+            </div>
         </div>
         <div class="modal-footer">
             <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
@@ -2490,6 +2646,7 @@ function openEditItemModal(itemId) {
         const sku = document.getElementById('edit-item-sku').value.trim();
         const stock = parseInt(document.getElementById('edit-item-stock').value) || 0;
         const threshold = parseInt(document.getElementById('edit-item-threshold').value) || 0;
+        const selectedTags = Array.from(document.querySelectorAll('.edit-item-tag-cb:checked')).map(cb => cb.value);
 
         if (name) {
             item.name = name;
@@ -2497,6 +2654,7 @@ function openEditItemModal(itemId) {
             item.sku = sku;
             item.stock = stock;
             item.threshold = threshold;
+            item.visibilityTags = selectedTags;
 
             addLog(currentUser.id, 'Edit Item', `Updated item: ${name} (${itemId})`);
             showToast(`${name} updated.`, 'success');
@@ -2665,6 +2823,105 @@ document.getElementById('manage-categories-btn')?.addEventListener('click', () =
 });
 
 /* =======================================
+   MANAGE VISIBILITY TAGS
+   ======================================= */
+document.getElementById('manage-visibility-tags-btn')?.addEventListener('click', () => {
+    function renderVisibilityTagModal() {
+        const tagList = visibilityTags.map((tag, i) => `
+            <div style="display:flex; align-items:center; justify-content:space-between; padding:0.5rem; border-bottom:1px solid rgba(255,255,255,0.05);">
+                <span style="color:var(--text-primary)">${tag}</span>
+                <div style="display:flex;gap:0.5rem;">
+                    <button class="icon-btn text-accent rename-vtag-btn" data-index="${i}" title="Rename"><i class="ph ph-pencil-simple"></i></button>
+                    <button class="icon-btn text-danger delete-vtag-btn" data-index="${i}" title="Delete"><i class="ph ph-trash"></i></button>
+                </div>
+            </div>
+        `).join('');
+
+        const html = `
+            <div class="modal-header">
+                <h3><i class="ph ph-eye"></i> Manage Visibility Tags</h3>
+                <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-secondary mb-4" style="font-size:0.85rem">Visibility tags are applied to items and allowed on classes. A student sees a tagged item only if their class allows that tag. Items with <em>no tags</em> are always visible to enrolled students.</p>
+                <div style="max-height:250px; overflow-y:auto; background:rgba(0,0,0,0.2); border-radius:var(--radius-sm); border:1px solid var(--glass-border); margin-bottom:1rem;">
+                    ${tagList || '<p class="text-muted" style="padding:1rem;">No visibility tags defined.</p>'}
+                </div>
+                <div class="form-group" style="display:flex;gap:0.5rem;">
+                    <input type="text" id="new-vtag-name" class="form-control" placeholder="New tag name (e.g. Advanced)" style="flex:1">
+                    <button class="btn btn-primary" id="add-vtag-btn">Add</button>
+                </div>
+            </div>
+        `;
+
+        openModal(html);
+
+        document.getElementById('add-vtag-btn')?.addEventListener('click', () => {
+            const name = document.getElementById('new-vtag-name').value.trim();
+            if (name && !visibilityTags.includes(name)) {
+                visibilityTags.push(name);
+                showToast(`Visibility tag "${name}" added.`, 'success');
+                addLog(currentUser.id, 'Manage Visibility Tags', `Added tag: ${name}`);
+                renderVisibilityTagModal();
+            } else if (visibilityTags.includes(name)) {
+                showToast('That tag already exists.', 'error');
+            }
+        });
+
+        document.querySelectorAll('.rename-vtag-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const idx = parseInt(e.currentTarget.getAttribute('data-index'));
+                const oldName = visibilityTags[idx];
+                const newName = prompt(`Rename "${oldName}" to:`, oldName);
+                if (newName && newName.trim() && newName.trim() !== oldName) {
+                    const trimmed = newName.trim();
+                    // Cascade rename across items and classes
+                    inventoryItems.forEach(item => {
+                        if (Array.isArray(item.visibilityTags)) {
+                            item.visibilityTags = item.visibilityTags.map(t => t === oldName ? trimmed : t);
+                        }
+                    });
+                    studentClasses.forEach(cls => {
+                        if (Array.isArray(cls.allowedVisibilityTags)) {
+                            cls.allowedVisibilityTags = cls.allowedVisibilityTags.map(t => t === oldName ? trimmed : t);
+                        }
+                    });
+                    visibilityTags[idx] = trimmed;
+                    showToast(`Renamed "${oldName}" → "${trimmed}".`, 'success');
+                    addLog(currentUser.id, 'Manage Visibility Tags', `Renamed tag: ${oldName} → ${trimmed}`);
+                    renderVisibilityTagModal();
+                }
+            });
+        });
+
+        document.querySelectorAll('.delete-vtag-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const idx = parseInt(e.currentTarget.getAttribute('data-index'));
+                const tagName = visibilityTags[idx];
+                if (confirm(`Delete visibility tag "${tagName}"? It will be removed from all items and classes.`)) {
+                    inventoryItems.forEach(item => {
+                        if (Array.isArray(item.visibilityTags)) {
+                            item.visibilityTags = item.visibilityTags.filter(t => t !== tagName);
+                        }
+                    });
+                    studentClasses.forEach(cls => {
+                        if (Array.isArray(cls.allowedVisibilityTags)) {
+                            cls.allowedVisibilityTags = cls.allowedVisibilityTags.filter(t => t !== tagName);
+                        }
+                    });
+                    visibilityTags.splice(idx, 1);
+                    showToast(`Tag "${tagName}" deleted.`, 'success');
+                    addLog(currentUser.id, 'Manage Visibility Tags', `Deleted tag: ${tagName}`);
+                    renderVisibilityTagModal();
+                }
+            });
+        });
+    }
+
+    renderVisibilityTagModal();
+});
+
+/* =======================================
    UPDATE ADD ITEM TO USE DYNAMIC CATEGORIES
    ======================================= */
 const origAddItemBtn = document.getElementById('add-item-btn');
@@ -2673,6 +2930,11 @@ if (origAddItemBtn) {
     origAddItemBtn.addEventListener('click', (e) => {
         e.stopImmediatePropagation();
         const categoryOptions = categories.map(c => `<option>${c}</option>`).join('');
+        const tagCheckboxes = visibilityTags.map(tag =>
+            `<label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;margin-bottom:0.4rem">
+                <input type="checkbox" class="add-item-tag-cb" value="${tag}"> ${tag}
+            </label>`
+        ).join('');
         const html = `
             <div class="modal-header">
                 <h3>Add New Item</h3>
@@ -2699,6 +2961,13 @@ if (origAddItemBtn) {
                         <input type="number" id="add-threshold" class="form-control" value="5">
                     </div>
                 </div>
+                <div class="form-group">
+                    <label>Visibility Tags</label>
+                    <small class="text-muted" style="display:block;margin-bottom:0.5rem">Leave all unchecked to make the item visible to all classes.</small>
+                    <div class="glass-panel" style="padding:0.75rem">
+                        ${tagCheckboxes || '<p class="text-muted text-sm">No visibility tags defined.</p>'}
+                    </div>
+                </div>
             </div>
             <div class="modal-footer">
                 <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
@@ -2713,6 +2982,7 @@ if (origAddItemBtn) {
             const category = document.getElementById('add-category').value;
             const stock = parseInt(document.getElementById('add-stock').value) || 0;
             const threshold = parseInt(document.getElementById('add-threshold').value) || 0;
+            const selectedTags = Array.from(document.querySelectorAll('.add-item-tag-cb:checked')).map(cb => cb.value);
 
             if (name) {
                 inventoryItems.push({
@@ -2721,7 +2991,8 @@ if (origAddItemBtn) {
                     category: category,
                     sku: name.substring(0, 3).toUpperCase() + '-' + Math.floor(Math.random() * 1000).toString().padStart(3, '0'),
                     stock: stock,
-                    threshold: threshold
+                    threshold: threshold,
+                    visibilityTags: selectedTags
                 });
                 addLog(currentUser.id, 'Add Item', `Added new inventory item: ${name} (${stock} units)`);
                 showToast(`${name} added to inventory.`, 'success');
@@ -2735,3 +3006,573 @@ if (origAddItemBtn) {
         });
     }, true); // Use capture phase to override existing handler
 }
+
+/* =======================================
+   SECRET DEBUG SYSTEM
+   ======================================= */
+
+// ── Config & runtime state ────────────────────────────────────────────
+let debugConfig = {
+    pin: null,               // null = unset; developer must configure first
+    kioskLocked: false,
+    debugModeActive: false,
+    adminFeaturesVisible: false,
+    theme: 'dark',
+    remoteUpdateUrl: ''
+};
+
+let usageStats = {
+    totalLogins: 0,
+    currentSessionStart: null,
+    sessionLengths: [],
+    itemSignouts: {},        // id → { name, count }
+    pageVisits: {}           // pageId → count
+};
+
+const _debugLogs = [];       // circular buffer, max 300 entries
+
+function _addDebugLog(type, msg) {
+    if (_debugLogs.length >= 300) _debugLogs.shift();
+    _debugLogs.push({ type, msg: String(msg), ts: new Date().toISOString() });
+}
+
+window.addEventListener('error', e =>
+    _addDebugLog('error', `${e.message} (${e.filename}:${e.lineno})`));
+window.addEventListener('unhandledrejection', e =>
+    _addDebugLog('error', `Unhandled rejection: ${e.reason}`));
+
+// Patch console so we capture entries when debug mode is on
+['log', 'warn', 'error'].forEach(lvl => {
+    const orig = console[lvl].bind(console);
+    console[lvl] = (...args) => {
+        const msg = args.map(a =>
+            typeof a === 'object' ? JSON.stringify(a, null, 0) : String(a)
+        ).join(' ');
+        _addDebugLog(lvl, msg);
+        orig(...args);
+    };
+});
+
+// ── Stat trackers (called from login / logout / signout / nav) ────────
+function _trackLogin() {
+    usageStats.totalLogins++;
+    usageStats.currentSessionStart = Date.now();
+}
+function _trackLogout() {
+    if (usageStats.currentSessionStart) {
+        usageStats.sessionLengths.push(Date.now() - usageStats.currentSessionStart);
+        usageStats.currentSessionStart = null;
+    }
+}
+function _trackItemSignout(item, qty) {
+    if (!usageStats.itemSignouts[item.id])
+        usageStats.itemSignouts[item.id] = { name: item.name, count: 0 };
+    usageStats.itemSignouts[item.id].count += qty;
+}
+function _trackPageVisit(pageId) {
+    usageStats.pageVisits[pageId] = (usageStats.pageVisits[pageId] || 0) + 1;
+}
+
+// ── PIN gate ─────────────────────────────────────────────────────────
+function openDebugMenuGated() {
+    if (!debugConfig.pin) {
+        if (!currentUser || currentUser.role !== 'developer') {
+            showToast('Debug menu not configured. Log in as developer to set the PIN.', 'error');
+            return;
+        }
+        _promptSetDebugPin();
+        return;
+    }
+    _promptEnterDebugPin();
+}
+
+function _promptSetDebugPin() {
+    const html = `
+        <div class="modal-header debug-modal-header">
+            <h3 style="color:#a78bfa"><i class="ph ph-lock-key"></i> Set Debug PIN</h3>
+            <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
+        </div>
+        <div class="modal-body">
+            <p class="text-secondary mb-4">No debug PIN is set. As a developer you can create one now.</p>
+            <div class="form-group">
+                <label>New PIN <small>(4–8 digits)</small></label>
+                <input type="password" id="dbg-pin-new" class="form-control" maxlength="8" inputmode="numeric" placeholder="••••" autofocus>
+            </div>
+            <div class="form-group">
+                <label>Confirm PIN</label>
+                <input type="password" id="dbg-pin-confirm" class="form-control" maxlength="8" inputmode="numeric" placeholder="••••">
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            <button class="btn btn-primary" id="dbg-set-pin-btn">Set PIN</button>
+        </div>`;
+    openModal(html);
+    document.getElementById('dbg-set-pin-btn')?.addEventListener('click', () => {
+        const p1 = document.getElementById('dbg-pin-new').value.trim();
+        const p2 = document.getElementById('dbg-pin-confirm').value.trim();
+        if (!/^\d{4,8}$/.test(p1)) { showToast('PIN must be 4–8 digits.', 'error'); return; }
+        if (p1 !== p2) { showToast('PINs do not match.', 'error'); return; }
+        debugConfig.pin = p1;
+        showToast('Debug PIN set.', 'success');
+        closeModal();
+        openDebugMenu();
+    });
+}
+
+let _pinAttempts = 0;
+function _promptEnterDebugPin() {
+    _pinAttempts = 0;
+    const html = `
+        <div class="modal-header debug-modal-header">
+            <h3 style="color:#a78bfa"><i class="ph ph-lock-key"></i> Debug Access</h3>
+            <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
+        </div>
+        <div class="modal-body">
+            <p class="text-secondary mb-4">Enter the debug PIN to continue.</p>
+            <div class="form-group">
+                <input type="password" id="dbg-pin-input" class="form-control" maxlength="8" inputmode="numeric" placeholder="PIN" autofocus>
+                <small id="dbg-pin-err" class="text-danger" style="display:none;margin-top:0.25rem"></small>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            <button class="btn btn-primary" id="dbg-enter-pin-btn">Enter</button>
+        </div>`;
+    openModal(html);
+    const tryPin = () => {
+        const val = (document.getElementById('dbg-pin-input')?.value || '').trim();
+        _pinAttempts++;
+        if (val === debugConfig.pin) {
+            _pinAttempts = 0;
+            closeModal();
+            openDebugMenu();
+        } else {
+            const errEl = document.getElementById('dbg-pin-err');
+            if (errEl) { errEl.style.display = ''; errEl.textContent = `Incorrect PIN. Attempt ${_pinAttempts}/5.`; }
+            if (document.getElementById('dbg-pin-input')) document.getElementById('dbg-pin-input').value = '';
+            if (_pinAttempts >= 5) { closeModal(); showToast('Too many incorrect PIN attempts.', 'error'); }
+        }
+    };
+    document.getElementById('dbg-enter-pin-btn')?.addEventListener('click', tryPin);
+    document.getElementById('dbg-pin-input')?.addEventListener('keydown', e => { if (e.key === 'Enter') tryPin(); });
+}
+
+// ── Trigger mechanisms ────────────────────────────────────────────────
+// 1. Hidden bottom-left tap zone — 4 taps within 2.5 s
+let _dbgTapCount = 0, _dbgTapTimer = null;
+(function _createDebugTapZone() {
+    const zone = document.createElement('div');
+    zone.id = 'debug-tap-zone';
+    zone.style.cssText = 'position:fixed;bottom:0;left:0;width:64px;height:64px;z-index:10001;-webkit-tap-highlight-color:transparent;user-select:none;pointer-events:all;';
+    zone.addEventListener('click', () => {
+        _dbgTapCount++;
+        if (_dbgTapTimer) clearTimeout(_dbgTapTimer);
+        _dbgTapTimer = setTimeout(() => { _dbgTapCount = 0; }, 2500);
+        if (_dbgTapCount >= 4) {
+            _dbgTapCount = 0;
+            clearTimeout(_dbgTapTimer);
+            openDebugMenuGated();
+        }
+    });
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => document.body.appendChild(zone));
+    } else {
+        document.body.appendChild(zone);
+    }
+}());
+
+// 2. Keyboard shortcut: Ctrl + Shift + ` (backtick)
+document.addEventListener('keydown', (e) => {
+    if (e.ctrlKey && e.shiftKey && e.key === '`') {
+        e.preventDefault();
+        openDebugMenuGated();
+    }
+});
+
+// 3. Version badge — 7 clicks within 3 s (version badge on login/sidebar)
+let _dbgBadgeClicks = 0, _dbgBadgeTimer = null;
+function _handleDebugBadgeClick() {
+    _dbgBadgeClicks++;
+    if (_dbgBadgeTimer) clearTimeout(_dbgBadgeTimer);
+    _dbgBadgeTimer = setTimeout(() => { _dbgBadgeClicks = 0; }, 3000);
+    if (_dbgBadgeClicks >= 7) {
+        _dbgBadgeClicks = 0;
+        clearTimeout(_dbgBadgeTimer);
+        openDebugMenuGated();
+    }
+}
+document.getElementById('app-version-login')?.addEventListener('click', _handleDebugBadgeClick);
+document.getElementById('app-version-sidebar')?.addEventListener('click', _handleDebugBadgeClick);
+
+// ── Kiosk lock ────────────────────────────────────────────────────────
+function applyKioskLock(lock) {
+    debugConfig.kioskLocked = lock;
+    let overlay = document.getElementById('kiosk-lock-overlay');
+    if (lock) {
+        if (!overlay) {
+            overlay = document.createElement('div');
+            overlay.id = 'kiosk-lock-overlay';
+            overlay.innerHTML = `<div style="text-align:center;">
+                <i class="ph ph-lock" style="font-size:5rem;color:#a78bfa;display:block;margin-bottom:1rem"></i>
+                <h2 style="color:var(--text-primary)">System Locked</h2>
+                <p class="text-muted">Contact an administrator to unlock.</p>
+            </div>`;
+            document.body.appendChild(overlay);
+        }
+        overlay.style.display = 'flex';
+    } else if (overlay) {
+        overlay.style.display = 'none';
+    }
+}
+
+// ── Theme system ──────────────────────────────────────────────────────
+const THEMES = {
+    dark:     { label: 'Dark (Default)',  bodyClass: 'dark-theme' },
+    light:    { label: 'Light',           bodyClass: 'light-theme' },
+    midnight: { label: 'Midnight Blue',   bodyClass: 'midnight-theme' },
+    forest:   { label: 'Forest Green',    bodyClass: 'forest-theme' }
+};
+
+function applyTheme(key) {
+    const theme = THEMES[key] || THEMES.dark;
+    Object.values(THEMES).forEach(t => document.body.classList.remove(t.bodyClass));
+    document.body.classList.add(theme.bodyClass);
+    debugConfig.theme = key;
+}
+
+// ── Network test ──────────────────────────────────────────────────────
+async function runNetworkPing(url = 'https://www.gstatic.com/generate_204') {
+    const t0 = performance.now();
+    try {
+        await fetch(url, { mode: 'no-cors', cache: 'no-store' });
+        return { ok: true, ms: Math.round(performance.now() - t0) };
+    } catch {
+        return { ok: false, ms: null };
+    }
+}
+
+// ── Main debug modal ──────────────────────────────────────────────────
+function openDebugMenu() {
+    const html = `
+        <div class="modal-header debug-modal-header">
+            <div style="display:flex;align-items:center;gap:0.6rem">
+                <i class="ph ph-bug" style="color:#a78bfa;font-size:1.3rem"></i>
+                <h3 style="color:#a78bfa;margin:0">Debug Console</h3>
+                ${debugConfig.debugModeActive ? '<span class="badge" style="background:rgba(239,68,68,0.2);color:var(--danger);font-size:0.65rem;padding:0.1rem 0.4rem">● LIVE</span>' : ''}
+            </div>
+            <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
+        </div>
+        <div class="debug-tab-bar">
+            <button class="debug-tab active" data-dtab="system"><i class="ph ph-cpu"></i> System</button>
+            <button class="debug-tab" data-dtab="console"><i class="ph ph-terminal"></i> Console</button>
+            <button class="debug-tab" data-dtab="session"><i class="ph ph-user-gear"></i> Session</button>
+            <button class="debug-tab" data-dtab="stats"><i class="ph ph-chart-bar"></i> Stats</button>
+            <button class="debug-tab" data-dtab="settings"><i class="ph ph-sliders"></i> Settings</button>
+        </div>
+        <div class="debug-modal-body" id="debug-tab-content"></div>
+    `;
+    openModal(html);
+    dynamicModal.classList.add('debug-modal');
+    document.querySelectorAll('.debug-tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+            document.querySelectorAll('.debug-tab').forEach(t => t.classList.remove('active'));
+            tab.classList.add('active');
+            renderDebugTab(tab.dataset.dtab);
+        });
+    });
+    renderDebugTab('system');
+}
+
+function renderDebugTab(tab) {
+    const el = document.getElementById('debug-tab-content');
+    if (!el) return;
+    switch (tab) {
+        case 'system':   renderDebugSystem(el);   break;
+        case 'console':  renderDebugConsole(el);  break;
+        case 'session':  renderDebugSession(el);  break;
+        case 'stats':    renderDebugStats(el);    break;
+        case 'settings': renderDebugSettings(el); break;
+    }
+}
+
+function _dbgSection(title, body) {
+    return `<div class="debug-section"><div class="debug-section-title">${title}</div>${body}</div>`;
+}
+
+// ── System tab ────────────────────────────────────────────────────────
+function renderDebugSystem(el) {
+    const conn = navigator.connection;
+    el.innerHTML = `
+        ${_dbgSection('Device & Browser', `
+            <table class="debug-table">
+                <tr><td>Screen</td><td>${window.screen.width}×${window.screen.height} @${window.devicePixelRatio}x DPR</td></tr>
+                <tr><td>Viewport</td><td>${window.innerWidth}×${window.innerHeight}</td></tr>
+                <tr><td>Device Memory</td><td>${navigator.deviceMemory ? navigator.deviceMemory + ' GB' : 'N/A'}</td></tr>
+                <tr><td>Connection</td><td>${conn ? conn.effectiveType + ' — ' + conn.downlink + ' Mbps' : 'N/A'}</td></tr>
+                <tr><td>User Agent</td><td style="word-break:break-all;font-size:0.72rem">${navigator.userAgent}</td></tr>
+                <tr><td>App Version</td><td>${appVersion}</td></tr>
+                <tr><td>Local Time</td><td>${new Date().toLocaleString()}</td></tr>
+            </table>
+        `)}
+        ${_dbgSection('App Actions', `
+            <div class="debug-actions">
+                <button class="dbg-btn btn btn-secondary" id="dbg-reload"><i class="ph ph-arrows-clockwise"></i> Reload App</button>
+                <button class="dbg-btn btn btn-secondary" id="dbg-clear-ls"><i class="ph ph-trash"></i> Clear LocalStorage</button>
+                <button class="dbg-btn btn btn-secondary" id="dbg-remote-update"><i class="ph ph-cloud-arrow-down"></i> Remote Update</button>
+            </div>
+        `)}
+        ${_dbgSection('Network & Peripheral Tests', `
+            <div class="debug-actions">
+                <button class="dbg-btn btn btn-secondary" id="dbg-ping"><i class="ph ph-wifi-high"></i> Ping Network</button>
+                <button class="dbg-btn btn btn-secondary" id="dbg-scanner-test"><i class="ph ph-barcode"></i> Test Barcode Scanner</button>
+            </div>
+            <div id="dbg-net-result" class="debug-result" style="display:none"></div>
+        `)}
+    `;
+    document.getElementById('dbg-reload')?.addEventListener('click', () => {
+        if (confirm('Reload the app? Unsaved in-memory data will be lost.')) location.reload();
+    });
+    document.getElementById('dbg-clear-ls')?.addEventListener('click', () => {
+        if (confirm('Clear all localStorage keys?')) {
+            try { localStorage.clear(); showToast('LocalStorage cleared.', 'success'); }
+            catch { showToast('LocalStorage unavailable.', 'error'); }
+        }
+    });
+    document.getElementById('dbg-remote-update')?.addEventListener('click', async () => {
+        const btn = document.getElementById('dbg-remote-update');
+        const url = debugConfig.remoteUpdateUrl || location.href;
+        if (btn) { btn.disabled = true; btn.innerHTML = '<i class="ph ph-spinner"></i> Checking…'; }
+        const res = await runNetworkPing(url);
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="ph ph-cloud-arrow-down"></i> Remote Update'; }
+        const resEl = document.getElementById('dbg-net-result');
+        if (resEl) {
+            resEl.style.display = '';
+            resEl.innerHTML = res.ok
+                ? `<span style="color:var(--success)">✓ Server reachable (${res.ms}ms)</span>
+                   <button class="btn btn-primary dbg-btn" style="margin-left:0.75rem" onclick="location.reload()">Reload Now</button>`
+                : `<span style="color:var(--danger)">✗ Server unreachable — cannot update safely</span>`;
+        }
+    });
+    document.getElementById('dbg-ping')?.addEventListener('click', async () => {
+        const resEl = document.getElementById('dbg-net-result');
+        if (resEl) { resEl.style.display = ''; resEl.textContent = 'Pinging…'; }
+        const res = await runNetworkPing();
+        if (resEl) resEl.innerHTML = res.ok
+            ? `<span style="color:var(--success)">✓ Network reachable — ${res.ms} ms</span>`
+            : `<span style="color:var(--danger)">✗ Network unreachable</span>`;
+    });
+    document.getElementById('dbg-scanner-test')?.addEventListener('click', () => {
+        closeModal();
+        showToast('Scan a barcode now. Result will appear as a toast.', 'info');
+        const handler = (e) => {
+            if (e.key === 'Enter') {
+                const val = barcodeInput.value;
+                barcodeInput.value = '';
+                showToast(`Scanner received: "${val}" ✓`, 'success');
+                barcodeInput.removeEventListener('keydown', handler, true);
+            }
+        };
+        barcodeInput.focus();
+        barcodeInput.addEventListener('keydown', handler, true);
+    });
+}
+
+// ── Console tab ───────────────────────────────────────────────────────
+function renderDebugConsole(el) {
+    const entries = _debugLogs.slice().reverse();
+    const logHtml = entries.length > 0 ? entries.map(l => {
+        const col = l.type === 'error' ? 'var(--danger)' : l.type === 'warn' ? '#f59e0b' : 'var(--text-secondary)';
+        const bg  = l.type === 'error' ? 'rgba(239,68,68,0.15)' : l.type === 'warn' ? 'rgba(245,158,11,0.15)' : 'rgba(255,255,255,0.06)';
+        return `<div style="border-bottom:1px solid rgba(255,255,255,0.04);padding:0.3rem 0.25rem;font-size:0.73rem;color:${col};font-family:monospace">
+            <span style="opacity:0.5;margin-right:0.4rem">${l.ts.slice(11,19)}</span>
+            <span style="background:${bg};padding:0 0.3rem;border-radius:3px;font-size:0.65rem;margin-right:0.35rem">${l.type}</span>
+            <span style="word-break:break-all">${l.msg}</span>
+        </div>`;
+    }).join('') : '<p class="text-muted text-sm" style="padding:0.5rem">No entries captured yet.</p>';
+
+    el.innerHTML = `
+        ${_dbgSection(`Console Log (${_debugLogs.length} entries)`, `
+            <div style="display:flex;align-items:center;gap:1rem;margin-bottom:0.75rem;flex-wrap:wrap">
+                <label style="display:flex;align-items:center;gap:0.4rem;cursor:pointer;font-size:0.85rem">
+                    <input type="checkbox" id="dbg-live-cb" ${debugConfig.debugModeActive ? 'checked' : ''}> Capture enabled
+                </label>
+                <div style="margin-left:auto;display:flex;gap:0.5rem">
+                    <button class="dbg-btn btn btn-secondary" id="dbg-refresh-log"><i class="ph ph-arrows-clockwise"></i></button>
+                    <button class="dbg-btn btn btn-secondary" id="dbg-clear-log"><i class="ph ph-trash"></i> Clear</button>
+                </div>
+            </div>
+            <div style="max-height:340px;overflow-y:auto;background:rgba(0,0,0,0.35);border-radius:var(--radius-sm);border:1px solid var(--glass-border);padding:0.25rem">
+                ${logHtml}
+            </div>
+        `)}
+    `;
+    document.getElementById('dbg-live-cb')?.addEventListener('change', e => { debugConfig.debugModeActive = e.target.checked; });
+    document.getElementById('dbg-clear-log')?.addEventListener('click', () => { _debugLogs.length = 0; renderDebugTab('console'); });
+    document.getElementById('dbg-refresh-log')?.addEventListener('click', () => renderDebugTab('console'));
+}
+
+// ── Session tab ───────────────────────────────────────────────────────
+function renderDebugSession(el) {
+    const user = currentUser;
+    const classes = user?.role === 'student' ? getStudentClassesForUser(user.id) : [];
+    const mp = user?.role === 'student' ? getMergedPermissionsForStudent(user) : null;
+    const rl = loginRateLimit;
+    const rlLocked = rl.lockedUntil && Date.now() < rl.lockedUntil;
+    const rlStatus = rlLocked
+        ? `<span style="color:var(--danger)">LOCKED — ${Math.ceil((rl.lockedUntil - Date.now()) / 1000)}s remaining</span>`
+        : `<span style="color:var(--success)">OK (${rl.attempts.filter(t => Date.now() - t < rl.windowMs).length}/${rl.maxAttempts} in window)</span>`;
+
+    el.innerHTML = `
+        ${_dbgSection('Current Session', `
+            <table class="debug-table">
+                <tr><td>User</td><td>${user ? `${user.name} (${user.id})` : '<em>Not logged in</em>'}</td></tr>
+                <tr><td>Role</td><td>${user?.role || '—'}</td></tr>
+                ${mp ? `<tr><td>Classes</td><td>${classes.map(c => c.name).join(', ') || 'None'}</td></tr>
+                <tr><td>Merged Perms</td><td>Create ${mp.canCreateProjects ? '✓' : '✗'} · Join ${mp.canJoinProjects ? '✓' : '✗'} · SignOut ${mp.canSignOut ? '✓' : '✗'}</td></tr>` : ''}
+                <tr><td>Rate Limit</td><td>${rlStatus}</td></tr>
+                <tr><td>Kiosk</td><td>${debugConfig.kioskLocked ? '<span style="color:var(--danger)">LOCKED</span>' : '<span style="color:var(--success)">Unlocked</span>'}</td></tr>
+            </table>
+        `)}
+        ${_dbgSection('Controls', `
+            <div class="debug-actions">
+                ${user ? `<button class="dbg-btn btn btn-secondary" id="dbg-force-logout"><i class="ph ph-sign-out"></i> Force Logout</button>` : ''}
+                <button class="dbg-btn btn btn-secondary" id="dbg-clear-rl"><i class="ph ph-shield-slash"></i> Reset Rate Limit</button>
+                <button class="dbg-btn btn ${debugConfig.kioskLocked ? 'btn-primary' : 'btn-danger'}" id="dbg-kiosk">
+                    <i class="ph ph-${debugConfig.kioskLocked ? 'lock-open' : 'lock'}"></i>
+                    ${debugConfig.kioskLocked ? 'Unlock Kiosk' : 'Lock Kiosk'}
+                </button>
+                <button class="dbg-btn btn btn-secondary" id="dbg-toggle-admin">
+                    <i class="ph ph-${debugConfig.adminFeaturesVisible ? 'eye-slash' : 'eye'}"></i>
+                    ${debugConfig.adminFeaturesVisible ? 'Hide' : 'Show'} Admin Features
+                </button>
+            </div>
+        `)}
+        ${_dbgSection('Recent Audit Trail', `
+            <div style="max-height:220px;overflow-y:auto">
+                ${activityLogs.slice(0, 15).map(log => {
+                    const u = mockUsers.find(u => u.id === log.userId);
+                    return `<div style="font-size:0.76rem;padding:0.25rem 0;border-bottom:1px solid rgba(255,255,255,0.04)">
+                        <span class="text-muted">${new Date(log.timestamp).toLocaleString()}</span>
+                        <span style="margin:0 0.3rem">—</span>
+                        <strong>${u?.name || log.userId}</strong>: ${log.action}
+                        <span class="text-muted"> — ${log.details}</span>
+                    </div>`;
+                }).join('') || '<p class="text-muted text-sm">No logs.</p>'}
+            </div>
+        `)}
+    `;
+    document.getElementById('dbg-force-logout')?.addEventListener('click', () => { closeModal(); logout('Debug: session reset'); });
+    document.getElementById('dbg-clear-rl')?.addEventListener('click', () => {
+        loginRateLimit.attempts = []; loginRateLimit.lockedUntil = null;
+        showToast('Rate limit cleared.', 'success'); renderDebugTab('session');
+    });
+    document.getElementById('dbg-kiosk')?.addEventListener('click', () => {
+        const locking = !debugConfig.kioskLocked;
+        applyKioskLock(locking);
+        showToast(`Kiosk ${locking ? 'locked' : 'unlocked'}.`, locking ? 'error' : 'success');
+        if (locking) { closeModal(); } else { renderDebugTab('session'); }
+    });
+    document.getElementById('dbg-toggle-admin')?.addEventListener('click', () => {
+        debugConfig.adminFeaturesVisible = !debugConfig.adminFeaturesVisible;
+        showToast(`Admin features ${debugConfig.adminFeaturesVisible ? 'visible' : 'hidden'}.`);
+        renderDebugTab('session');
+    });
+}
+
+// ── Stats tab ─────────────────────────────────────────────────────────
+function renderDebugStats(el) {
+    const s = usageStats;
+    const avg = s.sessionLengths.length
+        ? Math.round(s.sessionLengths.reduce((a, b) => a + b, 0) / s.sessionLengths.length / 1000)
+        : 0;
+    const curLen = s.currentSessionStart ? Math.round((Date.now() - s.currentSessionStart) / 1000) : 0;
+    const topItems = Object.values(s.itemSignouts).sort((a, b) => b.count - a.count).slice(0, 10);
+    const topPages = Object.entries(s.pageVisits).sort((a, b) => b[1] - a[1]);
+
+    el.innerHTML = `
+        ${_dbgSection('Session & Login Stats', `
+            <table class="debug-table">
+                <tr><td>Total Logins (this load)</td><td>${s.totalLogins}</td></tr>
+                <tr><td>Current Session</td><td>${curLen}s</td></tr>
+                <tr><td>Avg Session Length</td><td>${avg}s (${s.sessionLengths.length} recorded)</td></tr>
+            </table>
+        `)}
+        ${_dbgSection('Most Signed-out Items', topItems.length ? `
+            <table class="debug-table">
+                <thead><tr><th>Item</th><th>Total Qty</th></tr></thead>
+                <tbody>${topItems.map(i => `<tr><td>${i.name}</td><td>${i.count}</td></tr>`).join('')}</tbody>
+            </table>
+        ` : '<p class="text-muted text-sm">No sign-outs recorded yet.</p>')}
+        ${_dbgSection('Page Navigation Frequency', topPages.length ? `
+            <table class="debug-table">
+                <thead><tr><th>Page</th><th>Visits</th></tr></thead>
+                <tbody>${topPages.map(([p, v]) => `<tr><td>${p}</td><td>${v}</td></tr>`).join('')}</tbody>
+            </table>
+        ` : '<p class="text-muted text-sm">No navigation recorded yet.</p>')}
+        ${_dbgSection('Inventory Snapshot', `
+            <table class="debug-table">
+                <tr><td>Total Items</td><td>${inventoryItems.length}</td></tr>
+                <tr><td>Users</td><td>${mockUsers.length}</td></tr>
+                <tr><td>Classes</td><td>${studentClasses.length}</td></tr>
+                <tr><td>Activity Logs</td><td>${activityLogs.length}</td></tr>
+                <tr><td>Visibility Tags</td><td>${visibilityTags.join(', ') || 'none'}</td></tr>
+            </table>
+        `)}
+    `;
+}
+
+// ── Settings tab ──────────────────────────────────────────────────────
+function renderDebugSettings(el) {
+    const themeRadios = Object.entries(THEMES).map(([k, t]) =>
+        `<label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;padding:0.35rem 0.5rem;border-radius:var(--radius-sm);${debugConfig.theme === k ? 'background:rgba(139,92,246,0.15)' : ''}">
+            <input type="radio" name="dbg-theme-radio" value="${k}" ${debugConfig.theme === k ? 'checked' : ''}> ${t.label}
+        </label>`
+    ).join('');
+
+    el.innerHTML = `
+        ${_dbgSection('Theme', `<div style="display:flex;flex-direction:column;gap:0.1rem">${themeRadios}</div>`)}
+        ${_dbgSection('Debug PIN', `
+            <div class="debug-actions">
+                <button class="dbg-btn btn btn-secondary" id="dbg-change-pin"><i class="ph ph-lock-key"></i> Change PIN</button>
+            </div>
+            <small class="text-muted" style="display:block;margin-top:0.4rem">Only developer accounts can change the PIN.</small>
+        `)}
+        ${_dbgSection('Access Methods', `
+            <table class="debug-table">
+                <tr><td>Touch Gesture</td><td>Tap <strong>bottom-left corner</strong> 4× within 2.5 s</td></tr>
+                <tr><td>Keyboard Shortcut</td><td><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>\`</kbd></td></tr>
+                <tr><td>Badge Clicks</td><td>Click <strong>version badge</strong> 7× within 3 s</td></tr>
+            </table>
+        `)}
+        ${_dbgSection('Feature Flags', `
+            <div style="display:flex;flex-direction:column;gap:0.5rem">
+                <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">
+                    <input type="checkbox" id="dbg-live-mode" ${debugConfig.debugModeActive ? 'checked' : ''}> Console log capture active
+                </label>
+                <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">
+                    <input type="checkbox" id="dbg-admin-flag" ${debugConfig.adminFeaturesVisible ? 'checked' : ''}> Admin-only features visible
+                </label>
+            </div>
+        `)}
+    `;
+    document.querySelectorAll('input[name="dbg-theme-radio"]').forEach(r => {
+        r.addEventListener('change', () => { applyTheme(r.value); renderDebugTab('settings'); });
+    });
+    document.getElementById('dbg-change-pin')?.addEventListener('click', () => {
+        if (!currentUser || currentUser.role !== 'developer') {
+            showToast('Only developers can change the debug PIN.', 'error'); return;
+        }
+        debugConfig.pin = null;
+        closeModal();
+        _promptSetDebugPin();
+    });
+    document.getElementById('dbg-live-mode')?.addEventListener('change', e => {
+        debugConfig.debugModeActive = e.target.checked;
+        showToast(`Console capture ${e.target.checked ? 'enabled' : 'disabled'}.`);
+    });
+    document.getElementById('dbg-admin-flag')?.addEventListener('change', e => {
+        debugConfig.adminFeaturesVisible = e.target.checked;
+    });
+}
+
