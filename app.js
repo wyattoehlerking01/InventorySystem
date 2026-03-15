@@ -706,6 +706,11 @@ function login(user) {
 }
 
 function logout(message = 'Logged out successfully') {
+    if (!currentUser) {
+        showToast(message);
+        return;
+    }
+
     _trackLogout();
     currentUser = null;
     clearInterval(countdownInterval);
@@ -719,6 +724,30 @@ function logout(message = 'Logged out successfully') {
         }, 50);
     }, 300);
     showToast(message);
+}
+
+function returnToLoginView(options = {}) {
+    const message = options.message || 'Logged out successfully';
+    const showMessage = options.showMessage !== false;
+
+    if (currentUser) _trackLogout();
+    currentUser = null;
+    clearInterval(countdownInterval);
+
+    mainView.classList.remove('active');
+    loginHelpView.classList.remove('active');
+
+    setTimeout(() => {
+        mainView.classList.add('hidden');
+        loginHelpView.classList.add('hidden');
+        loginView.classList.remove('hidden');
+        setTimeout(() => {
+            loginView.classList.add('active');
+            barcodeInput.focus();
+        }, 50);
+    }, 300);
+
+    if (showMessage) showToast(message);
 }
 
 logoutBtn.addEventListener('click', () => logout());
@@ -3015,6 +3044,7 @@ if (origAddItemBtn) {
 let debugConfig = {
     pin: null,               // null = unset; developer must configure first
     kioskLocked: false,
+    kioskLockScreen: 'systemLocked',
     debugModeActive: false,
     adminFeaturesVisible: false,
     theme: 'dark',
@@ -3146,7 +3176,7 @@ function _promptEnterDebugPin() {
         if (val === debugConfig.pin) {
             _pinAttempts = 0;
             closeModal();
-            openDebugMenu();
+            openDebugMenu(debugConfig.kioskLocked ? 'session' : 'system');
         } else {
             const errEl = document.getElementById('dbg-pin-err');
             if (errEl) { errEl.style.display = ''; errEl.textContent = `Incorrect PIN. Attempt ${_pinAttempts}/5.`; }
@@ -3184,7 +3214,9 @@ let _dbgTapCount = 0, _dbgTapTimer = null;
 
 // 2. Keyboard shortcut: Ctrl + Shift + ` (backtick)
 document.addEventListener('keydown', (e) => {
-    if (e.ctrlKey && e.shiftKey && e.key === '`') {
+    const key = String(e.key || '').toLowerCase();
+    const openDebugRequested = e.ctrlKey && e.shiftKey && (key === '`' || key === 'd');
+    if (openDebugRequested) {
         e.preventDefault();
         openDebugMenuGated();
     }
@@ -3206,21 +3238,173 @@ document.getElementById('app-version-login')?.addEventListener('click', _handleD
 document.getElementById('app-version-sidebar')?.addEventListener('click', _handleDebugBadgeClick);
 
 // ── Kiosk lock ────────────────────────────────────────────────────────
-function applyKioskLock(lock) {
+const KIOSK_LOCK_SCREENS = {
+    systemLocked: {
+        label: 'System Locked',
+        icon: 'lock',
+        title: 'System Locked',
+        description: 'Contact an administrator to unlock.'
+    },
+    outOfOrder: {
+        label: 'Out of Order',
+        icon: 'warning-octagon',
+        title: 'Out of Order',
+        description: 'This kiosk is currently out of service. Please use another station.'
+    },
+    kioskUnavailable: {
+        label: 'Kiosk Unavailable',
+        icon: 'desktop-tower',
+        title: 'Kiosk Unavailable',
+        description: 'This kiosk is temporarily unavailable. Please check back shortly.'
+    }
+};
+
+const KIOSK_LOCK_SCREEN_ORDER = Object.keys(KIOSK_LOCK_SCREENS);
+let kioskPreviewState = {
+    isOpen: false,
+    activeIndex: 0,
+    touchStartX: null
+};
+
+function getKioskLockScreen(screenKey) {
+    return KIOSK_LOCK_SCREENS[screenKey] || KIOSK_LOCK_SCREENS.systemLocked;
+}
+
+function getKioskLockMarkup(screenKey) {
+    const screen = getKioskLockScreen(screenKey);
+    return `<div class="kiosk-lock-card" style="text-align:center;">
+        <i class="ph ph-${screen.icon} kiosk-lock-icon"></i>
+        <h2 class="kiosk-lock-title">${screen.title}</h2>
+        <p class="kiosk-lock-description">${screen.description}</p>
+    </div>`;
+}
+
+function openKioskLockPreview(startScreenKey = debugConfig.kioskLockScreen || 'systemLocked') {
+    kioskPreviewState.isOpen = true;
+    kioskPreviewState.activeIndex = Math.max(0, KIOSK_LOCK_SCREEN_ORDER.indexOf(startScreenKey));
+    kioskPreviewState.touchStartX = null;
+
+    let preview = document.getElementById('kiosk-lock-preview');
+    if (!preview) {
+        preview = document.createElement('div');
+        preview.id = 'kiosk-lock-preview';
+        document.body.appendChild(preview);
+    }
+
+    preview.innerHTML = `
+        <div class="kiosk-preview-topbar">
+            <button class="btn btn-secondary" id="kiosk-preview-close"><i class="ph ph-x"></i> Cancel</button>
+            <div class="kiosk-preview-title">Swipe to choose lock screen</div>
+            <button class="btn btn-primary" id="kiosk-preview-lock"><i class="ph ph-lock"></i> Lock With This Screen</button>
+        </div>
+        <div class="kiosk-preview-stage" id="kiosk-preview-stage"></div>
+        <div class="kiosk-preview-footer">
+            <button class="btn btn-secondary" id="kiosk-preview-prev"><i class="ph ph-caret-left"></i> Previous</button>
+            <div class="kiosk-preview-dots" id="kiosk-preview-dots"></div>
+            <button class="btn btn-secondary" id="kiosk-preview-next">Next <i class="ph ph-caret-right"></i></button>
+        </div>
+    `;
+
+    preview.classList.add('active');
+
+    const updatePreview = () => {
+        const key = KIOSK_LOCK_SCREEN_ORDER[kioskPreviewState.activeIndex] || 'systemLocked';
+        debugConfig.kioskLockScreen = key;
+        const stage = document.getElementById('kiosk-preview-stage');
+        const dots = document.getElementById('kiosk-preview-dots');
+        if (stage) stage.innerHTML = getKioskLockMarkup(key);
+        if (dots) {
+            dots.innerHTML = KIOSK_LOCK_SCREEN_ORDER.map((k, idx) =>
+                `<button class="kiosk-preview-dot ${idx === kioskPreviewState.activeIndex ? 'active' : ''}" data-kiosk-dot="${idx}" title="${KIOSK_LOCK_SCREENS[k].label}"></button>`
+            ).join('');
+            dots.querySelectorAll('[data-kiosk-dot]').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    kioskPreviewState.activeIndex = parseInt(btn.getAttribute('data-kiosk-dot'), 10) || 0;
+                    updatePreview();
+                });
+            });
+        }
+    };
+
+    const step = (delta) => {
+        const len = KIOSK_LOCK_SCREEN_ORDER.length;
+        kioskPreviewState.activeIndex = (kioskPreviewState.activeIndex + delta + len) % len;
+        updatePreview();
+    };
+
+    document.getElementById('kiosk-preview-close')?.addEventListener('click', () => {
+        closeKioskLockPreview();
+        renderDebugTab('session');
+    });
+    document.getElementById('kiosk-preview-prev')?.addEventListener('click', () => step(-1));
+    document.getElementById('kiosk-preview-next')?.addEventListener('click', () => step(1));
+    document.getElementById('kiosk-preview-lock')?.addEventListener('click', () => {
+        const chosen = KIOSK_LOCK_SCREEN_ORDER[kioskPreviewState.activeIndex] || 'systemLocked';
+        debugConfig.kioskLockScreen = chosen;
+        closeKioskLockPreview();
+        applyKioskLock(true, chosen);
+        showToast(`Kiosk locked: ${KIOSK_LOCK_SCREENS[chosen].label}.`, 'error');
+        closeModal();
+    });
+
+    preview.addEventListener('touchstart', (e) => {
+        kioskPreviewState.touchStartX = e.touches[0]?.clientX ?? null;
+    }, { passive: true });
+    preview.addEventListener('touchend', (e) => {
+        if (kioskPreviewState.touchStartX === null) return;
+        const endX = e.changedTouches[0]?.clientX ?? kioskPreviewState.touchStartX;
+        const deltaX = endX - kioskPreviewState.touchStartX;
+        kioskPreviewState.touchStartX = null;
+        if (Math.abs(deltaX) < 40) return;
+        if (deltaX < 0) step(1);
+        else step(-1);
+    }, { passive: true });
+
+    updatePreview();
+}
+
+function closeKioskLockPreview() {
+    kioskPreviewState.isOpen = false;
+    kioskPreviewState.touchStartX = null;
+    const preview = document.getElementById('kiosk-lock-preview');
+    if (preview) {
+        preview.classList.remove('active');
+        preview.innerHTML = '';
+    }
+}
+
+function applyKioskLock(lock, screenKey = debugConfig.kioskLockScreen || 'systemLocked') {
     debugConfig.kioskLocked = lock;
+    debugConfig.kioskLockScreen = Object.keys(KIOSK_LOCK_SCREENS).includes(screenKey)
+        ? screenKey
+        : 'systemLocked';
+
     let overlay = document.getElementById('kiosk-lock-overlay');
+
+    const renderOverlay = () => {
+        overlay.innerHTML = `${getKioskLockMarkup(debugConfig.kioskLockScreen)}
+        <p class="kiosk-lock-unlock-hint">Debug unlock: Ctrl+Shift+&#96;, Ctrl+Shift+D, or tap bottom-left 4x.</p>`;
+        overlay.style.display = 'flex';
+    };
+
     if (lock) {
         if (!overlay) {
             overlay = document.createElement('div');
             overlay.id = 'kiosk-lock-overlay';
-            overlay.innerHTML = `<div style="text-align:center;">
-                <i class="ph ph-lock" style="font-size:5rem;color:#a78bfa;display:block;margin-bottom:1rem"></i>
-                <h2 style="color:var(--text-primary)">System Locked</h2>
-                <p class="text-muted">Contact an administrator to unlock.</p>
-            </div>`;
             document.body.appendChild(overlay);
         }
-        overlay.style.display = 'flex';
+
+        if (currentUser) {
+            returnToLoginView({ showMessage: false });
+            setTimeout(renderOverlay, 360);
+        } else {
+            loginHelpView.classList.remove('active');
+            loginHelpView.classList.add('hidden');
+            loginView.classList.remove('hidden');
+            loginView.classList.add('active');
+            barcodeInput.focus();
+            renderOverlay();
+        }
     } else if (overlay) {
         overlay.style.display = 'none';
     }
@@ -3253,7 +3437,7 @@ async function runNetworkPing(url = 'https://www.gstatic.com/generate_204') {
 }
 
 // ── Main debug modal ──────────────────────────────────────────────────
-function openDebugMenu() {
+function openDebugMenu(initialTab = 'system') {
     const html = `
         <div class="modal-header debug-modal-header">
             <div style="display:flex;align-items:center;gap:0.6rem">
@@ -3281,7 +3465,7 @@ function openDebugMenu() {
             renderDebugTab(tab.dataset.dtab);
         });
     });
-    renderDebugTab('system');
+    renderDebugTab(initialTab);
 }
 
 function renderDebugTab(tab) {
@@ -3419,6 +3603,7 @@ function renderDebugSession(el) {
     const mp = user?.role === 'student' ? getMergedPermissionsForStudent(user) : null;
     const rl = loginRateLimit;
     const rlLocked = rl.lockedUntil && Date.now() < rl.lockedUntil;
+    const lockScreenLabel = KIOSK_LOCK_SCREENS[debugConfig.kioskLockScreen]?.label || KIOSK_LOCK_SCREENS.systemLocked.label;
     const rlStatus = rlLocked
         ? `<span style="color:var(--danger)">LOCKED — ${Math.ceil((rl.lockedUntil - Date.now()) / 1000)}s remaining</span>`
         : `<span style="color:var(--success)">OK (${rl.attempts.filter(t => Date.now() - t < rl.windowMs).length}/${rl.maxAttempts} in window)</span>`;
@@ -3432,12 +3617,16 @@ function renderDebugSession(el) {
                 <tr><td>Merged Perms</td><td>Create ${mp.canCreateProjects ? '✓' : '✗'} · Join ${mp.canJoinProjects ? '✓' : '✗'} · SignOut ${mp.canSignOut ? '✓' : '✗'}</td></tr>` : ''}
                 <tr><td>Rate Limit</td><td>${rlStatus}</td></tr>
                 <tr><td>Kiosk</td><td>${debugConfig.kioskLocked ? '<span style="color:var(--danger)">LOCKED</span>' : '<span style="color:var(--success)">Unlocked</span>'}</td></tr>
+                <tr><td>Lock Screen</td><td>${lockScreenLabel}</td></tr>
             </table>
         `)}
         ${_dbgSection('Controls', `
             <div class="debug-actions">
                 ${user ? `<button class="dbg-btn btn btn-secondary" id="dbg-force-logout"><i class="ph ph-sign-out"></i> Force Logout</button>` : ''}
                 <button class="dbg-btn btn btn-secondary" id="dbg-clear-rl"><i class="ph ph-shield-slash"></i> Reset Rate Limit</button>
+                <button class="dbg-btn btn btn-secondary" id="dbg-kiosk-preview">
+                    <i class="ph ph-device-mobile-camera"></i> Preview Lock Screens
+                </button>
                 <button class="dbg-btn btn ${debugConfig.kioskLocked ? 'btn-primary' : 'btn-danger'}" id="dbg-kiosk">
                     <i class="ph ph-${debugConfig.kioskLocked ? 'lock-open' : 'lock'}"></i>
                     ${debugConfig.kioskLocked ? 'Unlock Kiosk' : 'Lock Kiosk'}
@@ -3467,10 +3656,15 @@ function renderDebugSession(el) {
         loginRateLimit.attempts = []; loginRateLimit.lockedUntil = null;
         showToast('Rate limit cleared.', 'success'); renderDebugTab('session');
     });
+    document.getElementById('dbg-kiosk-preview')?.addEventListener('click', () => {
+        openKioskLockPreview(debugConfig.kioskLockScreen);
+    });
     document.getElementById('dbg-kiosk')?.addEventListener('click', () => {
         const locking = !debugConfig.kioskLocked;
-        applyKioskLock(locking);
-        showToast(`Kiosk ${locking ? 'locked' : 'unlocked'}.`, locking ? 'error' : 'success');
+        const chosen = debugConfig.kioskLockScreen || 'systemLocked';
+        applyKioskLock(locking, chosen);
+        const screenName = getKioskLockScreen(chosen).label;
+        showToast(locking ? `Kiosk locked: ${screenName}.` : 'Kiosk unlocked.', locking ? 'error' : 'success');
         if (locking) { closeModal(); } else { renderDebugTab('session'); }
     });
     document.getElementById('dbg-toggle-admin')?.addEventListener('click', () => {

@@ -1,4 +1,4 @@
-/* Nexus Inventory System Styles */
+/* LCHS Inventory System Styles */
 
 :root {
     /* Color Palette */
@@ -1330,6 +1330,110 @@ kbd {
     align-items: center;
     justify-content: center;
     flex-direction: column;
+}
+
+.kiosk-lock-card {
+    width: min(92vw, 560px);
+    padding: 2rem;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: var(--radius-lg);
+    background: rgba(16, 24, 40, 0.72);
+    box-shadow: 0 24px 50px rgba(0, 0, 0, 0.45);
+}
+
+.kiosk-lock-icon {
+    font-size: 5rem;
+    color: #f59e0b;
+    display: block;
+    margin-bottom: 1rem;
+}
+
+.kiosk-lock-title {
+    color: var(--text-primary);
+    margin-bottom: 0.6rem;
+}
+
+.kiosk-lock-description {
+    color: var(--text-secondary);
+    font-size: 1rem;
+}
+
+.kiosk-lock-unlock-hint {
+    color: var(--text-muted);
+    font-size: 0.82rem;
+    margin-top: 1rem;
+}
+
+#kiosk-lock-preview {
+    position: fixed;
+    inset: 0;
+    z-index: 10002;
+    display: none;
+    flex-direction: column;
+    justify-content: space-between;
+    padding: 1.25rem;
+    background: rgba(3, 8, 18, 0.98);
+}
+
+#kiosk-lock-preview.active {
+    display: flex;
+}
+
+.kiosk-preview-topbar,
+.kiosk-preview-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.kiosk-preview-title {
+    color: var(--text-secondary);
+    font-weight: 600;
+    font-family: 'Outfit', sans-serif;
+}
+
+.kiosk-preview-stage {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+}
+
+.kiosk-preview-dots {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+}
+
+.kiosk-preview-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    border: 1px solid rgba(255, 255, 255, 0.45);
+    background: transparent;
+    cursor: pointer;
+}
+
+.kiosk-preview-dot.active {
+    background: var(--accent-primary);
+    border-color: var(--accent-primary);
+}
+
+@media (max-width: 768px) {
+    .kiosk-preview-topbar,
+    .kiosk-preview-footer {
+        justify-content: center;
+    }
+
+    .kiosk-preview-title {
+        width: 100%;
+        text-align: center;
+        order: -1;
+    }
 }
 
 /* =====================================================
