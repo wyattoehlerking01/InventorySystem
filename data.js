@@ -3,8 +3,8 @@
    ======================================= */
 
 // Initialize Supabase client
-const { SUPABASE_URL, SUPABASE_KEY } = window.APP_ENV;
-const supabase = (window.supabase && typeof window.supabase.createClient === 'function')
+const { SUPABASE_URL, SUPABASE_KEY } = window.APP_ENV || {};
+const supabase = (SUPABASE_URL && SUPABASE_KEY && window.supabase && typeof window.supabase.createClient === 'function')
     ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY)
     : null;
 

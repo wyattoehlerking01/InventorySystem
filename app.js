@@ -559,8 +559,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
     }
 
+    if (!window.APP_ENV || !window.APP_ENV.SUPABASE_URL) {
+        showToast('env.js failed to load or APP_ENV is missing. Check that env.js is present and accessible.', 'error');
+        return;
+    }
+
     if (typeof loadAllData !== 'function') {
-        showToast('Supabase data functions are unavailable. Verify env.js/data.js load correctly.', 'error');
+        showToast('data.js failed to load. Check browser console for script errors, then reload.', 'error');
         return;
     }
 
