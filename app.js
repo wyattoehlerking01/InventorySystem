@@ -554,6 +554,16 @@ document.getElementById('checkout-basket-btn')?.addEventListener('click', checko
 
 // Init application
 document.addEventListener('DOMContentLoaded', async () => {
+    if (!window.supabase || typeof window.supabase.createClient !== 'function') {
+        showToast('Supabase client library failed to load. Check internet/CDN access and reload.', 'error');
+        return;
+    }
+
+    if (typeof loadAllData !== 'function') {
+        showToast('Supabase data functions are unavailable. Verify env.js/data.js load correctly.', 'error');
+        return;
+    }
+
     // Load all data from Supabase tables before initializing the app
     try {
         await loadAllData();
@@ -640,6 +650,11 @@ submitHelpBtn?.addEventListener('click', async () => {
 async function handleBarcodeLogin(rawId) {
     const id = String(rawId || '').trim().toUpperCase();
     barcodeInput.value = '';
+
+    if (typeof fetchUserByIdFromSupabase !== 'function') {
+        showToast('Supabase data module is not loaded. Refresh and verify script loading.', 'error');
+        return;
+    }
 
     if (!id) {
         showToast('Enter or scan a user ID.', 'error');
