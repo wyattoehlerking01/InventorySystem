@@ -4,7 +4,16 @@
 
 // Initialize Supabase client
 const { SUPABASE_URL, SUPABASE_KEY } = window.APP_ENV;
-const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+const supabase = (window.supabase && typeof window.supabase.createClient === 'function')
+    ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY)
+    : null;
+
+function requireSupabaseClient(context) {
+    if (!supabase) {
+        throw new Error(`Supabase client unavailable during ${context}. Check env.js values and Supabase CDN loading.`);
+    }
+    return supabase;
+}
 
 /* =======================================
    GLOBAL DATA ARRAYS (from Supabase)
@@ -28,6 +37,8 @@ let extensionRequests = [];
  * Load all data from Supabase tables
  */
 async function loadAllData() {
+    requireSupabaseClient('loadAllData');
+
     try {
         await Promise.all([
             loadUsers(),
@@ -46,6 +57,7 @@ async function loadAllData() {
         console.log('All data loaded from Supabase successfully.');
     } catch (error) {
         console.error('Error loading data from Supabase:', error);
+        throw error;
     }
 }
 
@@ -74,7 +86,8 @@ async function refreshUsersFromSupabase() {
  * Fetch one user by ID directly from Supabase (login source of truth)
  */
 async function fetchUserByIdFromSupabase(userId) {
-    const { data, error } = await supabase
+    const client = requireSupabaseClient('fetchUserByIdFromSupabase');
+    const { data, error } = await client
         .from('users')
         .select('*')
         .eq('id', userId)
@@ -82,7 +95,7 @@ async function fetchUserByIdFromSupabase(userId) {
 
     if (error) {
         console.error('Error fetching user by id:', error);
-        return null;
+        throw error;
     }
 
     return data || null;

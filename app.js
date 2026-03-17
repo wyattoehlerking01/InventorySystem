@@ -555,7 +555,12 @@ document.getElementById('checkout-basket-btn')?.addEventListener('click', checko
 // Init application
 document.addEventListener('DOMContentLoaded', async () => {
     // Load all data from Supabase tables before initializing the app
-    await loadAllData();
+    try {
+        await loadAllData();
+    } catch (error) {
+        console.error('Initial Supabase load failed:', error);
+        showToast('Unable to load data from Supabase. Login may not work until this is fixed.', 'error');
+    }
     
     applyVersionBadges();
 
@@ -632,13 +637,18 @@ submitHelpBtn?.addEventListener('click', async () => {
     backToLoginBtn.click();
 });
 
-barcodeInput.addEventListener('keydown', async (e) => {
-    if (e.key === 'Enter') {
-        const id = barcodeInput.value.trim().toUpperCase();
-        barcodeInput.value = '';
+async function handleBarcodeLogin(rawId) {
+    const id = String(rawId || '').trim().toUpperCase();
+    barcodeInput.value = '';
 
-        if (!checkLoginRateLimit()) return;
+    if (!id) {
+        showToast('Enter or scan a user ID.', 'error');
+        return;
+    }
 
+    if (!checkLoginRateLimit()) return;
+
+    try {
         const user = await fetchUserByIdFromSupabase(id);
         if (user) {
             if (user.status === 'Suspended') {
@@ -646,11 +656,51 @@ barcodeInput.addEventListener('keydown', async (e) => {
                 return;
             }
             clearFailedLoginAttempts();
-            login(user);
-        } else {
-            recordFailedLoginAttempt();
-            showToast('Invalid barcode scanned.', 'error');
+            try {
+                login(user);
+            } catch (loginError) {
+                console.error('Login transition failed:', loginError);
+                showToast('Login succeeded but dashboard failed to load.', 'error');
+            }
+            return;
         }
+
+        recordFailedLoginAttempt();
+        showToast('Invalid barcode scanned.', 'error');
+    } catch (error) {
+        console.error('Login lookup failed:', error);
+        showToast('Database lookup failed during login.', 'error');
+    }
+}
+
+barcodeInput.addEventListener('keydown', async (e) => {
+    if (e.key === 'Enter' || e.key === 'NumpadEnter') {
+        e.preventDefault();
+        await handleBarcodeLogin(barcodeInput.value);
+    }
+});
+
+document.addEventListener('keydown', async (e) => {
+    if (currentUser) return;
+    if (loginView.classList.contains('hidden')) return;
+    if (loginHelpView && !loginHelpView.classList.contains('hidden')) return;
+    if (document.activeElement === barcodeInput) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+    if (e.key === 'Enter' || e.key === 'NumpadEnter') {
+        e.preventDefault();
+        await handleBarcodeLogin(barcodeInput.value);
+        return;
+    }
+
+    if (e.key === 'Backspace') {
+        e.preventDefault();
+        barcodeInput.value = barcodeInput.value.slice(0, -1);
+        return;
+    }
+
+    if (e.key.length === 1) {
+        barcodeInput.value += e.key;
     }
 });
 
@@ -873,7 +923,12 @@ async function switchPage(targetId, title) {
     _trackPageVisit(targetId);
     pageTitle.textContent = title;
 
-    await refreshPageDataFromSupabase(targetId);
+    try {
+        await refreshPageDataFromSupabase(targetId);
+    } catch (error) {
+        console.error(`Failed to refresh ${targetId} from Supabase:`, error);
+        showToast(`Failed to refresh ${title} from Supabase. Showing current data.`, 'error');
+    }
 
     pages.forEach(page => {
         page.classList.remove('active');
