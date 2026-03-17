@@ -6,7 +6,7 @@
 let currentUser = null;
 
 const envConfig = window.APP_ENV || {};
-const appVersion = envConfig.APP_VERSION || 'PRE-RELEASE';
+const appVersion = String(envConfig.APP_VERSION ?? envConfig.APP_Version ?? '').trim();
 
 const defaultDuePolicy = {
     defaultSignoutMinutes: 80,
@@ -369,8 +369,14 @@ function canUserSeeItem(user, item) {
 function applyVersionBadges() {
     const loginVersionEl = document.getElementById('app-version-login');
     const sidebarVersionEl = document.getElementById('app-version-sidebar');
-    if (loginVersionEl) loginVersionEl.textContent = appVersion;
-    if (sidebarVersionEl) sidebarVersionEl.textContent = appVersion;
+    if (loginVersionEl) {
+        loginVersionEl.textContent = appVersion;
+        loginVersionEl.style.display = appVersion ? '' : 'none';
+    }
+    if (sidebarVersionEl) {
+        sidebarVersionEl.textContent = appVersion;
+        sidebarVersionEl.style.display = appVersion ? '' : 'none';
+    }
 }
 
 // Inventory Basket Logic
@@ -626,14 +632,14 @@ submitHelpBtn?.addEventListener('click', async () => {
     backToLoginBtn.click();
 });
 
-barcodeInput.addEventListener('keydown', (e) => {
+barcodeInput.addEventListener('keydown', async (e) => {
     if (e.key === 'Enter') {
         const id = barcodeInput.value.trim().toUpperCase();
         barcodeInput.value = '';
 
         if (!checkLoginRateLimit()) return;
 
-        const user = mockUsers.find(u => u.id === id);
+        const user = await fetchUserByIdFromSupabase(id);
         if (user) {
             if (user.status === 'Suspended') {
                 showToast('Your account is suspended. Please contact a teacher.', 'error');
@@ -738,9 +744,8 @@ function login(user) {
         mainView.classList.remove('hidden');
         setTimeout(() => mainView.classList.add('active'), 50);
 
-        // Load initial Dashboard
-        loadDashboard();
-        switchPage('dashboard', 'Dashboard');
+        // Load initial Dashboard from fresh Supabase state
+        switchPage('dashboard', 'Dashboard').catch(err => console.error(err));
     }, 300);
 }
 
@@ -795,7 +800,7 @@ logoutBtn.addEventListener('click', () => logout());
    ROUTING
    ======================================= */
 navBtns.forEach(btn => {
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', async () => {
         const target = btn.getAttribute('data-target');
         const title = btn.textContent.trim();
 
@@ -803,13 +808,72 @@ navBtns.forEach(btn => {
         navBtns.forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
 
-        switchPage(target, title);
+        await switchPage(target, title);
     });
 });
 
-function switchPage(targetId, title) {
+async function refreshPageDataFromSupabase(targetId) {
+    if (targetId === 'dashboard') {
+        await loadAllData();
+        return;
+    }
+
+    if (targetId === 'inventory') {
+        await Promise.all([
+            refreshInventoryFromSupabase(),
+            loadCategories(),
+            loadVisibilityTags()
+        ]);
+        return;
+    }
+
+    if (targetId === 'projects') {
+        await Promise.all([
+            refreshProjectsFromSupabase(),
+            refreshUsersFromSupabase(),
+            refreshInventoryFromSupabase()
+        ]);
+        return;
+    }
+
+    if (targetId === 'logs') {
+        await Promise.all([
+            loadActivityLogs(),
+            refreshUsersFromSupabase()
+        ]);
+        return;
+    }
+
+    if (targetId === 'users') {
+        await refreshUsersFromSupabase();
+        return;
+    }
+
+    if (targetId === 'classes') {
+        await Promise.all([
+            loadStudentClasses(),
+            refreshUsersFromSupabase(),
+            refreshInventoryFromSupabase(),
+            loadVisibilityTags()
+        ]);
+        return;
+    }
+
+    if (targetId === 'requests') {
+        await Promise.all([
+            refreshRequestsFromSupabase(),
+            refreshProjectsFromSupabase(),
+            refreshUsersFromSupabase(),
+            refreshInventoryFromSupabase()
+        ]);
+    }
+}
+
+async function switchPage(targetId, title) {
     _trackPageVisit(targetId);
     pageTitle.textContent = title;
+
+    await refreshPageDataFromSupabase(targetId);
 
     pages.forEach(page => {
         page.classList.remove('active');
@@ -900,13 +964,13 @@ function loadDashboard() {
 
         // Bind extension request buttons
         document.querySelectorAll('.request-extension-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
+            btn.addEventListener('click', async (e) => {
                 const itemId = e.currentTarget.getAttribute('data-item-id');
                 const projectName = e.currentTarget.getAttribute('data-project');
                 const currentDue = e.currentTarget.getAttribute('data-due');
                 const item = inventoryItems.find(i => i.id === itemId);
 
-                extensionRequests.push({
+                const request = {
                     id: generateId('EXT'),
                     userId: currentUser.id,
                     userName: currentUser.name,
@@ -917,7 +981,15 @@ function loadDashboard() {
                     requestedDue: new Date(new Date(currentDue).getTime() + 86400000 * 7).toISOString(),
                     status: 'Pending',
                     timestamp: new Date().toISOString()
-                });
+                };
+
+                const created = await addExtensionRequestToSupabase(request);
+                if (!created) {
+                    showToast('Failed to submit extension request to Supabase.', 'error');
+                    return;
+                }
+
+                await refreshRequestsFromSupabase();
 
                 showToast(`Extension requested for ${item ? item.name : 'item'}. An admin will review it.`, 'success');
                 addLog(currentUser.id, 'Extension Request', `Requested extension for ${item ? item.name : itemId} in ${projectName}`);
@@ -1207,7 +1279,7 @@ function findSignoutIndex(project, signoutId) {
     return project.itemsOut.findIndex(io => (io.id || `${io.itemId}-${io.signoutDate}-${io.quantity}`) === signoutId);
 }
 
-function returnProjectItem(projectId, signoutId) {
+async function returnProjectItem(projectId, signoutId) {
     const project = projects.find(p => p.id === projectId);
     if (!project) return;
 
@@ -1225,8 +1297,27 @@ function returnProjectItem(projectId, signoutId) {
         if (!confirmOnBehalf) return;
     }
 
-    if (item) item.stock += io.quantity;
-    project.itemsOut.splice(ioIndex, 1);
+    if (item) {
+        const nextStock = item.stock + io.quantity;
+        const stockUpdated = await updateItemInSupabase(item.id, { stock: nextStock });
+        if (!stockUpdated) {
+            showToast('Failed to update item stock in Supabase.', 'error');
+            return;
+        }
+    }
+
+    if (io.id) {
+        const returned = await returnItemToSupabase(io.id);
+        if (!returned) {
+            showToast('Failed to return item in Supabase.', 'error');
+            return;
+        }
+    }
+
+    await Promise.all([
+        refreshProjectsFromSupabase(),
+        refreshInventoryFromSupabase()
+    ]);
 
     if (currentUser.id !== assignedToUserId) {
         const assignedName = assignedToUser ? assignedToUser.name : assignedToUserId;
@@ -1239,7 +1330,7 @@ function returnProjectItem(projectId, signoutId) {
 
     renderProjects();
     renderInventory();
-    renderDashboard();
+    loadDashboard();
 }
 
 function renderProjects() {
@@ -1327,10 +1418,10 @@ function renderProjects() {
     });
 
     document.querySelectorAll('.return-project-item-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
+        btn.addEventListener('click', async (e) => {
             const projectId = e.currentTarget.getAttribute('data-project-id');
             const signoutId = e.currentTarget.getAttribute('data-signout-id');
-            returnProjectItem(projectId, signoutId);
+            await returnProjectItem(projectId, signoutId);
         });
     });
 }
@@ -1883,7 +1974,7 @@ function renderUsers() {
 
     // Attach listeners
     document.querySelectorAll('.suspend-user-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
+        btn.addEventListener('click', async (e) => {
             const id = e.currentTarget.getAttribute('data-id');
             const user = mockUsers.find(u => u.id === id);
             if (!user) return;
@@ -1895,8 +1986,14 @@ function renderUsers() {
                 if (!confirm(`Are you sure you want to reactivate ${user.name}?`)) return;
             }
 
-            user.status = isSuspending ? 'Suspended' : 'Active';
-            showToast(`${user.name} is now ${user.status}`, 'info');
+            const nextStatus = isSuspending ? 'Suspended' : 'Active';
+            const updated = await updateUserInSupabase(id, { status: nextStatus });
+            if (!updated) {
+                showToast('Failed to update user status in Supabase.', 'error');
+                return;
+            }
+            await refreshUsersFromSupabase();
+            showToast(`${user.name} is now ${nextStatus}`, 'info');
             addLog(currentUser.id, isSuspending ? 'Suspend User' : 'Activate User', `${isSuspending ? 'Suspended' : 'Activated'} user ${user.name} (${user.id})`);
             renderUsers();
         });
@@ -1910,14 +2007,18 @@ function renderUsers() {
     });
 
     document.querySelectorAll('.delete-user-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
+        btn.addEventListener('click', async (e) => {
             const id = e.currentTarget.getAttribute('data-id');
             const user = mockUsers.find(u => u.id === id);
             if (!user) return;
 
             if (confirm(`CRITICAL: Are you sure you want to delete ${user.name}? This action is permanent.`)) {
-                const idx = mockUsers.findIndex(u => u.id === id);
-                mockUsers.splice(idx, 1);
+                const deleted = await deleteUserFromSupabase(id);
+                if (!deleted) {
+                    showToast('Failed to delete user from Supabase.', 'error');
+                    return;
+                }
+                await refreshUsersFromSupabase();
                 showToast(`${user.name} deleted.`);
                 addLog(currentUser.id, 'Delete User', `Deleted user account: ${user.name} (${user.id})`);
                 renderUsers();
@@ -2037,7 +2138,7 @@ function openUserModal(editId = null) {
         }
     });
 
-    document.getElementById('confirm-user-btn').addEventListener('click', () => {
+    document.getElementById('confirm-user-btn').addEventListener('click', async () => {
         const id = document.getElementById('user-id').value.trim().toUpperCase();
         const name = document.getElementById('user-name-input').value.trim();
         const role = document.getElementById('user-role-input').value;
@@ -2073,9 +2174,12 @@ function openUserModal(editId = null) {
             });
 
             // Update in Supabase
-            updateUserInSupabase(id, { name, role, status: userToEdit.status }).catch(err => {
-                console.error('Failed to update user in Supabase:', err);
-            });
+            const updated = await updateUserInSupabase(id, { name, role, status: userToEdit.status });
+            if (!updated) {
+                showToast('Failed to update user in Supabase.', 'error');
+                return;
+            }
+            await refreshUsersFromSupabase();
 
             showToast('User updated successfully.', 'success');
             addLog(currentUser.id, 'Edit User', `Updated user: ${id}`);
@@ -2091,13 +2195,13 @@ function openUserModal(editId = null) {
                 perms: perms,
                 status: 'Active'
             };
-            
-            mockUsers.push(newUser);
 
-            // Save to Supabase
-            addUserToSupabase(newUser).catch(err => {
-                console.error('Failed to add user to Supabase:', err);
-            });
+            const created = await addUserToSupabase(newUser);
+            if (!created) {
+                showToast('Failed to add user in Supabase.', 'error');
+                return;
+            }
+            await refreshUsersFromSupabase();
 
             // Handle New Student Class Assignment
             if (role === 'student' && assignedClassId) {
@@ -2149,11 +2253,16 @@ document.getElementById('view-requests-btn')?.addEventListener('click', () => {
     openModal(html);
 
     document.querySelectorAll('.resolve-req-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
+        btn.addEventListener('click', async (e) => {
             const reqId = e.target.getAttribute('data-id');
             const req = helpRequests.find(r => r.id === reqId);
             if (req) {
-                req.status = 'Resolved';
+                const updated = await updateHelpRequestInSupabase(req.id, 'Resolved');
+                if (!updated) {
+                    showToast('Failed to resolve request in Supabase.', 'error');
+                    return;
+                }
+                await refreshRequestsFromSupabase();
                 showToast('Request marked as resolved.', 'success');
                 closeModal();
                 document.getElementById('view-requests-btn').click(); // refresh modal
@@ -2183,7 +2292,7 @@ document.getElementById('bulk-users-btn')?.addEventListener('click', () => {
 
     openModal(html);
 
-    document.getElementById('confirm-bulk-btn').addEventListener('click', () => {
+    document.getElementById('confirm-bulk-btn').addEventListener('click', async () => {
         const data = document.getElementById('bulk-users-data').value.trim();
         if (!data) {
             showToast('Please enter data to import.', 'error');
@@ -2194,7 +2303,7 @@ document.getElementById('bulk-users-btn')?.addEventListener('click', () => {
         let importCount = 0;
         let skipCount = 0;
 
-        lines.forEach(line => {
+        for (const line of lines) {
             const parts = line.split(',');
             if (parts.length >= 3) {
                 const id = parts[0].trim().toUpperCase();
@@ -2203,19 +2312,21 @@ document.getElementById('bulk-users-btn')?.addEventListener('click', () => {
 
                 if (id && name && ['student', 'teacher', 'developer'].includes(role)) {
                     if (!mockUsers.some(u => u.id === id)) {
-                        mockUsers.push({
+                        const created = await addUserToSupabase({
                             id: id,
                             name: name,
                             role: role,
                             status: 'Active'
                         });
-                        importCount++;
+                        if (created) importCount++;
                     } else {
                         skipCount++;
                     }
                 }
             }
-        });
+        }
+
+        await refreshUsersFromSupabase();
 
         if (importCount > 0) {
             showToast(`Successfully imported ${importCount} users. (${skipCount} skipped)`, 'success');
@@ -2231,7 +2342,7 @@ document.getElementById('bulk-users-btn')?.addEventListener('click', () => {
     });
 });
 
-document.getElementById('bulk-delete-users-btn')?.addEventListener('click', () => {
+document.getElementById('bulk-delete-users-btn')?.addEventListener('click', async () => {
     const selectedCbs = Array.from(document.querySelectorAll('.user-select-cb:checked'));
     if (selectedCbs.length === 0) {
         showToast('Please select users to delete using the checkboxes on the left.', 'error');
@@ -2248,17 +2359,18 @@ document.getElementById('bulk-delete-users-btn')?.addEventListener('click', () =
 
     if (confirm(`Are you absolutely sure you want to PERMANENTLY delete ${targetUsers.length} selected student(s)? This cannot be undone.`)) {
         let deleteCount = 0;
-        targetUsers.forEach(u => {
-            const index = mockUsers.findIndex(user => user.id === u.id);
-            if (index > -1) {
-                mockUsers.splice(index, 1);
+        for (const u of targetUsers) {
+            const deleted = await deleteUserFromSupabase(u.id);
+            if (deleted) {
                 deleteCount++;
                 // cascade delete from classes
                 studentClasses.forEach(cls => {
                     cls.students = cls.students.filter(sId => sId !== u.id);
                 });
             }
-        });
+        }
+
+        await refreshUsersFromSupabase();
 
         showToast(`Successfully deleted ${deleteCount} students.`, 'success');
         addLog(currentUser.id, 'Bulk Delete', `Deleted ${deleteCount} students via selection.`);
@@ -2266,7 +2378,7 @@ document.getElementById('bulk-delete-users-btn')?.addEventListener('click', () =
     }
 });
 
-document.getElementById('bulk-suspend-users-btn')?.addEventListener('click', () => {
+document.getElementById('bulk-suspend-users-btn')?.addEventListener('click', async () => {
     const selectedCbs = Array.from(document.querySelectorAll('.user-select-cb:checked'));
     if (selectedCbs.length === 0) {
         showToast('Please select users to suspend using the checkboxes on the left.', 'error');
@@ -2289,15 +2401,17 @@ document.getElementById('bulk-suspend-users-btn')?.addEventListener('click', () 
     if (confirm(promptMsg)) {
         let suspendCount = 0;
         let activateCount = 0;
-        targetUsers.forEach(u => {
+        for (const u of targetUsers) {
             if (u.status === 'Suspended') {
-                u.status = 'Active';
+                await updateUserInSupabase(u.id, { status: 'Active' });
                 activateCount++;
             } else {
-                u.status = 'Suspended';
+                await updateUserInSupabase(u.id, { status: 'Suspended' });
                 suspendCount++;
             }
-        });
+        }
+
+        await refreshUsersFromSupabase();
 
         showToast(`Updated status for ${targetUsers.length} students (${suspendCount} suspended, ${activateCount} activated).`, 'success');
         addLog(currentUser.id, 'Bulk Suspend', `Changed suspension for ${targetUsers.length} students via selection.`);
@@ -2385,7 +2499,7 @@ document.getElementById('add-item-btn')?.addEventListener('click', () => {
 
     openModal(html);
 
-    document.getElementById('confirm-add-item').addEventListener('click', () => {
+    document.getElementById('confirm-add-item').addEventListener('click', async () => {
         const name = document.getElementById('add-name').value.trim();
         const category = document.getElementById('add-category').value;
         const stock = parseInt(document.getElementById('add-stock').value) || 0;
@@ -2400,7 +2514,12 @@ document.getElementById('add-item-btn')?.addEventListener('click', () => {
                 stock: stock,
                 threshold: threshold
             };
-            inventoryItems.push(newItem);
+            const created = await addItemToSupabase(newItem);
+            if (!created) {
+                showToast('Failed to add item in Supabase.', 'error');
+                return;
+            }
+            await refreshInventoryFromSupabase();
             addLog(currentUser.id, 'Add Item', `Added new inventory item: ${name}(${stock} units)`);
             showToast(`${name} added to inventory.`, 'success');
             closeModal();
@@ -2454,17 +2573,25 @@ function openEditProjectModal(projectId) {
 
     openModal(html);
 
-    document.getElementById('confirm-edit-proj').addEventListener('click', () => {
+    document.getElementById('confirm-edit-proj').addEventListener('click', async () => {
         const name = document.getElementById('edit-proj-name').value.trim();
         const desc = document.getElementById('edit-proj-desc').value.trim();
         const status = document.getElementById('edit-proj-status').value;
 
         if (name) {
-            project.name = name;
-            project.description = desc;
-            project.status = status;
+            const updated = await updateProjectInSupabase(project.id, {
+                name,
+                description: desc,
+                status
+            });
+            if (!updated) {
+                showToast('Failed to update project in Supabase.', 'error');
+                return;
+            }
 
-            addLog(currentUser.id, 'Edit Project', `Updated project: ${project.name}`);
+            await refreshProjectsFromSupabase();
+
+            addLog(currentUser.id, 'Edit Project', `Updated project: ${name}`);
             showToast(`Project updated.`, 'success');
             closeModal();
             if (document.getElementById('page-projects').classList.contains('active')) {
@@ -2519,13 +2646,13 @@ document.getElementById('create-project-btn')?.addEventListener('click', () => {
 
     openModal(html);
 
-    document.getElementById('confirm-add-proj').addEventListener('click', () => {
+    document.getElementById('confirm-add-proj').addEventListener('click', async () => {
         const name = document.getElementById('add-proj-name').value.trim();
         const desc = document.getElementById('add-proj-desc').value.trim();
         const collaborators = Array.from(document.querySelectorAll('.proj-student-checkbox:checked')).map(cb => cb.value);
 
         if (name) {
-            projects.unshift({
+            const newProject = {
                 id: generateId('PRJ'),
                 name: name,
                 ownerId: currentUser.id,
@@ -2533,7 +2660,20 @@ document.getElementById('create-project-btn')?.addEventListener('click', () => {
                 collaborators: collaborators,
                 status: 'Active',
                 itemsOut: []
-            });
+            };
+
+            const created = await addProjectToSupabase(newProject);
+            if (!created) {
+                showToast('Failed to create project in Supabase.', 'error');
+                return;
+            }
+
+            for (const collaboratorId of collaborators) {
+                await addProjectCollaboratorToSupabase(newProject.id, collaboratorId);
+            }
+
+            await refreshProjectsFromSupabase();
+
             addLog(currentUser.id, 'Create Project', `Created new project: ${name} with ${collaborators.length} collaborators.`);
             showToast(`Project ${name} created.`, 'success');
             closeModal();
@@ -2613,11 +2753,16 @@ function renderRequests() {
 
     // Bind resolve buttons for help requests
     document.querySelectorAll('.resolve-req-btn2').forEach(btn => {
-        btn.addEventListener('click', (e) => {
+        btn.addEventListener('click', async (e) => {
             const reqId = e.currentTarget.getAttribute('data-id');
             const req = helpRequests.find(r => r.id === reqId);
             if (req) {
-                req.status = 'Resolved';
+                const updated = await updateHelpRequestInSupabase(req.id, 'Resolved');
+                if (!updated) {
+                    showToast('Failed to resolve help request in Supabase.', 'error');
+                    return;
+                }
+                await refreshRequestsFromSupabase();
                 showToast('Help request resolved.', 'success');
                 addLog(currentUser.id, 'Resolve Request', `Resolved credential request from ${req.name}`);
                 renderRequests();
@@ -2627,19 +2772,35 @@ function renderRequests() {
 
     // Bind approve/deny for extension requests
     document.querySelectorAll('.approve-req-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
+        btn.addEventListener('click', async (e) => {
             const reqId = e.currentTarget.getAttribute('data-id');
             const req = extensionRequests.find(r => r.id === reqId);
             if (req) {
-                req.status = 'Approved';
+                const updated = await updateExtensionRequestInSupabase(req.id, 'Approved');
+                if (!updated) {
+                    showToast('Failed to approve extension request in Supabase.', 'error');
+                    return;
+                }
+
                 // Actual date extension: find item in projects and extend the due date
+                const dueUpdatePromises = [];
                 projects.forEach(p => {
                     p.itemsOut.forEach(io => {
                         if (io.itemId === req.itemId && io.dueDate === req.currentDue) {
                             io.dueDate = req.requestedDue;
+                            if (io.id) {
+                                dueUpdatePromises.push(updateProjectItemOutDueDateInSupabase(io.id, req.requestedDue));
+                            }
                         }
                     });
                 });
+
+                await Promise.all(dueUpdatePromises);
+                await Promise.all([
+                    refreshRequestsFromSupabase(),
+                    refreshProjectsFromSupabase()
+                ]);
+
                 showToast(`Extension approved for ${req.itemName}.`, 'success');
                 addLog(currentUser.id, 'Approve Extension', `Approved extension for ${req.itemName} requested by ${req.userName}`);
                 renderRequests();
@@ -2648,11 +2809,16 @@ function renderRequests() {
     });
 
     document.querySelectorAll('.deny-req-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
+        btn.addEventListener('click', async (e) => {
             const reqId = e.currentTarget.getAttribute('data-id');
             const req = extensionRequests.find(r => r.id === reqId);
             if (req) {
-                req.status = 'Denied';
+                const updated = await updateExtensionRequestInSupabase(req.id, 'Denied');
+                if (!updated) {
+                    showToast('Failed to deny extension request in Supabase.', 'error');
+                    return;
+                }
+                await refreshRequestsFromSupabase();
                 showToast(`Extension denied for ${req.itemName}.`, 'success');
                 addLog(currentUser.id, 'Deny Extension', `Denied extension for ${req.itemName} requested by ${req.userName}`);
                 renderRequests();
@@ -2725,7 +2891,7 @@ function openEditItemModal(itemId) {
 
     openModal(html);
 
-    document.getElementById('confirm-edit-item').addEventListener('click', () => {
+    document.getElementById('confirm-edit-item').addEventListener('click', async () => {
         const name = document.getElementById('edit-item-name').value.trim();
         const category = document.getElementById('edit-item-category').value;
         const sku = document.getElementById('edit-item-sku').value.trim();
@@ -2734,12 +2900,24 @@ function openEditItemModal(itemId) {
         const selectedTags = Array.from(document.querySelectorAll('.edit-item-tag-cb:checked')).map(cb => cb.value);
 
         if (name) {
-            item.name = name;
-            item.category = category;
-            item.sku = sku;
-            item.stock = stock;
-            item.threshold = threshold;
-            item.visibilityTags = selectedTags;
+            const updated = await updateItemInSupabase(itemId, {
+                name,
+                category,
+                sku,
+                stock,
+                threshold
+            });
+            if (!updated) {
+                showToast('Failed to update item in Supabase.', 'error');
+                return;
+            }
+
+            const tagsUpdated = await setItemVisibilityTagsInSupabase(itemId, selectedTags);
+            if (!tagsUpdated) {
+                showToast('Item updated, but visibility tags failed to save.', 'warning');
+            }
+
+            await refreshInventoryFromSupabase();
 
             addLog(currentUser.id, 'Edit Item', `Updated item: ${name} (${itemId})`);
             showToast(`${name} updated.`, 'success');
@@ -2777,7 +2955,7 @@ document.getElementById('bulk-import-items-btn')?.addEventListener('click', () =
 
     openModal(html);
 
-    document.getElementById('confirm-bulk-items').addEventListener('click', () => {
+    document.getElementById('confirm-bulk-items').addEventListener('click', async () => {
         const data = document.getElementById('bulk-items-data').value.trim();
         if (!data) {
             showToast('Please enter data to import.', 'error');
@@ -2787,7 +2965,7 @@ document.getElementById('bulk-import-items-btn')?.addEventListener('click', () =
         const lines = data.split('\n');
         let importCount = 0;
 
-        lines.forEach(line => {
+        for (const line of lines) {
             const parts = line.split(',');
             if (parts.length >= 3) {
                 const name = parts[0].trim();
@@ -2805,18 +2983,14 @@ document.getElementById('bulk-import-items-btn')?.addEventListener('click', () =
                         stock: stock,
                         threshold: threshold
                     };
-                    
-                    inventoryItems.push(item);
-                    
-                    // Save to Supabase
-                    addItemToSupabase(item).catch(err => {
-                        console.error('Failed to add item to Supabase:', err);
-                    });
-                    
-                    importCount++;
+
+                    const created = await addItemToSupabase(item);
+                    if (created) importCount++;
                 }
             }
-        });
+        }
+
+        await refreshInventoryFromSupabase();
 
         if (importCount > 0) {
             showToast(`Successfully imported ${importCount} items.`, 'success');
@@ -2865,10 +3039,15 @@ document.getElementById('manage-categories-btn')?.addEventListener('click', () =
 
         openModal(html);
 
-        document.getElementById('add-category-btn')?.addEventListener('click', () => {
+        document.getElementById('add-category-btn')?.addEventListener('click', async () => {
             const name = document.getElementById('new-category-name').value.trim();
             if (name && !categories.includes(name)) {
-                categories.push(name);
+                const created = await addCategoryToSupabase(name);
+                if (!created) {
+                    showToast('Failed to add category in Supabase.', 'error');
+                    return;
+                }
+                await loadCategories();
                 showToast(`Category "${name}" added.`, 'success');
                 addLog(currentUser.id, 'Manage Categories', `Added category: ${name}`);
                 renderCategoryModal();
@@ -2878,16 +3057,20 @@ document.getElementById('manage-categories-btn')?.addEventListener('click', () =
         });
 
         document.querySelectorAll('.rename-cat-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
+            btn.addEventListener('click', async (e) => {
                 const idx = parseInt(e.currentTarget.getAttribute('data-index'));
                 const oldName = categories[idx];
                 const newName = prompt(`Rename "${oldName}" to:`, oldName);
                 if (newName && newName.trim() && newName.trim() !== oldName) {
-                    // Update items with this category
-                    inventoryItems.forEach(item => {
-                        if (item.category === oldName) item.category = newName.trim();
-                    });
-                    categories[idx] = newName.trim();
+                    const renamed = await renameCategoryInSupabase(oldName, newName.trim());
+                    if (!renamed) {
+                        showToast('Failed to rename category in Supabase.', 'error');
+                        return;
+                    }
+                    await Promise.all([
+                        loadCategories(),
+                        refreshInventoryFromSupabase()
+                    ]);
                     showToast(`Category renamed to "${newName.trim()}".`, 'success');
                     addLog(currentUser.id, 'Manage Categories', `Renamed category: ${oldName} → ${newName.trim()}`);
                     renderCategoryModal();
@@ -2896,14 +3079,19 @@ document.getElementById('manage-categories-btn')?.addEventListener('click', () =
         });
 
         document.querySelectorAll('.delete-cat-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
+            btn.addEventListener('click', async (e) => {
                 const idx = parseInt(e.currentTarget.getAttribute('data-index'));
                 const catName = categories[idx];
                 if (confirm(`Delete category "${catName}"? Items in this category will become "Uncategorized".`)) {
-                    inventoryItems.forEach(item => {
-                        if (item.category === catName) item.category = 'Uncategorized';
-                    });
-                    categories.splice(idx, 1);
+                    const moved = await renameCategoryInSupabase(catName, 'Uncategorized');
+                    if (!moved) {
+                        showToast('Failed to delete category in Supabase.', 'error');
+                        return;
+                    }
+                    await Promise.all([
+                        loadCategories(),
+                        refreshInventoryFromSupabase()
+                    ]);
                     showToast(`Category "${catName}" deleted.`, 'success');
                     addLog(currentUser.id, 'Manage Categories', `Deleted category: ${catName}`);
                     renderCategoryModal();
@@ -2949,10 +3137,15 @@ document.getElementById('manage-visibility-tags-btn')?.addEventListener('click',
 
         openModal(html);
 
-        document.getElementById('add-vtag-btn')?.addEventListener('click', () => {
+        document.getElementById('add-vtag-btn')?.addEventListener('click', async () => {
             const name = document.getElementById('new-vtag-name').value.trim();
             if (name && !visibilityTags.includes(name)) {
-                visibilityTags.push(name);
+                const created = await addVisibilityTagToSupabase(name);
+                if (!created) {
+                    showToast('Failed to add visibility tag in Supabase.', 'error');
+                    return;
+                }
+                await loadVisibilityTags();
                 showToast(`Visibility tag "${name}" added.`, 'success');
                 addLog(currentUser.id, 'Manage Visibility Tags', `Added tag: ${name}`);
                 renderVisibilityTagModal();
@@ -2962,24 +3155,22 @@ document.getElementById('manage-visibility-tags-btn')?.addEventListener('click',
         });
 
         document.querySelectorAll('.rename-vtag-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
+            btn.addEventListener('click', async (e) => {
                 const idx = parseInt(e.currentTarget.getAttribute('data-index'));
                 const oldName = visibilityTags[idx];
                 const newName = prompt(`Rename "${oldName}" to:`, oldName);
                 if (newName && newName.trim() && newName.trim() !== oldName) {
                     const trimmed = newName.trim();
-                    // Cascade rename across items and classes
-                    inventoryItems.forEach(item => {
-                        if (Array.isArray(item.visibilityTags)) {
-                            item.visibilityTags = item.visibilityTags.map(t => t === oldName ? trimmed : t);
-                        }
-                    });
-                    studentClasses.forEach(cls => {
-                        if (Array.isArray(cls.allowedVisibilityTags)) {
-                            cls.allowedVisibilityTags = cls.allowedVisibilityTags.map(t => t === oldName ? trimmed : t);
-                        }
-                    });
-                    visibilityTags[idx] = trimmed;
+                    const renamed = await renameVisibilityTagInSupabase(oldName, trimmed);
+                    if (!renamed) {
+                        showToast('Failed to rename visibility tag in Supabase.', 'error');
+                        return;
+                    }
+                    await Promise.all([
+                        loadVisibilityTags(),
+                        refreshInventoryFromSupabase(),
+                        loadStudentClasses()
+                    ]);
                     showToast(`Renamed "${oldName}" → "${trimmed}".`, 'success');
                     addLog(currentUser.id, 'Manage Visibility Tags', `Renamed tag: ${oldName} → ${trimmed}`);
                     renderVisibilityTagModal();
@@ -2988,21 +3179,20 @@ document.getElementById('manage-visibility-tags-btn')?.addEventListener('click',
         });
 
         document.querySelectorAll('.delete-vtag-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
+            btn.addEventListener('click', async (e) => {
                 const idx = parseInt(e.currentTarget.getAttribute('data-index'));
                 const tagName = visibilityTags[idx];
                 if (confirm(`Delete visibility tag "${tagName}"? It will be removed from all items and classes.`)) {
-                    inventoryItems.forEach(item => {
-                        if (Array.isArray(item.visibilityTags)) {
-                            item.visibilityTags = item.visibilityTags.filter(t => t !== tagName);
-                        }
-                    });
-                    studentClasses.forEach(cls => {
-                        if (Array.isArray(cls.allowedVisibilityTags)) {
-                            cls.allowedVisibilityTags = cls.allowedVisibilityTags.filter(t => t !== tagName);
-                        }
-                    });
-                    visibilityTags.splice(idx, 1);
+                    const deleted = await deleteVisibilityTagFromSupabase(tagName);
+                    if (!deleted) {
+                        showToast('Failed to delete visibility tag in Supabase.', 'error');
+                        return;
+                    }
+                    await Promise.all([
+                        loadVisibilityTags(),
+                        refreshInventoryFromSupabase(),
+                        loadStudentClasses()
+                    ]);
                     showToast(`Tag "${tagName}" deleted.`, 'success');
                     addLog(currentUser.id, 'Manage Visibility Tags', `Deleted tag: ${tagName}`);
                     renderVisibilityTagModal();
@@ -3070,7 +3260,7 @@ if (origAddItemBtn) {
 
         openModal(html);
 
-        document.getElementById('confirm-add-item-dyn').addEventListener('click', () => {
+        document.getElementById('confirm-add-item-dyn').addEventListener('click', async () => {
             const name = document.getElementById('add-name').value.trim();
             const category = document.getElementById('add-category').value;
             const stock = parseInt(document.getElementById('add-stock').value) || 0;
@@ -3078,7 +3268,7 @@ if (origAddItemBtn) {
             const selectedTags = Array.from(document.querySelectorAll('.add-item-tag-cb:checked')).map(cb => cb.value);
 
             if (name) {
-                inventoryItems.push({
+                const newItem = {
                     id: generateId('ITM'),
                     name: name,
                     category: category,
@@ -3086,7 +3276,20 @@ if (origAddItemBtn) {
                     stock: stock,
                     threshold: threshold,
                     visibilityTags: selectedTags
-                });
+                };
+
+                const created = await addItemToSupabase(newItem);
+                if (!created) {
+                    showToast('Failed to add item in Supabase.', 'error');
+                    return;
+                }
+
+                const tagsSaved = await setItemVisibilityTagsInSupabase(newItem.id, selectedTags);
+                if (!tagsSaved) {
+                    showToast('Item created, but visibility tags failed to save.', 'warning');
+                }
+
+                await refreshInventoryFromSupabase();
                 addLog(currentUser.id, 'Add Item', `Added new inventory item: ${name} (${stock} units)`);
                 showToast(`${name} added to inventory.`, 'success');
                 closeModal();

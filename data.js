@@ -63,6 +63,32 @@ async function loadUsers() {
 }
 
 /**
+ * Reload users from Supabase and return current in-memory array
+ */
+async function refreshUsersFromSupabase() {
+    await loadUsers();
+    return mockUsers;
+}
+
+/**
+ * Fetch one user by ID directly from Supabase (login source of truth)
+ */
+async function fetchUserByIdFromSupabase(userId) {
+    const { data, error } = await supabase
+        .from('users')
+        .select('*')
+        .eq('id', userId)
+        .maybeSingle();
+
+    if (error) {
+        console.error('Error fetching user by id:', error);
+        return null;
+    }
+
+    return data || null;
+}
+
+/**
  * Load inventory items from public.inventory_items table
  */
 async function loadInventoryItems() {
@@ -73,6 +99,15 @@ async function loadInventoryItems() {
     }
     inventoryItems = data || [];
     console.log(`Loaded ${inventoryItems.length} inventory items`);
+}
+
+/**
+ * Reload inventory items and visibility tags from Supabase
+ */
+async function refreshInventoryFromSupabase() {
+    await loadInventoryItems();
+    await loadInventoryItemVisibility();
+    return inventoryItems;
 }
 
 /**
@@ -125,7 +160,7 @@ async function loadVisibilityTags() {
  * Load activity logs from public.activity_logs table
  */
 async function loadActivityLogs() {
-    const { data, error } = await supabase.from('activity_logs').select('*');
+    const { data, error } = await supabase.from('activity_logs').select('*').order('timestamp', { ascending: false });
     if (error) {
         console.error('Error loading activity logs:', error);
         return;
@@ -138,7 +173,7 @@ async function loadActivityLogs() {
  * Load help requests from public.help_requests table
  */
 async function loadHelpRequests() {
-    const { data, error } = await supabase.from('help_requests').select('*');
+    const { data, error } = await supabase.from('help_requests').select('*').order('timestamp', { ascending: false });
     if (error) {
         console.error('Error loading help requests:', error);
         return;
@@ -151,13 +186,46 @@ async function loadHelpRequests() {
  * Load extension requests from public.extension_requests table
  */
 async function loadExtensionRequests() {
-    const { data, error } = await supabase.from('extension_requests').select('*');
+    const { data, error } = await supabase.from('extension_requests').select('*').order('timestamp', { ascending: false });
     if (error) {
         console.error('Error loading extension requests:', error);
         return;
     }
-    extensionRequests = data || [];
+    extensionRequests = (data || []).map(row => ({
+        id: row.id,
+        userId: row.user_id ?? row.userId,
+        userName: row.user_name ?? row.userName ?? row.name,
+        itemId: row.item_id ?? row.itemId,
+        itemName: row.item_name ?? row.itemName,
+        projectName: row.project_name ?? row.projectName,
+        currentDue: row.current_due ?? row.currentDue,
+        requestedDue: row.requested_due ?? row.requestedDue,
+        status: row.status,
+        timestamp: row.timestamp
+    }));
     console.log(`Loaded ${extensionRequests.length} extension requests`);
+}
+
+/**
+ * Reload projects and dependent relations from Supabase
+ */
+async function refreshProjectsFromSupabase() {
+    await loadProjects();
+    await Promise.all([
+        loadProjectCollaborators(),
+        loadProjectItemsOut()
+    ]);
+    return projects;
+}
+
+/**
+ * Reload request collections from Supabase
+ */
+async function refreshRequestsFromSupabase() {
+    await Promise.all([
+        loadHelpRequests(),
+        loadExtensionRequests()
+    ]);
 }
 
 /**
@@ -543,6 +611,21 @@ async function updateUserInSupabase(userId, updates) {
 }
 
 /**
+ * Delete user from users table
+ */
+async function deleteUserFromSupabase(userId) {
+    const { error } = await supabase.from('users')
+        .delete()
+        .eq('id', userId);
+
+    if (error) {
+        console.error('Error deleting user:', error);
+        return false;
+    }
+    return true;
+}
+
+/**
  * Add inventory item to inventory_items table
  */
 async function addItemToSupabase(item) {
@@ -647,6 +730,22 @@ async function returnItemToSupabase(projectItemOutId) {
 }
 
 /**
+ * Update due date for an existing project item out row
+ */
+async function updateProjectItemOutDueDateInSupabase(projectItemOutId, dueDate) {
+    const { data, error } = await supabase
+        .from('project_items_out')
+        .update({ due_date: dueDate })
+        .eq('id', projectItemOutId);
+
+    if (error) {
+        console.error('Error updating project item due date:', error);
+        return null;
+    }
+    return data?.[0] || null;
+}
+
+/**
  * Add activity log to activity_logs table
  */
 async function addActivityLogToSupabase(log) {
@@ -706,9 +805,13 @@ async function updateHelpRequestInSupabase(requestId, status) {
 async function addExtensionRequestToSupabase(request) {
     const { data, error } = await supabase.from('extension_requests').insert([{
         id: request.id,
-        name: request.name,
-        email: request.email,
-        description: request.description,
+        user_id: request.userId,
+        user_name: request.userName,
+        item_id: request.itemId,
+        item_name: request.itemName,
+        project_name: request.projectName,
+        current_due: request.currentDue,
+        requested_due: request.requestedDue,
         status: request.status || 'Pending',
         timestamp: request.timestamp
     }]);
@@ -718,6 +821,21 @@ async function addExtensionRequestToSupabase(request) {
         return null;
     }
     return data?.[0] || request;
+}
+
+/**
+ * Update extension request status
+ */
+async function updateExtensionRequestInSupabase(requestId, status) {
+    const { data, error } = await supabase.from('extension_requests')
+        .update({ status })
+        .eq('id', requestId);
+
+    if (error) {
+        console.error('Error updating extension request:', error);
+        return null;
+    }
+    return data?.[0] || null;
 }
 
 /**
@@ -749,6 +867,52 @@ async function deleteCategoryFromSupabase(name) {
 }
 
 /**
+ * Rename category and move existing inventory items to new category
+ */
+async function renameCategoryInSupabase(oldName, newName) {
+    const { data: existing, error: existingErr } = await supabase
+        .from('categories')
+        .select('name')
+        .eq('name', newName)
+        .maybeSingle();
+
+    if (existingErr) {
+        console.error('Error checking existing category:', existingErr);
+        return false;
+    }
+
+    if (!existing) {
+        const { error: addErr } = await supabase.from('categories').insert([{ name: newName }]);
+        if (addErr) {
+            console.error('Error creating new category name:', addErr);
+            return false;
+        }
+    }
+
+    const { error: updateItemsErr } = await supabase
+        .from('inventory_items')
+        .update({ category: newName })
+        .eq('category', oldName);
+
+    if (updateItemsErr) {
+        console.error('Error reassigning inventory item categories:', updateItemsErr);
+        return false;
+    }
+
+    const { error: deleteOldErr } = await supabase
+        .from('categories')
+        .delete()
+        .eq('name', oldName);
+
+    if (deleteOldErr) {
+        console.error('Error deleting old category name:', deleteOldErr);
+        return false;
+    }
+
+    return true;
+}
+
+/**
  * Add visibility tag to visibility_tags table
  */
 async function addVisibilityTagToSupabase(name) {
@@ -759,6 +923,38 @@ async function addVisibilityTagToSupabase(name) {
         return null;
     }
     return data?.[0];
+}
+
+/**
+ * Rename visibility tag
+ */
+async function renameVisibilityTagInSupabase(oldName, newName) {
+    const { data, error } = await supabase
+        .from('visibility_tags')
+        .update({ name: newName })
+        .eq('name', oldName);
+
+    if (error) {
+        console.error('Error renaming visibility tag:', error);
+        return null;
+    }
+    return data?.[0] || null;
+}
+
+/**
+ * Delete visibility tag by name
+ */
+async function deleteVisibilityTagFromSupabase(name) {
+    const { error } = await supabase
+        .from('visibility_tags')
+        .delete()
+        .eq('name', name);
+
+    if (error) {
+        console.error('Error deleting visibility tag:', error);
+        return false;
+    }
+    return true;
 }
 
 /**
@@ -775,6 +971,51 @@ async function addItemVisibilityTagToSupabase(itemId, tagId) {
         return null;
     }
     return data?.[0];
+}
+
+/**
+ * Replace all visibility tags for an inventory item
+ */
+async function setItemVisibilityTagsInSupabase(itemId, tagNames) {
+    const { error: clearError } = await supabase
+        .from('inventory_item_visibility')
+        .delete()
+        .eq('item_id', itemId);
+
+    if (clearError) {
+        console.error('Error clearing item visibility tags:', clearError);
+        return false;
+    }
+
+    if (!Array.isArray(tagNames) || tagNames.length === 0) {
+        return true;
+    }
+
+    const { data: tagRows, error: tagsError } = await supabase
+        .from('visibility_tags')
+        .select('id, name')
+        .in('name', tagNames);
+
+    if (tagsError) {
+        console.error('Error loading tag IDs:', tagsError);
+        return false;
+    }
+
+    if (!tagRows || tagRows.length === 0) {
+        return true;
+    }
+
+    const links = tagRows.map(tag => ({ item_id: itemId, tag_id: tag.id }));
+    const { error: insertError } = await supabase
+        .from('inventory_item_visibility')
+        .insert(links);
+
+    if (insertError) {
+        console.error('Error setting item visibility tags:', insertError);
+        return false;
+    }
+
+    return true;
 }
 
 /**
