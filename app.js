@@ -132,15 +132,26 @@ function checkLoginRateLimit() {
 
     // Slide the window: discard old attempts
     loginRateLimit.attempts = loginRateLimit.attempts.filter(t => now - t < loginRateLimit.windowMs);
+
+    return true;
+}
+
+function recordFailedLoginAttempt() {
+    const now = Date.now();
+    loginRateLimit.attempts = loginRateLimit.attempts.filter(t => now - t < loginRateLimit.windowMs);
     loginRateLimit.attempts.push(now);
 
-    if (loginRateLimit.attempts.length > loginRateLimit.maxAttempts) {
+    if (loginRateLimit.attempts.length >= loginRateLimit.maxAttempts) {
         loginRateLimit.lockedUntil = now + loginRateLimit.lockoutMs;
         showToast('Too many login attempts. Locked for 60 seconds.', 'error');
         return false;
     }
 
     return true;
+}
+
+function clearFailedLoginAttempts() {
+    loginRateLimit.attempts = [];
 }
 
 function parseTimeToMinutes(timeString) {
@@ -628,8 +639,10 @@ barcodeInput.addEventListener('keydown', (e) => {
                 showToast('Your account is suspended. Please contact a teacher.', 'error');
                 return;
             }
+            clearFailedLoginAttempts();
             login(user);
         } else {
+            recordFailedLoginAttempt();
             showToast('Invalid barcode scanned.', 'error');
         }
     }
