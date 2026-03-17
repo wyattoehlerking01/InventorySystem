@@ -4,9 +4,14 @@
 
 // Initialize Supabase client
 const { SUPABASE_URL, SUPABASE_KEY } = window.APP_ENV || {};
-const supabase = (SUPABASE_URL && SUPABASE_KEY && window.supabase && typeof window.supabase.createClient === 'function')
-    ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY)
-    : null;
+let supabase = null;
+try {
+    if (SUPABASE_URL && SUPABASE_KEY && window.supabase && typeof window.supabase.createClient === 'function') {
+        supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+    }
+} catch (e) {
+    console.error('Supabase createClient failed:', e);
+}
 
 function requireSupabaseClient(context) {
     if (!supabase) {
