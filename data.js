@@ -3,9 +3,8 @@
    ======================================= */
 
 // Initialize Supabase client
-const supabaseUrl = 'https://xgiqhzexzrumjlxmooly.supabase.co';
-const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhnaXFoemV4enJ1bWpseG1vb2x5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM2NTE3OTcsImV4cCI6MjA4OTIyNzc5N30.4sHNN7CFZ9gQG8VmyZ8STp2U1eb-TC4hkLKh2-ErY4M';
-const supabase = window.supabase.createClient(supabaseUrl, supabaseAnonKey);
+const { SUPABASE_URL, SUPABASE_KEY } = window.APP_ENV;
+const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 /* =======================================
    GLOBAL DATA ARRAYS (from Supabase)
