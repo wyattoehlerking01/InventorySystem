@@ -479,10 +479,16 @@ async function checkoutBasket() {
     const projectId = document.getElementById('basket-project-select').value;
     const project = projectId ? projects.find(p => p.id === projectId) : getOrCreatePersonalProject(currentUser.id);
 
-    inventoryBasket.forEach(basketItem => {
+    for (const basketItem of inventoryBasket) {
         const item = inventoryItems.find(i => i.id === basketItem.id);
         if (item) {
             item.stock -= basketItem.qty;
+            
+            // Update stock in Supabase
+            await updateItemInSupabase(item.id, { stock: item.stock }).catch(err => {
+                console.error('Failed to update item stock in Supabase:', err);
+            });
+            
             _trackItemSignout(item, basketItem.qty);
 
             const signoutData = {
@@ -496,6 +502,17 @@ async function checkoutBasket() {
             };
 
             project.itemsOut.push(signoutData);
+            
+            // Save project item out to Supabase
+            await addProjectItemOutToSupabase({
+                projectId: project.id,
+                itemId: item.id,
+                quantity: basketItem.qty,
+                signoutDate: signoutData.signoutDate,
+                dueDate: signoutData.dueDate
+            }).catch(err => {
+                console.error('Failed to save project item out to Supabase:', err);
+            });
 
             if (project.id.startsWith('PERS-')) {
                 addLog(currentUser.id, 'Personal Sign-out', `Bulk signed out ${basketItem.qty}x ${item.name} to self`);
@@ -503,7 +520,7 @@ async function checkoutBasket() {
                 addLog(currentUser.id, 'Project Sign-out', `Bulk signed out ${basketItem.qty}x ${item.name} for project ${project.name}`);
             }
         }
-    });
+    }
 
     inventoryBasket = [];
     showToast('Bulk checkout complete!', 'success');
@@ -519,7 +536,10 @@ document.getElementById('close-basket-btn')?.addEventListener('click', () => tog
 document.getElementById('checkout-basket-btn')?.addEventListener('click', checkoutBasket);
 
 // Init application
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+    // Load all data from Supabase tables before initializing the app
+    await loadAllData();
+    
     applyVersionBadges();
 
     // Bring focus to barcode scanner input
@@ -563,7 +583,7 @@ backToLoginBtn?.addEventListener('click', () => {
     }, 300);
 });
 
-submitHelpBtn?.addEventListener('click', () => {
+submitHelpBtn?.addEventListener('click', async () => {
     const name = document.getElementById('help-name').value.trim();
     const email = document.getElementById('help-email').value.trim();
     const desc = document.getElementById('help-desc').value.trim();
@@ -573,14 +593,20 @@ submitHelpBtn?.addEventListener('click', () => {
         return;
     }
 
-    helpRequests.unshift({
+    const helpRequest = {
         id: generateId('REQ'),
         name: name,
         email: email,
         description: desc,
         status: 'Pending',
         timestamp: new Date().toISOString()
-    });
+    };
+
+    // Add to local array
+    helpRequests.unshift(helpRequest);
+    
+    // Save to Supabase
+    await addHelpRequestToSupabase(helpRequest);
 
     showToast('Your request has been submitted. Support will contact you shortly.', 'success');
     document.getElementById('help-name').value = '';
@@ -1347,13 +1373,16 @@ function openSignOutModal(itemId) {
 
     openModal(html);
 
-    document.getElementById('confirm-signout').addEventListener('click', () => {
+    document.getElementById('confirm-signout').addEventListener('click', async () => {
         const projId = document.getElementById('so-project').value;
         const qty = parseInt(document.getElementById('so-qty').value);
 
         if (qty > 0 && qty <= item.stock) {
             // Update stock
             item.stock -= qty;
+            await updateItemInSupabase(item.id, { stock: item.stock }).catch(err => {
+                console.error('Failed to update item stock in Supabase:', err);
+            });
 
             // Update Project
             let project;
@@ -1364,7 +1393,7 @@ function openSignOutModal(itemId) {
                 project = projects.find(p => p.id === projId);
             }
 
-            project.itemsOut.push({
+            const signoutData = {
                 id: generateId('OUT'),
                 itemId: item.id,
                 quantity: qty,
@@ -1372,6 +1401,17 @@ function openSignOutModal(itemId) {
                 dueDate: calculateDueDate(new Date(), currentUser),
                 assignedToUserId: project.ownerId,
                 signedOutByUserId: currentUser.id
+            };
+            project.itemsOut.push(signoutData);
+
+            await addProjectItemOutToSupabase({
+                projectId: project.id,
+                itemId: item.id,
+                quantity: qty,
+                signoutDate: signoutData.signoutDate,
+                dueDate: signoutData.dueDate
+            }).catch(err => {
+                console.error('Failed to save signout in Supabase:', err);
             });
 
             _trackItemSignout(item, qty);
@@ -1392,39 +1432,9 @@ function openSignOutModal(itemId) {
 /* =======================================
    CLASSES LOGIC
    ======================================= */
-let studentClasses = [
-    {
-        id: 'CLS-001',
-        name: 'Intro to Robotics (Fall)',
-        students: ['STU-123', 'STU-999'],
-        visibleItemIds: ['ITM-001', 'ITM-004'],
-        allowedVisibilityTags: ['Public'],
-        duePolicy: {
-            defaultSignoutMinutes: 80,
-            classPeriodMinutes: 50,
-            periodRanges: [
-                { start: '08:00', end: '08:55', returnClassPeriods: 2 }
-            ]
-        },
-        defaultPermissions: { canCreateProjects: false, canJoinProjects: true, canSignOut: true }
-    },
-    {
-        id: 'CLS-002',
-        name: 'Advanced Electronics',
-        students: ['STU-555'],
-        visibleItemIds: inventoryItems.map(item => item.id),
-        allowedVisibilityTags: ['Public', 'Advanced'],
-        duePolicy: {
-            defaultSignoutMinutes: 80,
-            classPeriodMinutes: 50,
-            periodRanges: [
-                { start: '08:00', end: '08:55', returnClassPeriods: 3 },
-                { start: '09:00', end: '09:50', returnClassPeriods: 2 }
-            ]
-        },
-        defaultPermissions: { canCreateProjects: true, canJoinProjects: true, canSignOut: true }
-    }
-];
+if (!Array.isArray(studentClasses)) {
+    studentClasses = [];
+}
 
 function renderClasses() {
     const container = document.getElementById('classes-container');
@@ -1475,10 +1485,15 @@ function renderClasses() {
     });
 
     document.querySelectorAll('.delete-class-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
+        btn.addEventListener('click', async (e) => {
             const id = e.currentTarget.getAttribute('data-id');
             const cls = studentClasses.find(c => c.id === id);
             if (confirm(`Are you sure you want to delete ${cls.name}? This cannot be undone.`)) {
+                const deleted = await deleteStudentClassInSupabase(id);
+                if (!deleted) {
+                    showToast('Failed to delete class from Supabase.', 'error');
+                    return;
+                }
                 studentClasses = studentClasses.filter(c => c.id !== id);
                 showToast(`Class ${cls.name} deleted.`, 'success');
                 addLog(currentUser.id, 'Delete Class', `Deleted student class: ${cls.name}`);
@@ -1591,7 +1606,7 @@ function openEditClassModal(classId) {
 
     attachPeriodRowHandlers('edit-class-period-rows', 'edit-class-add-period-btn');
 
-    document.getElementById('confirm-edit-class').addEventListener('click', () => {
+    document.getElementById('confirm-edit-class').addEventListener('click', async () => {
         const name = document.getElementById('edit-class-name').value.trim();
         const checkedStudents = Array.from(document.querySelectorAll('.edit-class-student-checkbox:checked')).map(cb => cb.value);
         const checkedItems = Array.from(document.querySelectorAll('.edit-class-item-checkbox:checked')).map(cb => cb.value);
@@ -1612,6 +1627,13 @@ function openEditClassModal(classId) {
                 timezone,
                 periodRanges: parsedRanges
             });
+
+            const saved = await saveStudentClassToSupabase(cls);
+            if (!saved) {
+                showToast('Failed to save class updates to Supabase.', 'error');
+                return;
+            }
+
             showToast(`Class ${name} updated.`, 'success');
             addLog(currentUser.id, 'Edit Class', `Updated class ${name} with ${checkedStudents.length} students.`);
             closeModal();
@@ -1721,7 +1743,7 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
     openModal(html);
     attachPeriodRowHandlers('add-class-period-rows', 'add-class-add-period-btn');
 
-    document.getElementById('confirm-add-class').addEventListener('click', () => {
+    document.getElementById('confirm-add-class').addEventListener('click', async () => {
         const name = document.getElementById('add-class-name').value.trim();
         const checkedStudents = Array.from(document.querySelectorAll('.student-checkbox:checked')).map(cb => cb.value);
         const checkedItems = Array.from(document.querySelectorAll('.class-item-checkbox:checked')).map(cb => cb.value);
@@ -1732,7 +1754,7 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
         const parsedRanges = collectPeriodRowsFromModal('add-class-period-rows');
 
         if (name) {
-            studentClasses.unshift({
+            const newClass = {
                 id: generateId('CLS'),
                 name: name,
                 teacherId: currentUser.id,
@@ -1744,8 +1766,17 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
                     classPeriodMinutes: classPeriodMinutes,
                     timezone,
                     periodRanges: parsedRanges
-                })
-            });
+                }),
+                defaultPermissions: { canCreateProjects: false, canJoinProjects: true, canSignOut: true }
+            };
+
+            const saved = await saveStudentClassToSupabase(newClass);
+            if (!saved) {
+                showToast('Failed to create class in Supabase.', 'error');
+                return;
+            }
+
+            studentClasses.unshift(newClass);
             showToast(`Class ${name} created with ${checkedStudents.length} students.`, 'success');
             addLog(currentUser.id, 'Create Class', `Created class ${name} with ${checkedStudents.length} students.`);
             closeModal();
@@ -2028,6 +2059,11 @@ function openUserModal(editId = null) {
                 }
             });
 
+            // Update in Supabase
+            updateUserInSupabase(id, { name, role, status: userToEdit.status }).catch(err => {
+                console.error('Failed to update user in Supabase:', err);
+            });
+
             showToast('User updated successfully.', 'success');
             addLog(currentUser.id, 'Edit User', `Updated user: ${id}`);
         } else {
@@ -2035,12 +2071,19 @@ function openUserModal(editId = null) {
                 showToast('A user with this ID already exists.', 'error');
                 return;
             }
-            mockUsers.push({
+            const newUser = {
                 id: id,
                 name: name,
                 role: role,
                 perms: perms,
                 status: 'Active'
+            };
+            
+            mockUsers.push(newUser);
+
+            // Save to Supabase
+            addUserToSupabase(newUser).catch(err => {
+                console.error('Failed to add user to Supabase:', err);
             });
 
             // Handle New Student Class Assignment
@@ -2741,14 +2784,22 @@ document.getElementById('bulk-import-items-btn')?.addEventListener('click', () =
                 const threshold = parseInt(parts[4]) || 5;
 
                 if (name) {
-                    inventoryItems.push({
+                    const item = {
                         id: generateId('ITM'),
                         name: name,
                         category: category,
                         sku: sku,
                         stock: stock,
                         threshold: threshold
+                    };
+                    
+                    inventoryItems.push(item);
+                    
+                    // Save to Supabase
+                    addItemToSupabase(item).catch(err => {
+                        console.error('Failed to add item to Supabase:', err);
                     });
+                    
                     importCount++;
                 }
             }
