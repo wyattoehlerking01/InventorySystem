@@ -1,4 +1,7 @@
 {
+  "scripts": {
+    "kiosk-listener": "node kiosk_realtime_listener.js"
+  },
   "dependencies": {
     "@supabase/supabase-js": "^2.99.2"
   }

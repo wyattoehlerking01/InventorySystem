@@ -6,7 +6,11 @@
 let currentUser = null;
 
 const envConfig = window.APP_ENV || {};
-const appVersion = String(envConfig.APP_VERSION ?? envConfig.APP_Version ?? '').trim();
+const kioskId = String(envConfig.KIOSK_ID ?? envConfig.kioskId ?? '').trim();
+let appVersion = String(envConfig.APP_VERSION ?? envConfig.APP_Version ?? 'VERSION').trim() || 'VERSION';
+window.RUNTIME_APP_VERSION = appVersion;
+
+let kioskVersionChannel = null;
 
 const defaultDuePolicy = {
     defaultSignoutMinutes: 80,
@@ -42,6 +46,7 @@ const pageTitle = document.getElementById('page-title');
 const navLogs = document.getElementById('nav-logs');
 const navUsers = document.getElementById('nav-users');
 const navClasses = document.getElementById('nav-classes');
+const navMyItems = document.getElementById('nav-my-items');
 
 // DOM Elements - Pages
 const pages = document.querySelectorAll('.page');
@@ -379,6 +384,126 @@ function applyVersionBadges() {
     }
 }
 
+function setRuntimeAppVersion(version) {
+    const normalized = String(version || '').trim() || 'VERSION';
+    appVersion = normalized;
+    window.RUNTIME_APP_VERSION = normalized;
+    applyVersionBadges();
+}
+
+function getSettingsSupabaseClient() {
+    if (typeof dbClient !== 'undefined' && dbClient) return dbClient;
+
+    const { SUPABASE_URL, SUPABASE_KEY } = envConfig;
+    if (!SUPABASE_URL || !SUPABASE_KEY) return null;
+    if (!window.supabase || typeof window.supabase.createClient !== 'function') return null;
+
+    return window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+}
+
+async function fetchKioskAppVersion(targetKioskId = kioskId) {
+    const fallback = String(envConfig.APP_VERSION ?? envConfig.APP_Version ?? 'VERSION').trim() || 'VERSION';
+
+    if (!targetKioskId) return fallback;
+
+    const client = getSettingsSupabaseClient();
+    if (!client) return fallback;
+
+    try {
+        const { data, error } = await client
+            .from('kiosk_settings')
+            .select('app_version')
+            .eq('kiosk_id', targetKioskId)
+            .maybeSingle();
+
+        if (error) {
+            console.warn('Failed to fetch kiosk app version:', error);
+            return fallback;
+        }
+
+        return String(data?.app_version || '').trim() || fallback;
+    } catch (error) {
+        console.warn('Unexpected error fetching kiosk app version:', error);
+        return fallback;
+    }
+}
+
+function showNewUpdateOverlay(newVersion) {
+    const existing = document.getElementById('app-update-overlay');
+    if (existing) {
+        const versionLabel = existing.querySelector('.app-update-version');
+        if (versionLabel) versionLabel.textContent = newVersion;
+        return;
+    }
+
+    const overlay = document.createElement('div');
+    overlay.id = 'app-update-overlay';
+    overlay.className = 'app-update-overlay';
+    overlay.innerHTML = `
+        <div class="app-update-card glass-panel">
+            <h3>New Update Available</h3>
+            <p class="text-secondary" style="margin:0.5rem 0 1rem 0;">A new kiosk version is ready:</p>
+            <p class="app-update-version" style="font-weight:700;color:var(--accent-secondary);margin-bottom:1rem">${newVersion}</p>
+            <div style="display:flex;gap:0.75rem;justify-content:center;">
+                <button class="btn btn-secondary" id="dismiss-update-overlay">Later</button>
+                <button class="btn btn-primary" id="apply-update-overlay">Reload Now</button>
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(overlay);
+
+    document.getElementById('dismiss-update-overlay')?.addEventListener('click', () => {
+        overlay.remove();
+    });
+    document.getElementById('apply-update-overlay')?.addEventListener('click', () => {
+        window.location.reload();
+    });
+}
+
+function handleRemoteAppVersionChange(nextVersion) {
+    const normalized = String(nextVersion || '').trim();
+    if (!normalized || normalized === appVersion) return;
+
+    setRuntimeAppVersion(normalized);
+
+    const action = String(envConfig.APP_UPDATE_ACTION || 'reload').trim().toLowerCase();
+    if (action === 'overlay') {
+        showNewUpdateOverlay(normalized);
+        return;
+    }
+
+    window.location.reload();
+}
+
+function startKioskVersionRealtimeListener(targetKioskId = kioskId) {
+    if (!targetKioskId) return;
+
+    const client = getSettingsSupabaseClient();
+    if (!client) return;
+
+    if (kioskVersionChannel) {
+        client.removeChannel(kioskVersionChannel);
+        kioskVersionChannel = null;
+    }
+
+    kioskVersionChannel = client
+        .channel(`kiosk-settings-version-${targetKioskId}`)
+        .on('postgres_changes', {
+            event: '*',
+            schema: 'public',
+            table: 'kiosk_settings',
+            filter: `kiosk_id=eq.${targetKioskId}`
+        }, payload => {
+            handleRemoteAppVersionChange(payload?.new?.app_version);
+        })
+        .subscribe(status => {
+            if (status === 'CHANNEL_ERROR') {
+                console.warn('kiosk_settings app_version realtime channel error');
+            }
+        });
+}
+
 // Inventory Basket Logic
 let inventoryBasket = [];
 let isBasketOpen = false;
@@ -474,6 +599,146 @@ function renderBasket() {
         myProjects.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
 }
 
+function formatItemExtraInfo(item) {
+    if (!item) {
+        return {
+            location: 'Unknown',
+            description: 'No description available.'
+        };
+    }
+
+    return {
+        location: String(item.location || item.storageLocation || item.bin || 'Not set'),
+        description: String(item.description || item.notes || 'No description available.')
+    };
+}
+
+function isMetadataBlank(value) {
+    return value === undefined || value === null || String(value).trim() === '';
+}
+
+function getMissingItemMetadataFields(item) {
+    if (!item) return ['location', 'description'];
+
+    const locationMissing = isMetadataBlank(item.location) && isMetadataBlank(item.storageLocation) && isMetadataBlank(item.bin);
+    const descriptionMissing = isMetadataBlank(item.description) && isMetadataBlank(item.notes);
+
+    const missing = [];
+    if (locationMissing) missing.push('location');
+    if (descriptionMissing) missing.push('description');
+    return missing;
+}
+
+function renderMissingMetadataIcon(item) {
+    if (currentUser?.role === 'student') return '';
+
+    const missing = getMissingItemMetadataFields(item);
+    if (missing.length === 0) return '';
+
+    return `<span title="Missing metadata: ${missing.join(', ')}" style="display:inline-flex;align-items:center;justify-content:center;margin-left:0.4rem;color:var(--warning);vertical-align:middle;"><i class="ph ph-warning-circle"></i></span>`;
+}
+
+async function requestDoorUnlockAndLogAccess({ actionType, item, quantity = 1, projectName = 'Personal' }) {
+    const actorId = currentUser?.id || 'SYSTEM';
+    const actorRole = currentUser?.role || 'system';
+    const itemName = item?.name || 'Unknown Item';
+    const itemId = item?.id || 'Unknown ID';
+
+    try {
+        await fetch('http://localhost:8080/unlock', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                itemId: item?.id,
+                itemName: item?.name,
+                category: item?.category,
+                actionType,
+                userId: actorId,
+                quantity,
+                projectName
+            })
+        });
+
+        addLog(actorId, 'Door Access', `Door unlocked for student ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName} [role=${actorRole}]`);
+        return true;
+    } catch (err) {
+        addLog(actorId, 'Door Access Failed', `Door unlock failed during ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName}. Error: ${err.message || err}`);
+        showToast('Warning: Hardware unlock script unreachable.', 'warning');
+        return false;
+    }
+}
+
+function openCheckoutReviewModal() {
+    if (inventoryBasket.length === 0) {
+        showToast('Your basket is empty.', 'error');
+        return;
+    }
+
+    const projectSelect = document.getElementById('basket-project-select');
+    const selectedProjectId = projectSelect?.value || '';
+    const selectedProject = selectedProjectId
+        ? projects.find(p => p.id === selectedProjectId)
+        : getOrCreatePersonalProject(currentUser.id);
+
+    const destinationName = selectedProjectId
+        ? (selectedProject ? selectedProject.name : 'Unknown Project')
+        : 'Personal Sign-out';
+
+    const projectedDueDate = new Date(calculateDueDate(new Date(), currentUser));
+
+    const rows = inventoryBasket.map(entry => {
+        const item = inventoryItems.find(i => i.id === entry.id);
+        const info = formatItemExtraInfo(item);
+
+        return `
+            <div class="glass-panel" style="padding:0.85rem;margin-bottom:0.6rem;border-radius:var(--radius-sm)">
+                <div style="display:flex;justify-content:space-between;gap:0.75rem;align-items:flex-start;">
+                    <div>
+                        <div class="font-bold">${item ? item.name : entry.name} (x${entry.qty})</div>
+                        <small class="text-muted">SKU: ${item?.sku || 'N/A'} | Category: ${item?.category || 'N/A'}</small>
+                    </div>
+                    <span class="badge" style="background:rgba(245,158,11,0.2);color:var(--warning)">Stock: ${item?.stock ?? 'N/A'}</span>
+                </div>
+                <div style="margin-top:0.45rem">
+                    <small><strong>Location:</strong> ${info.location}</small><br>
+                    <small><strong>Description:</strong> ${info.description}</small>
+                </div>
+            </div>
+        `;
+    }).join('');
+
+    const totalQty = inventoryBasket.reduce((sum, i) => sum + i.qty, 0);
+
+    const html = `
+        <div class="modal-header">
+            <h3>Confirm Checkout</h3>
+            <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
+        </div>
+        <div class="modal-body">
+            <p class="text-secondary" style="margin-bottom:0.8rem">
+                Review items before checkout.
+            </p>
+            <div class="glass-panel" style="padding:0.75rem;margin-bottom:0.8rem;border-radius:var(--radius-sm)">
+                <div><strong>Destination:</strong> ${destinationName}</div>
+                <div><strong>Total Quantity:</strong> ${totalQty}</div>
+                <div><strong>Due Date (preview):</strong> ${projectedDueDate.toLocaleString()}</div>
+            </div>
+            ${rows}
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            <button class="btn btn-primary" id="confirm-basket-checkout-final">Confirm Checkout</button>
+        </div>
+    `;
+
+    openModal(html);
+
+    document.getElementById('confirm-basket-checkout-final')?.addEventListener('click', async () => {
+        closeModal();
+        await checkoutBasket();
+    });
+}
+
 function getOrCreatePersonalProject(userId) {
     const personalId = `PERS-${userId}`;
     let personalProject = projects.find(p => p.id === personalId);
@@ -493,8 +758,31 @@ function getOrCreatePersonalProject(userId) {
 
 // Global checkout function
 async function checkoutBasket() {
+    if (inventoryBasket.length === 0) {
+        showToast('Your basket is empty.', 'error');
+        return;
+    }
+
     const projectId = document.getElementById('basket-project-select').value;
     const project = projectId ? projects.find(p => p.id === projectId) : getOrCreatePersonalProject(currentUser.id);
+
+    if (currentUser?.role === 'student') {
+        const firstBasketItem = inventoryBasket[0];
+        const firstItem = inventoryItems.find(i => i.id === firstBasketItem?.id);
+        const totalQty = inventoryBasket.reduce((sum, entry) => sum + entry.qty, 0);
+
+        const unlocked = await requestDoorUnlockAndLogAccess({
+            actionType: 'sign-out',
+            item: firstItem,
+            quantity: totalQty,
+            projectName: project?.name || 'Personal'
+        });
+
+        if (!unlocked) {
+            showToast('Door unlock denied. Checkout canceled.', 'error');
+            return;
+        }
+    }
 
     for (const basketItem of inventoryBasket) {
         const item = inventoryItems.find(i => i.id === basketItem.id);
@@ -550,7 +838,7 @@ async function checkoutBasket() {
 // Event Listeners for Basket
 document.getElementById('open-basket-btn')?.addEventListener('click', () => toggleBasket(true));
 document.getElementById('close-basket-btn')?.addEventListener('click', () => toggleBasket(false));
-document.getElementById('checkout-basket-btn')?.addEventListener('click', checkoutBasket);
+document.getElementById('checkout-basket-btn')?.addEventListener('click', openCheckoutReviewModal);
 
 // Init application
 document.addEventListener('DOMContentLoaded', async () => {
@@ -577,7 +865,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         showToast('Unable to load data from Supabase. Login may not work until this is fixed.', 'error');
     }
     
-    applyVersionBadges();
+    // Pull kiosk app version from Supabase at startup and keep in global state.
+    const remoteVersion = await fetchKioskAppVersion(kioskId);
+    setRuntimeAppVersion(remoteVersion);
+    startKioskVersionRealtimeListener(kioskId);
 
     // Bring focus to barcode scanner input
     if (barcodeInput) {
@@ -731,16 +1022,18 @@ function showHardwareReturnModal(item, record) {
         const btn = e.currentTarget;
         btn.disabled = true;
         btn.innerHTML = '<i class="ph ph-spinner ph-spin"></i> Processing...';
-        
-        try {
-            await fetch('http://localhost:8080/unlock', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ itemId: item.id, itemName: item.name, category: item.category })
-            });
-        } catch (err) {
-            console.warn('Hardware trigger failed or daemon is not running:', err);
-            showToast('Warning: Hardware unlock script unreachable.', 'warning');
+
+        const unlocked = await requestDoorUnlockAndLogAccess({
+            actionType: 'sign-in',
+            item,
+            quantity: 1,
+            projectName: record.projectName || 'Personal'
+        });
+
+        if (!unlocked) {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="ph ph-power"></i> Try Again';
+            return;
         }
 
         const returned = await returnItemToSupabase(record.id);
@@ -845,6 +1138,7 @@ function login(user) {
         navLogs.classList.add('hidden');
         navUsers.classList.add('hidden');
         navClasses.classList.add('hidden');
+        navMyItems?.classList.remove('hidden');
         navRequests?.classList.add('hidden');
         document.getElementById('manage-categories-btn')?.classList.add('hidden');
         document.getElementById('manage-visibility-tags-btn')?.classList.add('hidden');
@@ -853,6 +1147,7 @@ function login(user) {
         navLogs.classList.remove('hidden');
         navUsers.classList.remove('hidden');
         navClasses.classList.remove('hidden');
+        navMyItems?.classList.add('hidden');
         navRequests?.classList.remove('hidden');
         document.getElementById('manage-categories-btn')?.classList.remove('hidden');
         document.getElementById('manage-visibility-tags-btn')?.classList.remove('hidden');
@@ -976,6 +1271,14 @@ async function refreshPageDataFromSupabase(targetId) {
         return;
     }
 
+    if (targetId === 'my-items') {
+        await Promise.all([
+            refreshProjectsFromSupabase(),
+            refreshInventoryFromSupabase()
+        ]);
+        return;
+    }
+
     if (targetId === 'logs') {
         await Promise.all([
             loadActivityLogs(),
@@ -1037,10 +1340,59 @@ async function switchPage(targetId, title) {
     if (targetId === 'dashboard') loadDashboard();
     if (targetId === 'inventory') renderInventory();
     if (targetId === 'projects') renderProjects();
+    if (targetId === 'my-items') renderMyItems();
     if (targetId === 'logs') renderLogs();
     if (targetId === 'users') renderUsers();
     if (targetId === 'classes') renderClasses();
     if (targetId === 'requests') renderRequests();
+}
+
+function renderMyItems() {
+    const tbody = document.getElementById('my-items-table-body');
+    if (!tbody) return;
+
+    if (!currentUser || currentUser.role !== 'student') {
+        tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">This page is available to students only.</td></tr>';
+        return;
+    }
+
+    const personalProjectId = `PERS-${currentUser.id}`;
+    const personalProject = projects.find(p =>
+        p.id === personalProjectId || (p.name === 'Personal Use' && p.ownerId === currentUser.id)
+    );
+
+    const personalItems = (personalProject?.itemsOut || []).map(io => {
+        const item = inventoryItems.find(i => i.id === io.itemId);
+        return {
+            itemName: item ? item.name : io.itemId,
+            quantity: io.quantity,
+            signoutDate: io.signoutDate,
+            dueDate: io.dueDate
+        };
+    }).sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
+
+    if (personalItems.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No personal sign-outs right now.</td></tr>';
+        return;
+    }
+
+    tbody.innerHTML = personalItems.map(entry => {
+        const due = new Date(entry.dueDate);
+        const isOverdue = due < new Date();
+        const statusStyle = isOverdue
+            ? 'background:rgba(239,68,68,0.2);color:var(--danger)'
+            : 'background:rgba(245,158,11,0.2);color:var(--warning)';
+
+        return `
+            <tr>
+                <td><strong>${entry.itemName}</strong></td>
+                <td>${entry.quantity}</td>
+                <td><small class="text-muted">${new Date(entry.signoutDate).toLocaleString()}</small></td>
+                <td><small>${due.toLocaleString()}</small></td>
+                <td><span class="badge" style="${statusStyle}">${isOverdue ? 'Overdue' : 'Signed Out'}</span></td>
+            </tr>
+        `;
+    }).join('');
 }
 
 /* =======================================
@@ -1153,6 +1505,20 @@ function loadDashboard() {
                 const item = inventoryItems.find(i => i.id === itemId);
 
                 if (!confirm(`Are you sure you want to return ${item ? item.name : 'this item'} to ${projectName}?`)) return;
+
+                if (currentUser?.role === 'student') {
+                    const unlocked = await requestDoorUnlockAndLogAccess({
+                        actionType: 'sign-in',
+                        item,
+                        quantity: 1,
+                        projectName
+                    });
+
+                    if (!unlocked) {
+                        showToast('Door unlock denied. Return canceled.', 'error');
+                        return;
+                    }
+                }
 
                 const returned = await returnItemToSupabase(projectItemOutId);
                 if (!returned) {
@@ -1345,7 +1711,7 @@ function renderInventory(filterStr = 'All') {
             <tr>
                 <td><input type="checkbox" class="item-select-cb" data-id="${item.id}"></td>
                 <td>
-                    <div class="font-bold">${item.name}</div>
+                    <div class="font-bold">${item.name}${renderMissingMetadataIcon(item)}</div>
                     <small class="text-xs text-muted">ID: ${item.id}</small>
                     ${tagsHtml ? `<div class="visibility-tags-row">${tagsHtml}</div>` : ''}
                 </td>
@@ -1470,6 +1836,20 @@ async function returnProjectItem(projectId, signoutId) {
         const assignedName = assignedToUser ? assignedToUser.name : assignedToUserId;
         const confirmOnBehalf = confirm(`This item is assigned to ${assignedName}. Sign it back in on their behalf?`);
         if (!confirmOnBehalf) return;
+    }
+
+    if (currentUser?.role === 'student') {
+        const unlocked = await requestDoorUnlockAndLogAccess({
+            actionType: 'sign-in',
+            item,
+            quantity: io.quantity,
+            projectName: project.name
+        });
+
+        if (!unlocked) {
+            showToast('Door unlock denied. Return canceled.', 'error');
+            return;
+        }
     }
 
     if (item) {
@@ -1633,6 +2013,22 @@ function openSignOutModal(itemId) {
         </div>
         <div class="modal-body">
             <p class="text-secondary mb-4">You are signing out: <strong>${item.name}</strong></p>
+            <div class="glass-panel" style="padding:0.85rem;margin-bottom:0.9rem;border-radius:var(--radius-sm)">
+                <div style="display:flex;justify-content:space-between;gap:0.75rem;align-items:flex-start;">
+                    <div>
+                        <div class="font-bold">${item.name}</div>
+                        <small class="text-muted">SKU: ${item.sku || 'N/A'} | Category: ${item.category || 'N/A'}</small>
+                    </div>
+                    <span class="badge" style="background:rgba(245,158,11,0.2);color:var(--warning)">In Stock: ${item.stock}</span>
+                </div>
+                <div style="margin-top:0.45rem">
+                    <small><strong>Location:</strong> ${formatItemExtraInfo(item).location}</small><br>
+                    <small><strong>Description:</strong> ${formatItemExtraInfo(item).description}</small>
+                </div>
+                <div style="margin-top:0.45rem">
+                    <small><strong>Due Date (preview):</strong> ${new Date(calculateDueDate(new Date(), currentUser)).toLocaleString()}</small>
+                </div>
+            </div>
             <div class="form-group">
                 <label>Select Project</label>
                 <select id="so-project" class="form-control">
@@ -1657,6 +2053,27 @@ function openSignOutModal(itemId) {
         const qty = parseInt(document.getElementById('so-qty').value);
 
         if (qty > 0 && qty <= item.stock) {
+            let project;
+            if (projId === 'personal') {
+                project = getOrCreatePersonalProject(currentUser.id);
+            } else {
+                project = projects.find(p => p.id === projId);
+            }
+
+            if (currentUser?.role === 'student') {
+                const unlocked = await requestDoorUnlockAndLogAccess({
+                    actionType: 'sign-out',
+                    item,
+                    quantity: qty,
+                    projectName: project?.name || 'Personal'
+                });
+
+                if (!unlocked) {
+                    showToast('Door unlock denied. Sign-out canceled.', 'error');
+                    return;
+                }
+            }
+
             // Update stock
             item.stock -= qty;
             await updateItemInSupabase(item.id, { stock: item.stock }).catch(err => {
@@ -1664,13 +2081,7 @@ function openSignOutModal(itemId) {
             });
 
             // Update Project
-            let project;
-            if (projId === 'personal') {
-                // Ensure personal project exists for this user
-                project = getOrCreatePersonalProject(currentUser.id);
-            } else {
-                project = projects.find(p => p.id === projId);
-            }
+            // Ensure project is set (already selected above)
 
             const signoutData = {
                 id: generateId('OUT'),
@@ -1782,13 +2193,52 @@ function renderClasses() {
     });
 }
 
+function bindCheckboxListControls({
+    searchInputId,
+    listContainerId,
+    checkboxClass,
+    selectAllBtnId,
+    clearBtnId
+}) {
+    const searchInput = document.getElementById(searchInputId);
+    const listContainer = document.getElementById(listContainerId);
+    const selectAllBtn = document.getElementById(selectAllBtnId);
+    const clearBtn = document.getElementById(clearBtnId);
+
+    if (!listContainer) return;
+
+    const applyFilter = () => {
+        const query = (searchInput?.value || '').trim().toLowerCase();
+        listContainer.querySelectorAll('.class-list-option').forEach(option => {
+            const label = option.getAttribute('data-label') || '';
+            option.style.display = !query || label.includes(query) ? '' : 'none';
+        });
+    };
+
+    searchInput?.addEventListener('input', applyFilter);
+
+    selectAllBtn?.addEventListener('click', () => {
+        listContainer.querySelectorAll(`.${checkboxClass}`).forEach(cb => {
+            const option = cb.closest('.class-list-option');
+            if (!option || option.style.display !== 'none') cb.checked = true;
+        });
+    });
+
+    clearBtn?.addEventListener('click', () => {
+        listContainer.querySelectorAll(`.${checkboxClass}`).forEach(cb => {
+            const option = cb.closest('.class-list-option');
+            if (!option || option.style.display !== 'none') cb.checked = false;
+        });
+    });
+}
+
 function openEditClassModal(classId) {
     const cls = studentClasses.find(c => c.id === classId);
     if (!cls) return;
 
     const availableStudents = mockUsers.filter(u => u.role === 'student');
     const studentOptions = availableStudents.map(s =>
-        `<div style="margin-bottom:0.5rem">
+        `<div class="class-list-option" data-label="${`${s.name} ${s.id}`.toLowerCase()}" style="margin-bottom:0.5rem">
             <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">
                 <input type="checkbox" value="${s.id}" class="edit-class-student-checkbox" ${cls.students.includes(s.id) ? 'checked' : ''}>
                 ${s.name} (${s.id})
@@ -1799,7 +2249,7 @@ function openEditClassModal(classId) {
     const visibleItemIds = getVisibleItemIdsForClass(cls);
     const classDuePolicy = normalizeDuePolicy(cls.duePolicy);
     const itemOptions = inventoryItems.map(item =>
-        `<div style="margin-bottom:0.5rem">
+        `<div class="class-list-option" data-label="${`${item.name} ${item.id}`.toLowerCase()}" style="margin-bottom:0.5rem">
             <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">
                 <input type="checkbox" value="${item.id}" class="edit-class-item-checkbox" ${visibleItemIds.includes(item.id) ? 'checked' : ''}>
                 ${item.name} (${item.id})
@@ -1826,13 +2276,23 @@ function openEditClassModal(classId) {
             </div>
             <div class="form-group">
                 <label>Students</label>
-                <div class="glass-panel" style="padding:1rem; max-height:200px; overflow-y:auto">
+                <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.5rem;flex-wrap:wrap;">
+                    <input type="text" id="edit-class-student-search" class="form-control" placeholder="Search students by name or ID" style="flex:1;min-width:220px;">
+                    <button type="button" class="btn btn-secondary" id="edit-class-student-select-all">Select Visible</button>
+                    <button type="button" class="btn btn-secondary" id="edit-class-student-clear">Clear Visible</button>
+                </div>
+                <div class="glass-panel" id="edit-class-student-list" style="padding:1rem; max-height:200px; overflow-y:auto">
                     ${studentOptions || '<p class="text-muted">No students available.</p>'}
                 </div>
             </div>
             <div class="form-group">
                 <label>Visible Inventory Items</label>
-                <div class="glass-panel" style="padding:1rem; max-height:220px; overflow-y:auto">
+                <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.5rem;flex-wrap:wrap;">
+                    <input type="text" id="edit-class-item-search" class="form-control" placeholder="Search items by name or ID" style="flex:1;min-width:220px;">
+                    <button type="button" class="btn btn-secondary" id="edit-class-item-select-all">Select Visible</button>
+                    <button type="button" class="btn btn-secondary" id="edit-class-item-clear">Clear Visible</button>
+                </div>
+                <div class="glass-panel" id="edit-class-item-list" style="padding:1rem; max-height:220px; overflow-y:auto">
                     ${itemOptions || '<p class="text-muted">No items available.</p>'}
                 </div>
             </div>
@@ -1882,6 +2342,23 @@ function openEditClassModal(classId) {
     `;
 
     openModal(html);
+    dynamicModal.classList.add('class-modal');
+
+    bindCheckboxListControls({
+        searchInputId: 'edit-class-student-search',
+        listContainerId: 'edit-class-student-list',
+        checkboxClass: 'edit-class-student-checkbox',
+        selectAllBtnId: 'edit-class-student-select-all',
+        clearBtnId: 'edit-class-student-clear'
+    });
+
+    bindCheckboxListControls({
+        searchInputId: 'edit-class-item-search',
+        listContainerId: 'edit-class-item-list',
+        checkboxClass: 'edit-class-item-checkbox',
+        selectAllBtnId: 'edit-class-item-select-all',
+        clearBtnId: 'edit-class-item-clear'
+    });
 
     attachPeriodRowHandlers('edit-class-period-rows', 'edit-class-add-period-btn');
 
@@ -1927,7 +2404,7 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
     // Only show students
     const availableStudents = mockUsers.filter(u => u.role === 'student');
     const studentOptions = availableStudents.map(s =>
-        `<div style="margin-bottom:0.5rem">
+        `<div class="class-list-option" data-label="${`${s.name} ${s.id}`.toLowerCase()}" style="margin-bottom:0.5rem">
             <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">
                 <input type="checkbox" value="${s.id}" class="student-checkbox">
                 ${s.name} (${s.id})
@@ -1936,7 +2413,7 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
     ).join('');
 
     const itemOptions = inventoryItems.map(item =>
-        `<div style="margin-bottom:0.5rem">
+        `<div class="class-list-option" data-label="${`${item.name} ${item.id}`.toLowerCase()}" style="margin-bottom:0.5rem">
             <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">
                 <input type="checkbox" value="${item.id}" class="class-item-checkbox" checked>
                 ${item.name} (${item.id})
@@ -1964,13 +2441,23 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
             </div>
             <div class="form-group">
                 <label>Select Students</label>
-                <div class="glass-panel" style="padding:1rem; max-height:200px; overflow-y:auto">
+                <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.5rem;flex-wrap:wrap;">
+                    <input type="text" id="add-class-student-search" class="form-control" placeholder="Search students by name or ID" style="flex:1;min-width:220px;">
+                    <button type="button" class="btn btn-secondary" id="add-class-student-select-all">Select Visible</button>
+                    <button type="button" class="btn btn-secondary" id="add-class-student-clear">Clear Visible</button>
+                </div>
+                <div class="glass-panel" id="add-class-student-list" style="padding:1rem; max-height:200px; overflow-y:auto">
                     ${studentOptions}
                 </div>
             </div>
             <div class="form-group">
                 <label>Visible Inventory Items</label>
-                <div class="glass-panel" style="padding:1rem; max-height:220px; overflow-y:auto">
+                <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.5rem;flex-wrap:wrap;">
+                    <input type="text" id="add-class-item-search" class="form-control" placeholder="Search items by name or ID" style="flex:1;min-width:220px;">
+                    <button type="button" class="btn btn-secondary" id="add-class-item-select-all">Select Visible</button>
+                    <button type="button" class="btn btn-secondary" id="add-class-item-clear">Clear Visible</button>
+                </div>
+                <div class="glass-panel" id="add-class-item-list" style="padding:1rem; max-height:220px; overflow-y:auto">
                     ${itemOptions}
                 </div>
             </div>
@@ -2020,6 +2507,24 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
     `;
 
     openModal(html);
+    dynamicModal.classList.add('class-modal');
+
+    bindCheckboxListControls({
+        searchInputId: 'add-class-student-search',
+        listContainerId: 'add-class-student-list',
+        checkboxClass: 'student-checkbox',
+        selectAllBtnId: 'add-class-student-select-all',
+        clearBtnId: 'add-class-student-clear'
+    });
+
+    bindCheckboxListControls({
+        searchInputId: 'add-class-item-search',
+        listContainerId: 'add-class-item-list',
+        checkboxClass: 'class-item-checkbox',
+        selectAllBtnId: 'add-class-item-select-all',
+        clearBtnId: 'add-class-item-clear'
+    });
+
     attachPeriodRowHandlers('add-class-period-rows', 'add-class-add-period-btn');
 
     document.getElementById('confirm-add-class').addEventListener('click', async () => {
@@ -2074,9 +2579,34 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
    ======================================= */
 function renderLogs() {
     const tbody = document.getElementById('logs-table-body');
+    const actionFilter = document.getElementById('logs-action-filter');
     if (currentUser.role === 'student') return; // Double check protection
 
-    tbody.innerHTML = activityLogs.map(log => {
+    if (actionFilter) {
+        const previousValue = actionFilter.value || 'all';
+        const actions = [...new Set(activityLogs.map(log => log.action).filter(Boolean))]
+            .sort((a, b) => a.localeCompare(b));
+
+        actionFilter.innerHTML =
+            '<option value="all">View All Actions</option>' +
+            actions.map(action => `<option value="${action}">${action}</option>`).join('');
+
+        actionFilter.value = actions.includes(previousValue) || previousValue === 'all'
+            ? previousValue
+            : 'all';
+
+        if (!actionFilter.dataset.bound) {
+            actionFilter.addEventListener('change', () => renderLogs());
+            actionFilter.dataset.bound = '1';
+        }
+    }
+
+    const selectedAction = actionFilter?.value || 'all';
+    const filteredLogs = selectedAction === 'all'
+        ? activityLogs
+        : activityLogs.filter(log => log.action === selectedAction);
+
+    tbody.innerHTML = filteredLogs.map(log => {
         const idToMatch = log.userId || log.user_id;
         const trUser = mockUsers.find(u => u.id === idToMatch);
         return `
@@ -2092,7 +2622,7 @@ function renderLogs() {
                 <td>${log.details}</td>
             </tr>
         `;
-    }).join('');
+    }).join('') || '<tr><td colspan="4" class="text-center text-muted">No log entries for this action.</td></tr>';
 }
 
 
@@ -2224,6 +2754,7 @@ document.getElementById('view-grid-btn')?.addEventListener('click', () => {
 function openUserModal(editId = null) {
     const isEdit = !!editId;
     const userToEdit = isEdit ? mockUsers.find(u => u.id === editId) : null;
+    const canEditBarcode = isEdit && (currentUser.role === 'teacher' || currentUser.role === 'developer');
 
     // Default student permissions
     const cProjects = isEdit ? (userToEdit.perms?.canCreateProjects ?? false) : false;
@@ -2238,8 +2769,12 @@ function openUserModal(editId = null) {
         <div class="modal-body">
             <div class="form-group">
                 <label>User ID / Barcode</label>
-                <input type="text" id="user-id" class="form-control" placeholder="e.g. STU-999" ${isEdit ? 'disabled' : ''} value="${isEdit ? userToEdit.id : ''}">
-                ${isEdit ? '<small class="text-muted">User ID cannot be changed once created.</small>' : ''}
+                <input type="text" id="user-id" class="form-control" placeholder="e.g. STU-999" ${(isEdit && !canEditBarcode) ? 'disabled' : ''} value="${isEdit ? userToEdit.id : ''}">
+                ${isEdit
+            ? canEditBarcode
+                ? '<small class="text-muted">Teachers and developers can edit this barcode. Changes apply immediately.</small>'
+                : '<small class="text-muted">Only teachers and developers can edit this barcode.</small>'
+            : ''}
             </div>
             <div class="form-group">
                 <label>Full Name</label>
@@ -2337,6 +2872,41 @@ function openUserModal(editId = null) {
         }
 
         if (isEdit) {
+            const originalId = userToEdit.id;
+            const barcodeChanged = id !== originalId;
+
+            if (barcodeChanged) {
+                if (!canEditBarcode) {
+                    showToast('Only teachers and developers can edit user barcodes.', 'error');
+                    return;
+                }
+
+                if (mockUsers.some(u => u.id === id)) {
+                    showToast('A user with this barcode already exists.', 'error');
+                    return;
+                }
+
+                const renamed = await renameUserBarcodeInSupabase(originalId, id);
+                if (!renamed) {
+                    showToast('Failed to update user barcode in Supabase.', 'error');
+                    return;
+                }
+
+                // Keep in-memory references aligned until fresh data reloads.
+                studentClasses.forEach(cls => {
+                    cls.students = cls.students.map(studentId => studentId === originalId ? id : studentId);
+                    if (cls.teacherId === originalId) cls.teacherId = id;
+                });
+
+                projects.forEach(project => {
+                    if (project.ownerId === originalId) project.ownerId = id;
+                    project.collaborators = (project.collaborators || []).map(collaboratorId => collaboratorId === originalId ? id : collaboratorId);
+                });
+
+                if (currentUser.id === originalId) currentUser.id = id;
+                userToEdit.id = id;
+            }
+
             userToEdit.name = name;
             userToEdit.role = role;
             userToEdit.perms = perms;
@@ -2358,7 +2928,7 @@ function openUserModal(editId = null) {
             await refreshUsersFromSupabase();
 
             showToast('User updated successfully.', 'success');
-            addLog(currentUser.id, 'Edit User', `Updated user: ${id}`);
+            addLog(currentUser.id, 'Edit User', `Updated user: ${id}${barcodeChanged ? ` (barcode changed from ${originalId})` : ''}`);
         } else {
             if (mockUsers.some(u => u.id === id)) {
                 showToast('A user with this ID already exists.', 'error');
@@ -2600,6 +3170,7 @@ document.getElementById('bulk-suspend-users-btn')?.addEventListener('click', asy
    MODAL & NOTIFICATION HELPERS
    ======================================= */
 function openModal(contentHtml) {
+    dynamicModal.classList.remove('debug-modal', 'class-modal');
     dynamicModal.innerHTML = contentHtml;
     modalContainer.classList.remove('hidden');
 }
@@ -2607,7 +3178,7 @@ function openModal(contentHtml) {
 function closeModal() {
     modalContainer.classList.add('hidden');
     dynamicModal.innerHTML = '';
-    dynamicModal.classList.remove('debug-modal');
+    dynamicModal.classList.remove('debug-modal', 'class-modal');
 }
 
 function showToast(message, type = 'success') {
@@ -2637,7 +3208,19 @@ modalContainer.addEventListener('click', (e) => {
 });
 
 // Setup Add Item flow
-document.getElementById('add-item-btn')?.addEventListener('click', () => {
+document.getElementById('add-item-btn')?.addEventListener('click', openAddItemModal);
+
+function openAddItemModal() {
+    const categoryOptions = categories.length > 0
+        ? categories.map(c => `<option value="${c}">${c}</option>`).join('')
+        : '<option value="Uncategorized">Uncategorized</option>';
+
+    const tagCheckboxes = visibilityTags.map(tag =>
+        `<label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;margin-bottom:0.4rem">
+            <input type="checkbox" class="add-item-tag-cb" value="${tag}"> ${tag}
+        </label>`
+    ).join('');
+
     const html = `
         <div class="modal-header">
             <h3>Add New Item</h3>
@@ -2651,10 +3234,13 @@ document.getElementById('add-item-btn')?.addEventListener('click', () => {
             <div class="form-group">
                 <label>Category</label>
                 <select id="add-category" class="form-control">
-                    <option>Electronics</option>
-                    <option>Hardware</option>
-                    <option>Consumables</option>
+                    ${categoryOptions}
                 </select>
+                ${categories.length === 0 ? '<small class="text-muted">No categories found yet. This item will be saved as Uncategorized.</small>' : ''}
+            </div>
+            <div class="form-group">
+                <label>SKU / Barcode</label>
+                <input type="text" id="add-sku" class="form-control" placeholder="Leave blank to auto-generate">
             </div>
             <div class="grid-2-col" style="gap:1rem">
                 <div class="form-group">
@@ -2664,6 +3250,13 @@ document.getElementById('add-item-btn')?.addEventListener('click', () => {
                 <div class="form-group">
                     <label>Low Threshold</label>
                     <input type="number" id="add-threshold" class="form-control" value="5">
+                </div>
+            </div>
+            <div class="form-group">
+                <label>Visibility Tags</label>
+                <small class="text-muted" style="display:block;margin-bottom:0.5rem">Leave all unchecked to make the item visible to all classes.</small>
+                <div class="glass-panel" style="padding:0.75rem">
+                    ${tagCheckboxes || '<p class="text-muted text-sm">No visibility tags defined.</p>'}
                 </div>
             </div>
         </div>
@@ -2677,36 +3270,49 @@ document.getElementById('add-item-btn')?.addEventListener('click', () => {
 
     document.getElementById('confirm-add-item').addEventListener('click', async () => {
         const name = document.getElementById('add-name').value.trim();
-        const category = document.getElementById('add-category').value;
-        const stock = parseInt(document.getElementById('add-stock').value) || 0;
-        const threshold = parseInt(document.getElementById('add-threshold').value) || 0;
+        const category = (document.getElementById('add-category').value || 'Uncategorized').trim();
+        const manualSku = document.getElementById('add-sku').value.trim().toUpperCase();
+        const stock = Math.max(0, parseInt(document.getElementById('add-stock').value, 10) || 0);
+        const threshold = Math.max(0, parseInt(document.getElementById('add-threshold').value, 10) || 0);
+        const selectedTags = Array.from(document.querySelectorAll('.add-item-tag-cb:checked')).map(cb => cb.value);
 
-        if (name) {
-            const newItem = {
-                id: generateId('ITM'),
-                name: name,
-                category: category,
-                sku: name.substring(0, 3).toUpperCase() + '-' + Math.floor(Math.random() * 1000).toString().padStart(3, '0'),
-                stock: stock,
-                threshold: threshold
-            };
-            const created = await addItemToSupabase(newItem);
-            if (!created) {
-                showToast('Failed to add item in Supabase.', 'error');
-                return;
-            }
-            await refreshInventoryFromSupabase();
-            addLog(currentUser.id, 'Add Item', `Added new inventory item: ${name}(${stock} units)`);
-            showToast(`${name} added to inventory.`, 'success');
-            closeModal();
-            if (document.getElementById('page-inventory').classList.contains('active')) {
-                renderInventory();
-            }
-        } else {
-            showToast('Item name is required', 'error');
+        if (!name) {
+            showToast('Item name is required.', 'error');
+            return;
+        }
+
+        const autoSku = `${name.substring(0, 3).toUpperCase()}-${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`;
+        const newItem = {
+            id: generateId('ITM'),
+            name,
+            category,
+            sku: manualSku || autoSku,
+            stock,
+            threshold,
+            visibilityTags: selectedTags
+        };
+
+        const createdItem = await addItemToSupabase(newItem);
+        if (!createdItem) {
+            showToast('Failed to add item in Supabase.', 'error');
+            return;
+        }
+
+        const persistedItemId = createdItem.id || newItem.id;
+        const tagsSaved = await setItemVisibilityTagsInSupabase(persistedItemId, selectedTags);
+        if (!tagsSaved) {
+            showToast('Item created, but visibility tags failed to save.', 'warning');
+        }
+
+        await refreshInventoryFromSupabase();
+        addLog(currentUser.id, 'Add Item', `Added new inventory item: ${name} (${stock} units)`);
+        showToast(`${name} added to inventory.`, 'success');
+        closeModal();
+        if (document.getElementById('page-inventory').classList.contains('active')) {
+            renderInventory();
         }
     });
-});
+}
 
 function openEditProjectModal(projectId) {
     const project = projects.find(p => p.id === projectId);
@@ -3381,103 +3987,8 @@ document.getElementById('manage-visibility-tags-btn')?.addEventListener('click',
 });
 
 /* =======================================
-   UPDATE ADD ITEM TO USE DYNAMIC CATEGORIES
+   ADD ITEM MODAL
    ======================================= */
-const origAddItemBtn = document.getElementById('add-item-btn');
-if (origAddItemBtn) {
-    // Override the click handler to use dynamic categories
-    origAddItemBtn.addEventListener('click', (e) => {
-        e.stopImmediatePropagation();
-        const categoryOptions = categories.map(c => `<option>${c}</option>`).join('');
-        const tagCheckboxes = visibilityTags.map(tag =>
-            `<label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;margin-bottom:0.4rem">
-                <input type="checkbox" class="add-item-tag-cb" value="${tag}"> ${tag}
-            </label>`
-        ).join('');
-        const html = `
-            <div class="modal-header">
-                <h3>Add New Item</h3>
-                <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
-            </div>
-            <div class="modal-body">
-                <div class="form-group">
-                    <label>Item Name</label>
-                    <input type="text" id="add-name" class="form-control" placeholder="e.g. Servo Motor">
-                </div>
-                <div class="form-group">
-                    <label>Category</label>
-                    <select id="add-category" class="form-control">
-                        ${categoryOptions}
-                    </select>
-                </div>
-                <div class="grid-2-col" style="gap:1rem">
-                    <div class="form-group">
-                        <label>Initial Stock</label>
-                        <input type="number" id="add-stock" class="form-control" value="0">
-                    </div>
-                    <div class="form-group">
-                        <label>Low Threshold</label>
-                        <input type="number" id="add-threshold" class="form-control" value="5">
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label>Visibility Tags</label>
-                    <small class="text-muted" style="display:block;margin-bottom:0.5rem">Leave all unchecked to make the item visible to all classes.</small>
-                    <div class="glass-panel" style="padding:0.75rem">
-                        ${tagCheckboxes || '<p class="text-muted text-sm">No visibility tags defined.</p>'}
-                    </div>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-                <button class="btn btn-primary" id="confirm-add-item-dyn">Add Item</button>
-            </div>
-        `;
-
-        openModal(html);
-
-        document.getElementById('confirm-add-item-dyn').addEventListener('click', async () => {
-            const name = document.getElementById('add-name').value.trim();
-            const category = document.getElementById('add-category').value;
-            const stock = parseInt(document.getElementById('add-stock').value) || 0;
-            const threshold = parseInt(document.getElementById('add-threshold').value) || 0;
-            const selectedTags = Array.from(document.querySelectorAll('.add-item-tag-cb:checked')).map(cb => cb.value);
-
-            if (name) {
-                const newItem = {
-                    id: generateId('ITM'),
-                    name: name,
-                    category: category,
-                    sku: name.substring(0, 3).toUpperCase() + '-' + Math.floor(Math.random() * 1000).toString().padStart(3, '0'),
-                    stock: stock,
-                    threshold: threshold,
-                    visibilityTags: selectedTags
-                };
-
-                const created = await addItemToSupabase(newItem);
-                if (!created) {
-                    showToast('Failed to add item in Supabase.', 'error');
-                    return;
-                }
-
-                const tagsSaved = await setItemVisibilityTagsInSupabase(newItem.id, selectedTags);
-                if (!tagsSaved) {
-                    showToast('Item created, but visibility tags failed to save.', 'warning');
-                }
-
-                await refreshInventoryFromSupabase();
-                addLog(currentUser.id, 'Add Item', `Added new inventory item: ${name} (${stock} units)`);
-                showToast(`${name} added to inventory.`, 'success');
-                closeModal();
-                if (document.getElementById('page-inventory').classList.contains('active')) {
-                    renderInventory();
-                }
-            } else {
-                showToast('Item name is required', 'error');
-            }
-        });
-    }, true); // Use capture phase to override existing handler
-}
 
 /* =======================================
    SECRET DEBUG SYSTEM

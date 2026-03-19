@@ -628,6 +628,63 @@ async function updateUserInSupabase(userId, updates) {
 }
 
 /**
+ * Rename a user's barcode/id and keep common relational references aligned.
+ */
+async function renameUserBarcodeInSupabase(oldUserId, newUserId) {
+    if (!oldUserId || !newUserId) return false;
+    if (oldUserId === newUserId) return true;
+
+    const { data: existing, error: existingError } = await dbClient
+        .from('users')
+        .select('id')
+        .eq('id', newUserId)
+        .maybeSingle();
+
+    if (existingError) {
+        console.error('Error checking for duplicate user barcode:', existingError);
+        return false;
+    }
+
+    if (existing) {
+        console.error('Cannot rename user barcode: target barcode already exists.');
+        return false;
+    }
+
+    const { error: userRenameError } = await dbClient
+        .from('users')
+        .update({ id: newUserId })
+        .eq('id', oldUserId);
+
+    if (userRenameError) {
+        console.error('Error renaming user barcode:', userRenameError);
+        return false;
+    }
+
+    const referenceUpdates = [
+        { table: 'projects', column: 'owner_id' },
+        { table: 'project_collaborators', column: 'user_id' },
+        { table: 'activity_logs', column: 'user_id' },
+        { table: 'extension_requests', column: 'user_id' },
+        { table: 'class_students', column: 'student_id' },
+        { table: 'student_classes', column: 'teacher_id' }
+    ];
+
+    for (const { table, column } of referenceUpdates) {
+        const { error } = await dbClient
+            .from(table)
+            .update({ [column]: newUserId })
+            .eq(column, oldUserId);
+
+        if (error) {
+            console.error(`Error updating ${table}.${column} during user barcode rename:`, error);
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/**
  * Delete user from users table
  */
 async function deleteUserFromSupabase(userId) {

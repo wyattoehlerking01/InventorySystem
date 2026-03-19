@@ -941,6 +941,9 @@ h6 {
     max-width: 500px;
     padding: 2rem;
     animation: modalScale var(--transition-normal);
+    max-height: min(92vh, 820px);
+    display: flex;
+    flex-direction: column;
 }
 
 @keyframes modalScale {
@@ -964,6 +967,12 @@ h6 {
 
 .modal-header h3 {
     font-size: 1.25rem;
+}
+
+.modal-body {
+    overflow-y: auto;
+    min-height: 0;
+    padding-right: 0.25rem;
 }
 
 .close-btn {
@@ -1010,6 +1019,16 @@ h6 {
     justify-content: flex-end;
     gap: 1rem;
     margin-top: 2rem;
+    flex-shrink: 0;
+}
+
+.class-modal {
+    max-width: min(900px, 95vw);
+    max-height: 92vh;
+}
+
+.class-modal .modal-body {
+    padding-right: 0.5rem;
 }
 
 /* =========================================
@@ -1363,6 +1382,25 @@ kbd {
     color: var(--text-muted);
     font-size: 0.82rem;
     margin-top: 1rem;
+}
+
+.app-update-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 10010;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+    background: rgba(3, 8, 18, 0.88);
+    backdrop-filter: blur(4px);
+}
+
+.app-update-card {
+    width: min(92vw, 520px);
+    text-align: center;
+    padding: 1.5rem;
+    border-radius: var(--radius-lg);
 }
 
 #kiosk-lock-preview {
