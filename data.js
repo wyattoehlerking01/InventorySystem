@@ -20,6 +20,18 @@ function requireSupabaseClient(context) {
     return dbClient;
 }
 
+function createUuid() {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+        return crypto.randomUUID();
+    }
+    // RFC4122-ish fallback for environments without crypto.randomUUID
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+        const r = Math.random() * 16 | 0;
+        const v = c === 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+    });
+}
+
 /* =======================================
    GLOBAL DATA ARRAYS (from Supabase)
    ======================================= */
@@ -488,22 +500,38 @@ async function saveStudentClassToSupabase(cls) {
         canSignOut: true
     };
 
-    const { error: classError } = await dbClient.from('student_classes').upsert([
+    let classId = cls.id;
+
+    let { error: classError } = await dbClient.from('student_classes').upsert([
         {
-            id: cls.id,
+            id: classId,
             name: cls.name,
             teacher_id: cls.teacherId || null
         }
     ], { onConflict: 'id' });
+
+    // If table expects UUID and caller passed a non-UUID id, retry with a generated UUID.
+    if (classError && (String(classError.code || '') === '22P02' || /uuid/i.test(String(classError.message || '')))) {
+        classId = createUuid();
+        ({ error: classError } = await dbClient.from('student_classes').upsert([
+            {
+                id: classId,
+                name: cls.name,
+                teacher_id: cls.teacherId || null
+            }
+        ], { onConflict: 'id' }));
+    }
 
     if (classError) {
         console.error('Error upserting student_classes:', classError);
         return false;
     }
 
+    cls.id = classId;
+
     const { error: dueError } = await dbClient.from('class_due_policy').upsert([
         {
-            class_id: cls.id,
+            class_id: classId,
             default_signout_minutes: duePolicy.defaultSignoutMinutes,
             class_period_minutes: duePolicy.classPeriodMinutes,
             timezone: duePolicy.timezone || 'America/Edmonton'
@@ -517,7 +545,7 @@ async function saveStudentClassToSupabase(cls) {
 
     const { error: permissionsError } = await dbClient.from('class_permissions').upsert([
         {
-            class_id: cls.id,
+            class_id: classId,
             can_create_projects: !!defaultPermissions.canCreateProjects,
             can_join_projects: !!defaultPermissions.canJoinProjects,
             can_sign_out: !!defaultPermissions.canSignOut
@@ -529,14 +557,14 @@ async function saveStudentClassToSupabase(cls) {
         return false;
     }
 
-    const { error: clearStudentsError } = await dbClient.from('class_students').delete().eq('class_id', cls.id);
+    const { error: clearStudentsError } = await dbClient.from('class_students').delete().eq('class_id', classId);
     if (clearStudentsError) {
         console.error('Error clearing class_students:', clearStudentsError);
         return false;
     }
     if ((cls.students || []).length > 0) {
         const { error: insertStudentsError } = await dbClient.from('class_students').insert(
-            cls.students.map(studentId => ({ class_id: cls.id, student_id: studentId }))
+            cls.students.map(studentId => ({ class_id: classId, student_id: studentId }))
         );
         if (insertStudentsError) {
             console.error('Error inserting class_students:', insertStudentsError);
@@ -544,14 +572,14 @@ async function saveStudentClassToSupabase(cls) {
         }
     }
 
-    const { error: clearItemsError } = await dbClient.from('class_visible_items').delete().eq('class_id', cls.id);
+    const { error: clearItemsError } = await dbClient.from('class_visible_items').delete().eq('class_id', classId);
     if (clearItemsError) {
         console.error('Error clearing class_visible_items:', clearItemsError);
         return false;
     }
     if ((cls.visibleItemIds || []).length > 0) {
         const { error: insertItemsError } = await dbClient.from('class_visible_items').insert(
-            cls.visibleItemIds.map(itemId => ({ class_id: cls.id, item_id: itemId }))
+            cls.visibleItemIds.map(itemId => ({ class_id: classId, item_id: itemId }))
         );
         if (insertItemsError) {
             console.error('Error inserting class_visible_items:', insertItemsError);
@@ -559,7 +587,7 @@ async function saveStudentClassToSupabase(cls) {
         }
     }
 
-    const { error: clearTagsError } = await dbClient.from('class_visibility_tags').delete().eq('class_id', cls.id);
+    const { error: clearTagsError } = await dbClient.from('class_visibility_tags').delete().eq('class_id', classId);
     if (clearTagsError) {
         console.error('Error clearing class_visibility_tags:', clearTagsError);
         return false;
@@ -575,7 +603,7 @@ async function saveStudentClassToSupabase(cls) {
 
         if ((tagRows || []).length > 0) {
             const { error: insertTagsError } = await dbClient.from('class_visibility_tags').insert(
-                tagRows.map(tag => ({ class_id: cls.id, tag_id: tag.id }))
+                tagRows.map(tag => ({ class_id: classId, tag_id: tag.id }))
             );
             if (insertTagsError) {
                 console.error('Error inserting class_visibility_tags:', insertTagsError);
@@ -584,7 +612,7 @@ async function saveStudentClassToSupabase(cls) {
         }
     }
 
-    const { error: clearPeriodsError } = await dbClient.from('class_due_policy_periods').delete().eq('class_id', cls.id);
+    const { error: clearPeriodsError } = await dbClient.from('class_due_policy_periods').delete().eq('class_id', classId);
     if (clearPeriodsError) {
         console.error('Error clearing class_due_policy_periods:', clearPeriodsError);
         return false;
@@ -592,7 +620,7 @@ async function saveStudentClassToSupabase(cls) {
     if ((duePolicy.periodRanges || []).length > 0) {
         const { error: insertPeriodsError } = await dbClient.from('class_due_policy_periods').insert(
             duePolicy.periodRanges.map(period => ({
-                class_id: cls.id,
+                class_id: classId,
                 start_time: period.start,
                 end_time: period.end,
                 return_class_periods: period.returnClassPeriods
@@ -969,8 +997,7 @@ async function updateExtensionRequestInSupabase(requestId, status) {
  * Add order request to order_requests table
  */
 async function addOrderRequestToSupabase(request) {
-    const { data, error } = await dbClient.from('order_requests').insert([{
-        id: request.id,
+    const payload = {
         requested_by_user_id: request.requestedByUserId,
         requested_by_name: request.requestedByName,
         item_name: request.itemName,
@@ -979,7 +1006,17 @@ async function addOrderRequestToSupabase(request) {
         justification: request.justification,
         status: request.status || 'Pending',
         timestamp: request.timestamp
-    }]).select();
+    };
+
+    if (request.id) payload.id = request.id;
+
+    let { data, error } = await dbClient.from('order_requests').insert([payload]).select();
+
+    // If `id` format is invalid for this table (e.g., UUID expected), retry using DB default id.
+    if (error && payload.id && (String(error.code || '') === '22P02' || /uuid/i.test(String(error.message || '')))) {
+        delete payload.id;
+        ({ data, error } = await dbClient.from('order_requests').insert([payload]).select());
+    }
 
     if (error) {
         console.error('Error adding order request:', error);

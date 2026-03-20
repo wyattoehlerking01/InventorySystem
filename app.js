@@ -28,6 +28,16 @@ let signoutPolicy = {
     periodRanges: defaultDuePolicy.periodRanges.map(range => ({ ...range }))
 };
 
+// Provide a safe fallback ID generator for forms/actions that create records.
+if (typeof window.generateId !== 'function') {
+    window.generateId = function generateIdFallback(prefix = 'ID') {
+        const ts = Date.now().toString(36).toUpperCase();
+        const rand = Math.random().toString(36).slice(2, 8).toUpperCase();
+        return `${String(prefix || 'ID').toUpperCase()}-${ts}-${rand}`;
+    };
+}
+const generateId = window.generateId;
+
 // DOM Elements - Login
 const loginView = document.getElementById('login-view');
 const loginHelpView = document.getElementById('login-help-view');
@@ -635,12 +645,7 @@ function getMissingItemMetadataFields(item) {
 }
 
 function renderMissingMetadataIcon(item) {
-    if (currentUser?.role === 'student') return '';
-
-    const missing = getMissingItemMetadataFields(item);
-    if (missing.length === 0) return '';
-
-    return `<span title="Missing metadata: ${missing.join(', ')}" style="display:inline-flex;align-items:center;justify-content:center;margin-left:0.4rem;color:var(--warning);vertical-align:middle;"><i class="ph ph-warning-circle"></i></span>`;
+    return '';
 }
 
 async function requestDoorUnlockAndLogAccess({ actionType, item, quantity = 1, projectName = 'Personal' }) {
@@ -1830,7 +1835,7 @@ function renderInventory(filterStr = 'All') {
                 <td>${item.stock}</td>
                 <td><span class="status-badge ${statusClass}">${currentStatus}</span></td>
                 <td>
-                    <div class="flex gap-2">
+                    <div class="flex" style="gap:0.65rem;flex-wrap:wrap;">
                         ${currentUser.role !== 'student' ? `
                             <button class="btn btn-secondary btn-sm edit-item-btn" data-id="${item.id}" title="Edit Item">
                                 <i class="ph ph-pencil-simple"></i>
@@ -2263,6 +2268,15 @@ function renderClasses() {
     const container = document.getElementById('classes-container');
     if (currentUser.role === 'student') return;
 
+    const createClassBtn = document.getElementById('create-class-btn');
+    if (createClassBtn) {
+        if (currentUser && ['teacher', 'developer'].includes(currentUser.role)) {
+            createClassBtn.classList.remove('hidden');
+        } else {
+            createClassBtn.classList.add('hidden');
+        }
+    }
+
     if (!studentClasses.length) {
         container.innerHTML = '<p class="text-muted col-span-full">No classes created yet.</p>';
         return;
@@ -2682,7 +2696,7 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
 
         if (name) {
             const newClass = {
-                id: generateId('CLS'),
+                id: (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') ? crypto.randomUUID() : generateId('CLS'),
                 name: name,
                 teacherId: currentUser.id,
                 students: checkedStudents,
