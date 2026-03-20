@@ -33,6 +33,7 @@ let visibilityTags = [];
 let activityLogs = [];
 let helpRequests = [];
 let extensionRequests = [];
+let orderRequests = [];
 
 /* =======================================
    DATA LOADING FUNCTIONS
@@ -54,6 +55,7 @@ async function loadAllData() {
             loadActivityLogs(),
             loadHelpRequests(),
             loadExtensionRequests(),
+            loadOrderRequests(),
             loadProjectCollaborators(),
             loadProjectItemsOut(),
             loadInventoryItemVisibility(),
@@ -225,6 +227,32 @@ async function loadExtensionRequests() {
 }
 
 /**
+ * Load order requests from public.order_requests table
+ */
+async function loadOrderRequests() {
+    const { data, error } = await dbClient.from('order_requests').select('*').order('timestamp', { ascending: false });
+    if (error) {
+        console.error('Error loading order requests:', error);
+        orderRequests = [];
+        return;
+    }
+
+    orderRequests = (data || []).map(row => ({
+        id: row.id,
+        requestedByUserId: row.requested_by_user_id ?? row.requestedByUserId,
+        requestedByName: row.requested_by_name ?? row.requestedByName,
+        itemName: row.item_name ?? row.itemName,
+        category: row.category || 'Uncategorized',
+        quantity: row.quantity || 1,
+        justification: row.justification || '',
+        status: row.status || 'Pending',
+        timestamp: row.timestamp
+    }));
+
+    console.log(`Loaded ${orderRequests.length} order requests`);
+}
+
+/**
  * Reload projects and dependent relations from Supabase
  */
 async function refreshProjectsFromSupabase() {
@@ -242,7 +270,8 @@ async function refreshProjectsFromSupabase() {
 async function refreshRequestsFromSupabase() {
     await Promise.all([
         loadHelpRequests(),
-        loadExtensionRequests()
+        loadExtensionRequests(),
+        loadOrderRequests()
     ]);
 }
 
@@ -755,6 +784,31 @@ async function addProjectToSupabase(project) {
 }
 
 /**
+ * Ensure a project row exists in Supabase (used for personal projects during sign-out).
+ */
+async function ensureProjectExistsInSupabase(project) {
+    if (!project?.id) return false;
+
+    const { data, error } = await dbClient.from('projects').select('id').eq('id', project.id).maybeSingle();
+    if (error) {
+        console.error('Error checking project existence:', error);
+        return false;
+    }
+
+    if (data?.id) return true;
+
+    const created = await addProjectToSupabase({
+        id: project.id,
+        name: project.name || 'Personal Use',
+        ownerId: project.ownerId,
+        description: project.description || '',
+        status: project.status || 'Active'
+    });
+
+    return !!created;
+}
+
+/**
  * Update project in projects table
  */
 async function updateProjectInSupabase(projectId, updates) {
@@ -908,6 +962,47 @@ async function updateExtensionRequestInSupabase(requestId, status) {
         console.error('Error updating extension request:', error);
         return null;
     }
+    return data?.[0] || null;
+}
+
+/**
+ * Add order request to order_requests table
+ */
+async function addOrderRequestToSupabase(request) {
+    const { data, error } = await dbClient.from('order_requests').insert([{
+        id: request.id,
+        requested_by_user_id: request.requestedByUserId,
+        requested_by_name: request.requestedByName,
+        item_name: request.itemName,
+        category: request.category,
+        quantity: request.quantity,
+        justification: request.justification,
+        status: request.status || 'Pending',
+        timestamp: request.timestamp
+    }]).select();
+
+    if (error) {
+        console.error('Error adding order request:', error);
+        return null;
+    }
+
+    return data?.[0] || request;
+}
+
+/**
+ * Update order request status
+ */
+async function updateOrderRequestInSupabase(requestId, status) {
+    const { data, error } = await dbClient.from('order_requests')
+        .update({ status })
+        .eq('id', requestId)
+        .select();
+
+    if (error) {
+        console.error('Error updating order request status:', error);
+        return null;
+    }
+
     return data?.[0] || null;
 }
 

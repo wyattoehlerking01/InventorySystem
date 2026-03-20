@@ -83,10 +83,6 @@
                     placeholder="Scan Barcode">
             </div>
 
-            <div class="login-hints">
-                <p>Mock IDs: <strong>STU-123</strong>, <strong>TCH-456</strong>, <strong>DEV-789</strong></p>
-            </div>
-
             <button class="btn btn-secondary mt-4 w-full" id="show-help-btn" style="margin-top: 2rem;">
                 <i class="ph ph-question"></i> Need Help / Request Credential?
             </button>
@@ -158,6 +154,9 @@
                 </button>
                 <button class="nav-btn" data-target="projects">
                     <i class="ph ph-folder-open"></i> Projects
+                </button>
+                <button class="nav-btn" id="nav-orders" data-target="orders">
+                    <i class="ph ph-shopping-bag-open"></i> Orders
                 </button>
                 <button class="nav-btn hidden" id="nav-my-items" data-target="my-items">
                     <i class="ph ph-clipboard-text"></i> My Items
@@ -243,6 +242,13 @@
                 <!-- Inventory Page -->
                 <div id="page-inventory" class="page hidden">
                     <div class="action-bar">
+                        <div class="flex" style="gap:0.75rem;align-items:center;">
+                            <input type="text" id="inventory-search" class="form-control" style="min-width:280px;"
+                                placeholder="Search by item, ID, SKU, category...">
+                            <button class="btn btn-secondary" id="request-item-btn">
+                                <i class="ph ph-package"></i> Request Item
+                            </button>
+                        </div>
                         <div class="filters">
                             <button class="filter-btn active">All</button>
                             <button class="filter-btn">Hardware</button>
@@ -301,6 +307,52 @@
 
                     <div class="projects-grid" id="projects-container">
                         <!-- Injected via JS -->
+                    </div>
+                </div>
+
+                <!-- Orders Page -->
+                <div id="page-orders" class="page hidden">
+                    <div class="action-bar">
+                        <h3>Order Requests</h3>
+                        <div class="flex" style="gap:0.75rem;align-items:center;">
+                            <select id="orders-status-filter" class="form-control" style="min-width:190px;">
+                                <option value="all">All Statuses</option>
+                                <option value="Pending">Pending</option>
+                                <option value="Approved">Approved</option>
+                                <option value="Denied">Denied</option>
+                                <option value="Ordered">Ordered</option>
+                            </select>
+                            <button class="btn btn-primary" id="new-order-request-btn">
+                                <i class="ph ph-plus"></i> New Order Request
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="action-bar" id="orders-student-toggle-wrap" style="margin-top:0.5rem;display:none;">
+                        <div class="glass-panel" style="padding:0.65rem 0.8rem;display:flex;align-items:center;gap:0.55rem;">
+                            <input type="checkbox" id="orders-student-visible-toggle">
+                            <label for="orders-student-visible-toggle" style="cursor:pointer;">Allow students to view Orders tab</label>
+                        </div>
+                    </div>
+
+                    <div class="table-container glass-panel">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Date</th>
+                                    <th>Requested By</th>
+                                    <th>Item</th>
+                                    <th>Category</th>
+                                    <th>Qty</th>
+                                    <th>Justification</th>
+                                    <th>Status</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="orders-table-body">
+                                <!-- Injected via JS -->
+                            </tbody>
+                        </table>
                     </div>
                 </div>
 

@@ -47,9 +47,19 @@ const navLogs = document.getElementById('nav-logs');
 const navUsers = document.getElementById('nav-users');
 const navClasses = document.getElementById('nav-classes');
 const navMyItems = document.getElementById('nav-my-items');
+const navOrders = document.getElementById('nav-orders');
 
 // DOM Elements - Pages
 const pages = document.querySelectorAll('.page');
+
+const ordersStudentViewStorageKey = 'ordersStudentViewEnabled';
+const defaultOrdersStudentView = String(envConfig.ALLOW_STUDENT_ORDER_VIEW || 'false').toLowerCase() === 'true';
+let ordersStudentViewEnabled = localStorage.getItem(ordersStudentViewStorageKey) === null
+    ? defaultOrdersStudentView
+    : localStorage.getItem(ordersStudentViewStorageKey) === 'true';
+
+let inventorySearchTerm = '';
+let inventoryCategoryFilter = 'All';
 
 // Modals & Toasts
 const modalContainer = document.getElementById('modal-container');
@@ -766,6 +776,19 @@ async function checkoutBasket() {
     const projectId = document.getElementById('basket-project-select').value;
     const project = projectId ? projects.find(p => p.id === projectId) : getOrCreatePersonalProject(currentUser.id);
 
+    if (!project) {
+        showToast('Unable to resolve checkout destination project.', 'error');
+        return;
+    }
+
+    if (project.id.startsWith('PERS-')) {
+        const ensured = await ensureProjectExistsInSupabase(project);
+        if (!ensured) {
+            showToast('Failed to create personal project in Supabase.', 'error');
+            return;
+        }
+    }
+
     if (currentUser?.role === 'student') {
         const firstBasketItem = inventoryBasket[0];
         const firstItem = inventoryItems.find(i => i.id === firstBasketItem?.id);
@@ -780,6 +803,18 @@ async function checkoutBasket() {
 
         if (!unlocked) {
             showToast('Door unlock denied. Checkout canceled.', 'error');
+            return;
+        }
+    }
+
+    for (const basketItem of inventoryBasket) {
+        const item = inventoryItems.find(i => i.id === basketItem.id);
+        if (!item) {
+            showToast('Checkout failed: one or more items no longer exist.', 'error');
+            return;
+        }
+        if (basketItem.qty <= 0 || basketItem.qty > item.stock) {
+            showToast(`Checkout failed: invalid quantity for ${item.name}.`, 'error');
             return;
         }
     }
@@ -1101,6 +1136,23 @@ function getRoleIcon(role) {
     return '<i class="ph-fill ph-user"></i>';
 }
 
+function canCurrentUserViewOrders() {
+    if (!currentUser) return false;
+    if (currentUser.role === 'student') return ordersStudentViewEnabled;
+    return true;
+}
+
+function persistOrdersStudentViewSetting(value) {
+    ordersStudentViewEnabled = !!value;
+    localStorage.setItem(ordersStudentViewStorageKey, String(ordersStudentViewEnabled));
+}
+
+function applyOrdersNavVisibility() {
+    if (!navOrders) return;
+    if (canCurrentUserViewOrders()) navOrders.classList.remove('hidden');
+    else navOrders.classList.add('hidden');
+}
+
 function login(user) {
     currentUser = user;
     _trackLogin();
@@ -1140,6 +1192,7 @@ function login(user) {
         navClasses.classList.add('hidden');
         navMyItems?.classList.remove('hidden');
         navRequests?.classList.add('hidden');
+        applyOrdersNavVisibility();
         document.getElementById('manage-categories-btn')?.classList.add('hidden');
         document.getElementById('manage-visibility-tags-btn')?.classList.add('hidden');
         document.getElementById('bulk-import-items-btn')?.classList.add('hidden');
@@ -1149,6 +1202,7 @@ function login(user) {
         navClasses.classList.remove('hidden');
         navMyItems?.classList.add('hidden');
         navRequests?.classList.remove('hidden');
+        applyOrdersNavVisibility();
         document.getElementById('manage-categories-btn')?.classList.remove('hidden');
         document.getElementById('manage-visibility-tags-btn')?.classList.remove('hidden');
         document.getElementById('bulk-import-items-btn')?.classList.remove('hidden');
@@ -1309,10 +1363,23 @@ async function refreshPageDataFromSupabase(targetId) {
             refreshUsersFromSupabase(),
             refreshInventoryFromSupabase()
         ]);
+        return;
+    }
+
+    if (targetId === 'orders') {
+        await Promise.all([
+            refreshRequestsFromSupabase(),
+            refreshUsersFromSupabase()
+        ]);
     }
 }
 
 async function switchPage(targetId, title) {
+    if (targetId === 'orders' && !canCurrentUserViewOrders()) {
+        showToast('Orders view is disabled for students.', 'error');
+        return;
+    }
+
     _trackPageVisit(targetId);
     pageTitle.textContent = title;
 
@@ -1345,6 +1412,7 @@ async function switchPage(targetId, title) {
     if (targetId === 'users') renderUsers();
     if (targetId === 'classes') renderClasses();
     if (targetId === 'requests') renderRequests();
+    if (targetId === 'orders') renderOrders();
 }
 
 function renderMyItems() {
@@ -1687,6 +1755,10 @@ function determineStatus(stock, threshold) {
 
 function renderInventory(filterStr = 'All') {
     const tbody = document.getElementById('inventory-table-body');
+
+    inventoryCategoryFilter = filterStr;
+    inventorySearchTerm = String(document.getElementById('inventory-search')?.value || '').trim().toLowerCase();
+
     let filtered = currentUser.role === 'student'
         ? inventoryItems.filter(item => canUserSeeItem(currentUser, item))
         : inventoryItems;
@@ -1696,6 +1768,24 @@ function renderInventory(filterStr = 'All') {
         if (currentUser.role === 'student') {
             filtered = filtered.filter(item => canUserSeeItem(currentUser, item));
         }
+    }
+
+    if (inventorySearchTerm) {
+        filtered = filtered.filter(item => {
+            const haystack = [
+                item.name,
+                item.id,
+                item.sku,
+                item.category,
+                item.location,
+                item.storageLocation,
+                item.bin,
+                item.description,
+                item.notes
+            ].map(value => String(value || '').toLowerCase()).join(' ');
+
+            return haystack.includes(inventorySearchTerm);
+        });
     }
 
     tbody.innerHTML = filtered.map(item => {
@@ -1804,6 +1894,16 @@ filterBtns.forEach(btn => {
         filterBtns.forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         renderInventory(btn.textContent.trim());
+    });
+});
+
+document.getElementById('inventory-search')?.addEventListener('input', () => {
+    renderInventory(inventoryCategoryFilter);
+});
+
+document.getElementById('request-item-btn')?.addEventListener('click', () => {
+    openOrderRequestModal({
+        initialName: document.getElementById('inventory-search')?.value || ''
     });
 });
 
@@ -2058,6 +2158,19 @@ function openSignOutModal(itemId) {
                 project = getOrCreatePersonalProject(currentUser.id);
             } else {
                 project = projects.find(p => p.id === projId);
+            }
+
+            if (!project) {
+                showToast('Unable to resolve target project.', 'error');
+                return;
+            }
+
+            if (project.id.startsWith('PERS-')) {
+                const ensured = await ensureProjectExistsInSupabase(project);
+                if (!ensured) {
+                    showToast('Failed to create personal project in Supabase.', 'error');
+                    return;
+                }
             }
 
             if (currentUser?.role === 'student') {
@@ -2640,7 +2753,7 @@ function renderUsers() {
         return `
             <tr class="${isSuspended ? 'opacity-60' : ''}">
                 <td>
-                    ${user.role === 'student' ? `<input type="checkbox" class="user-select-cb" data-id="${user.id}">` : '<span style="width:16px;display:inline-block"></span>'}
+                    <input type="checkbox" class="user-select-cb" data-id="${user.id}">
                 </td>
                 <td>
                     <div class="flex items-center gap-2">
@@ -2666,12 +2779,10 @@ function renderUsers() {
                 <td>
                     <div class="flex gap-2 user-actions">
                         ${canEdit ? `<button class="btn btn-secondary btn-sm edit-user-btn" data-id="${user.id}" title="Edit User"><i class="ph ph-pencil"></i></button>` : `<i class="ph ph-lock text-muted" title="Developer locked"></i>`}
-                        ${user.role === 'student' ? `
-                            <button class="btn btn-secondary btn-sm suspend-user-btn" data-id="${user.id}" title="${isSuspended ? 'Reactivate' : 'Suspend'}">
-                                <i class="ph ${isSuspended ? 'ph-user-check' : 'ph-user-minus'}"></i>
-                            </button>
-                            <button class="btn btn-danger btn-sm delete-user-btn" data-id="${user.id}" title="Delete"><i class="ph ph-trash"></i></button>
-                        ` : ''}
+                        <button class="btn btn-secondary btn-sm suspend-user-btn" data-id="${user.id}" title="${isSuspended ? 'Reactivate' : 'Suspend'}">
+                            <i class="ph ${isSuspended ? 'ph-user-check' : 'ph-user-minus'}"></i>
+                        </button>
+                        <button class="btn btn-danger btn-sm delete-user-btn" data-id="${user.id}" title="Delete"><i class="ph ph-trash"></i></button>
                     </div>
                 </td>
             </tr>
@@ -2719,14 +2830,27 @@ function renderUsers() {
             if (!user) return;
 
             if (confirm(`CRITICAL: Are you sure you want to delete ${user.name}? This action is permanent.`)) {
+                const deletingCurrentUser = currentUser?.id === id;
                 const deleted = await deleteUserFromSupabase(id);
                 if (!deleted) {
                     showToast('Failed to delete user from Supabase.', 'error');
                     return;
                 }
+
+                studentClasses.forEach(cls => {
+                    cls.students = cls.students.filter(sId => sId !== id);
+                    if (cls.teacherId === id) cls.teacherId = null;
+                });
+
                 await refreshUsersFromSupabase();
                 showToast(`${user.name} deleted.`);
                 addLog(currentUser.id, 'Delete User', `Deleted user account: ${user.name} (${user.id})`);
+
+                if (deletingCurrentUser) {
+                    returnToLoginView({ message: 'Your account was deleted. Session ended.' });
+                    return;
+                }
+
                 renderUsers();
             }
         });
@@ -3096,30 +3220,34 @@ document.getElementById('bulk-delete-users-btn')?.addEventListener('click', asyn
     }
 
     const selectedIds = selectedCbs.map(cb => cb.getAttribute('data-id'));
-    const targetUsers = mockUsers.filter(u => selectedIds.includes(u.id) && u.role === 'student');
+    const targetUsers = mockUsers.filter(u => selectedIds.includes(u.id));
 
-    if (targetUsers.length === 0) {
-        showToast('Only students can be deleted. No students were selected.', 'error');
-        return;
-    }
-
-    if (confirm(`Are you absolutely sure you want to PERMANENTLY delete ${targetUsers.length} selected student(s)? This cannot be undone.`)) {
+    if (confirm(`Are you absolutely sure you want to PERMANENTLY delete ${targetUsers.length} selected user(s)? This cannot be undone.`)) {
         let deleteCount = 0;
+        const deletingCurrentUser = targetUsers.some(u => u.id === currentUser?.id);
+
         for (const u of targetUsers) {
             const deleted = await deleteUserFromSupabase(u.id);
             if (deleted) {
                 deleteCount++;
-                // cascade delete from classes
+                // Keep class lists consistent in-memory.
                 studentClasses.forEach(cls => {
                     cls.students = cls.students.filter(sId => sId !== u.id);
+                    if (cls.teacherId === u.id) cls.teacherId = null;
                 });
             }
         }
 
         await refreshUsersFromSupabase();
 
-        showToast(`Successfully deleted ${deleteCount} students.`, 'success');
-        addLog(currentUser.id, 'Bulk Delete', `Deleted ${deleteCount} students via selection.`);
+        showToast(`Successfully deleted ${deleteCount} users.`, 'success');
+        addLog(currentUser.id, 'Bulk Delete', `Deleted ${deleteCount} users via selection.`);
+
+        if (deletingCurrentUser) {
+            returnToLoginView({ message: 'Your account was deleted. Session ended.' });
+            return;
+        }
+
         renderUsers();
     }
 });
@@ -3465,6 +3593,198 @@ document.getElementById('create-project-btn')?.addEventListener('click', () => {
         }
     });
 });
+
+/* =======================================
+   ORDERS LOGIC
+   ======================================= */
+function openOrderRequestModal({ initialName = '' } = {}) {
+    if (!currentUser) return;
+
+    const html = `
+        <div class="modal-header">
+            <h3>Request Item for Order</h3>
+            <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
+        </div>
+        <div class="modal-body">
+            <p class="text-secondary mb-4">Use this when an item does not exist in inventory or stock is unavailable.</p>
+            <div class="form-group">
+                <label>Item Name</label>
+                <input type="text" id="order-item-name" class="form-control" placeholder="e.g. Soldering Iron" value="${String(initialName || '').replace(/"/g, '&quot;')}">
+            </div>
+            <div class="form-group">
+                <label>Category</label>
+                <input type="text" id="order-item-category" class="form-control" placeholder="e.g. Electronics">
+            </div>
+            <div class="form-group">
+                <label>Quantity</label>
+                <input type="number" id="order-item-qty" class="form-control" min="1" value="1">
+            </div>
+            <div class="form-group">
+                <label>Why is this needed?</label>
+                <textarea id="order-item-justification" class="form-control" rows="4" placeholder="Class/project need, urgency, usage details..."></textarea>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            <button class="btn btn-primary" id="submit-order-request-btn">Submit Request</button>
+        </div>
+    `;
+
+    openModal(html);
+
+    document.getElementById('submit-order-request-btn')?.addEventListener('click', async () => {
+        const itemName = document.getElementById('order-item-name')?.value.trim();
+        const category = document.getElementById('order-item-category')?.value.trim() || 'Uncategorized';
+        const quantity = Math.max(1, parseInt(document.getElementById('order-item-qty')?.value, 10) || 1);
+        const justification = document.getElementById('order-item-justification')?.value.trim();
+
+        if (!itemName || !justification) {
+            showToast('Item name and justification are required.', 'error');
+            return;
+        }
+
+        const request = {
+            id: generateId('ORD'),
+            requestedByUserId: currentUser.id,
+            requestedByName: currentUser.name,
+            itemName,
+            category,
+            quantity,
+            justification,
+            status: 'Pending',
+            timestamp: new Date().toISOString()
+        };
+
+        const created = await addOrderRequestToSupabase(request);
+        if (!created) {
+            showToast('Failed to submit order request to Supabase.', 'error');
+            return;
+        }
+
+        await refreshRequestsFromSupabase();
+        addLog(currentUser.id, 'Order Request', `Requested order: ${quantity}x ${itemName} (${category})`);
+        showToast('Order request submitted.', 'success');
+        closeModal();
+
+        if (document.getElementById('page-orders')?.classList.contains('active')) {
+            renderOrders();
+        }
+    });
+}
+
+function renderOrders() {
+    const tbody = document.getElementById('orders-table-body');
+    const filter = document.getElementById('orders-status-filter');
+    const toggleWrap = document.getElementById('orders-student-toggle-wrap');
+    const toggle = document.getElementById('orders-student-visible-toggle');
+    const newOrderBtn = document.getElementById('new-order-request-btn');
+
+    if (!tbody || !currentUser) return;
+
+    if (toggleWrap) {
+        toggleWrap.style.display = currentUser.role === 'student' ? 'none' : '';
+    }
+
+    if (toggle) {
+        toggle.checked = ordersStudentViewEnabled;
+        if (!toggle.dataset.bound) {
+            toggle.addEventListener('change', () => {
+                persistOrdersStudentViewSetting(toggle.checked);
+                applyOrdersNavVisibility();
+                addLog(currentUser.id, 'Orders Settings', `Student orders view ${ordersStudentViewEnabled ? 'enabled' : 'disabled'}`);
+                showToast(`Student order view ${ordersStudentViewEnabled ? 'enabled' : 'disabled'}.`, 'success');
+            });
+            toggle.dataset.bound = '1';
+        }
+    }
+
+    if (newOrderBtn && !newOrderBtn.dataset.bound) {
+        newOrderBtn.addEventListener('click', () => openOrderRequestModal());
+        newOrderBtn.dataset.bound = '1';
+    }
+
+    if (currentUser.role === 'student' && !ordersStudentViewEnabled) {
+        tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted">Orders view is currently disabled for students.</td></tr>';
+        return;
+    }
+
+    const selectedStatus = filter?.value || 'all';
+    const source = currentUser.role === 'student'
+        ? orderRequests.filter(r => r.requestedByUserId === currentUser.id)
+        : orderRequests;
+
+    const rows = selectedStatus === 'all'
+        ? source
+        : source.filter(r => r.status === selectedStatus);
+
+    tbody.innerHTML = rows.map(r => {
+        const statusStyle = r.status === 'Approved' || r.status === 'Ordered'
+            ? 'background:rgba(16,185,129,0.2);color:var(--success)'
+            : r.status === 'Denied'
+                ? 'background:rgba(239,68,68,0.2);color:var(--danger)'
+                : 'background:rgba(245,158,11,0.2);color:var(--warning)';
+
+        const canModerate = currentUser.role !== 'student' && r.status === 'Pending';
+
+        return `
+            <tr>
+                <td><small class="text-muted">${new Date(r.timestamp).toLocaleDateString()}</small></td>
+                <td>${r.requestedByName || r.requestedByUserId}</td>
+                <td><strong>${r.itemName}</strong></td>
+                <td>${r.category || 'Uncategorized'}</td>
+                <td>${r.quantity || 1}</td>
+                <td>${r.justification || ''}</td>
+                <td><span class="badge" style="${statusStyle}">${r.status}</span></td>
+                <td>
+                    ${canModerate ? `
+                        <button class="btn btn-secondary text-sm approve-order-btn" data-id="${r.id}" style="padding:0.3rem 0.6rem;font-size:0.75rem;margin-right:0.25rem;">Approve</button>
+                        <button class="btn btn-danger text-sm deny-order-btn" data-id="${r.id}" style="padding:0.3rem 0.6rem;font-size:0.75rem;">Deny</button>
+                    ` : '-'}
+                </td>
+            </tr>
+        `;
+    }).join('') || '<tr><td colspan="8" class="text-center text-muted">No order requests found.</td></tr>';
+
+    document.querySelectorAll('.approve-order-btn').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+            const reqId = e.currentTarget.getAttribute('data-id');
+            const req = orderRequests.find(r => r.id === reqId);
+            if (!req) return;
+
+            const updated = await updateOrderRequestInSupabase(reqId, 'Approved');
+            if (!updated) {
+                showToast('Failed to approve order request.', 'error');
+                return;
+            }
+
+            await refreshRequestsFromSupabase();
+            addLog(currentUser.id, 'Approve Order Request', `Approved order request for ${req.itemName} (${req.quantity})`);
+            showToast('Order request approved.', 'success');
+            renderOrders();
+        });
+    });
+
+    document.querySelectorAll('.deny-order-btn').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+            const reqId = e.currentTarget.getAttribute('data-id');
+            const req = orderRequests.find(r => r.id === reqId);
+            if (!req) return;
+
+            const updated = await updateOrderRequestInSupabase(reqId, 'Denied');
+            if (!updated) {
+                showToast('Failed to deny order request.', 'error');
+                return;
+            }
+
+            await refreshRequestsFromSupabase();
+            addLog(currentUser.id, 'Deny Order Request', `Denied order request for ${req.itemName} (${req.quantity})`);
+            showToast('Order request denied.', 'success');
+            renderOrders();
+        });
+    });
+}
+
+document.getElementById('orders-status-filter')?.addEventListener('change', () => renderOrders());
 
 /* =======================================
    REQUESTS LOGIC
