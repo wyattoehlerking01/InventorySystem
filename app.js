@@ -1016,9 +1016,16 @@ async function handleBarcodeLogin(rawId) {
     try {
         const user = await fetchUserByIdFromSupabase(id);
         if (user) {
-            if (user.status === 'Suspended') {
+            if (user.status === 'Suspended' && !isSuspensionBypassedUser(user)) {
                 showToast('Your account is suspended. Please contact a teacher.', 'error');
                 return;
+            }
+
+            if (user.status === 'Suspended' && isSuspensionBypassedUser(user)) {
+                user.status = 'Active';
+                updateUserInSupabase(user.id, { status: 'Active' }).catch(err => {
+                    console.warn('Failed to auto-reactivate suspension-bypassed developer user:', err);
+                });
             }
             clearFailedLoginAttempts();
             try {
@@ -1142,6 +1149,13 @@ function canCurrentUserViewOrders() {
     return true;
 }
 
+function isSuspensionBypassedUser(user) {
+    if (!user || user.role !== 'developer') return false;
+    const normalizedId = String(user.id || '').trim().toUpperCase();
+    const normalizedName = String(user.name || '').trim().toUpperCase();
+    return normalizedId === 'W.OEHLERKING' || normalizedName === 'W.OEHLERKING';
+}
+
 function persistOrdersStudentViewSetting(value) {
     ordersStudentViewEnabled = !!value;
     localStorage.setItem(ordersStudentViewStorageKey, String(ordersStudentViewEnabled));
@@ -1225,7 +1239,7 @@ function login(user) {
         createProjectBtn?.classList.remove('hidden');
     }
 
-    if (user.role === 'teacher') createClassBtn?.classList.remove('hidden');
+    if (user.role === 'teacher' || user.role === 'developer') createClassBtn?.classList.remove('hidden');
     else createClassBtn?.classList.add('hidden');
 
     showToast(`Welcome, ${user.name}`);
@@ -2525,8 +2539,8 @@ function openEditClassModal(classId) {
 }
 
 document.getElementById('create-class-btn')?.addEventListener('click', () => {
-    if (!currentUser || currentUser.role !== 'teacher') {
-        showToast('Only teachers can create classes.', 'error');
+    if (!currentUser || !['teacher', 'developer'].includes(currentUser.role)) {
+        showToast('Only teachers and developers can create classes.', 'error');
         return;
     }
 
@@ -2763,7 +2777,8 @@ function renderUsers() {
     if (currentUser.role === 'student' || !tbody) return;
 
     tbody.innerHTML = mockUsers.map(user => {
-        const isSuspended = user.status === 'Suspended';
+        const suspensionBypassed = isSuspensionBypassedUser(user);
+        const isSuspended = user.status === 'Suspended' && !suspensionBypassed;
         const canEdit = !(currentUser.role === 'teacher' && user.role === 'developer');
 
         return `
@@ -2786,6 +2801,7 @@ function renderUsers() {
                             ${user.role}
                         </span>
                         ${isSuspended ? `<span class="badge" style="background: rgba(239, 68, 68, 0.15); color: var(--danger); font-size: 0.7rem; border: 1px solid rgba(239,68,68,0.2)">SUSPENDED</span>` : ''}
+                        ${suspensionBypassed ? `<span class="badge" style="background: rgba(16,185,129,0.18); color: var(--success); font-size: 0.7rem; border: 1px solid rgba(16,185,129,0.28)">ALWAYS ACTIVE</span>` : ''}
                     </div>
                 </td>
                 <td>
@@ -2795,7 +2811,7 @@ function renderUsers() {
                 <td>
                     <div class="flex gap-2 user-actions">
                         ${canEdit ? `<button class="btn btn-secondary btn-sm edit-user-btn" data-id="${user.id}" title="Edit User"><i class="ph ph-pencil"></i></button>` : `<i class="ph ph-lock text-muted" title="Developer locked"></i>`}
-                        <button class="btn btn-secondary btn-sm suspend-user-btn" data-id="${user.id}" title="${isSuspended ? 'Reactivate' : 'Suspend'}">
+                        <button class="btn btn-secondary btn-sm suspend-user-btn" data-id="${user.id}" title="${isSuspended ? 'Reactivate' : 'Suspend'}" ${suspensionBypassed ? 'disabled' : ''}>
                             <i class="ph ${isSuspended ? 'ph-user-check' : 'ph-user-minus'}"></i>
                         </button>
                         <button class="btn btn-danger btn-sm delete-user-btn" data-id="${user.id}" title="Delete"><i class="ph ph-trash"></i></button>
@@ -2811,6 +2827,11 @@ function renderUsers() {
             const id = e.currentTarget.getAttribute('data-id');
             const user = mockUsers.find(u => u.id === id);
             if (!user) return;
+
+            if (isSuspensionBypassedUser(user)) {
+                showToast('Suspension is disabled for this developer account.', 'error');
+                return;
+            }
 
             const isSuspending = user.status !== 'Suspended';
             if (isSuspending) {
