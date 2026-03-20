@@ -383,14 +383,9 @@ function canUserSeeItem(user, item) {
 
 function applyVersionBadges() {
     const loginVersionEl = document.getElementById('app-version-login');
-    const sidebarVersionEl = document.getElementById('app-version-sidebar');
     if (loginVersionEl) {
         loginVersionEl.textContent = appVersion;
         loginVersionEl.style.display = appVersion ? '' : 'none';
-    }
-    if (sidebarVersionEl) {
-        sidebarVersionEl.textContent = appVersion;
-        sidebarVersionEl.style.display = appVersion ? '' : 'none';
     }
 }
 
@@ -969,7 +964,12 @@ submitHelpBtn?.addEventListener('click', async () => {
     helpRequests.unshift(helpRequest);
     
     // Save to Supabase
-    await addHelpRequestToSupabase(helpRequest);
+    const saved = await addHelpRequestToSupabase(helpRequest);
+    if (!saved) {
+        showToast('Failed to submit request. Please try again.', 'error');
+        helpRequests.shift(); // Remove from local array if save failed
+        return;
+    }
 
     showToast('Your request has been submitted. Support will contact you shortly.', 'success');
     document.getElementById('help-name').value = '';
@@ -1211,6 +1211,7 @@ function login(user) {
     // Role-based Add Item / Create Project UI logic
     const addItemBtn = document.getElementById('add-item-btn');
     const createProjectBtn = document.getElementById('create-project-btn');
+    const createClassBtn = document.getElementById('create-class-btn');
 
     if (user.role === 'student') {
         addItemBtn?.classList.add('hidden');
@@ -1223,6 +1224,9 @@ function login(user) {
         addItemBtn?.classList.remove('hidden');
         createProjectBtn?.classList.remove('hidden');
     }
+
+    if (user.role === 'teacher') createClassBtn?.classList.remove('hidden');
+    else createClassBtn?.classList.add('hidden');
 
     showToast(`Welcome, ${user.name}`);
 
@@ -1246,6 +1250,7 @@ function logout(message = 'Logged out successfully') {
 
     _trackLogout();
     currentUser = null;
+    inventoryBasket = [];
     clearInterval(countdownInterval);
     mainView.classList.remove('active');
     setTimeout(() => {
@@ -1265,6 +1270,7 @@ function returnToLoginView(options = {}) {
 
     if (currentUser) _trackLogout();
     currentUser = null;
+    inventoryBasket = [];
     clearInterval(countdownInterval);
 
     mainView.classList.remove('active');
@@ -2243,6 +2249,11 @@ function renderClasses() {
     const container = document.getElementById('classes-container');
     if (currentUser.role === 'student') return;
 
+    if (!studentClasses.length) {
+        container.innerHTML = '<p class="text-muted col-span-full">No classes created yet.</p>';
+        return;
+    }
+
     container.innerHTML = studentClasses.map(cls => {
         const studentCount = cls.students.length;
         const visibleItemCount = getVisibleItemCountForClass(cls);
@@ -2514,6 +2525,11 @@ function openEditClassModal(classId) {
 }
 
 document.getElementById('create-class-btn')?.addEventListener('click', () => {
+    if (!currentUser || currentUser.role !== 'teacher') {
+        showToast('Only teachers can create classes.', 'error');
+        return;
+    }
+
     // Only show students
     const availableStudents = mockUsers.filter(u => u.role === 'student');
     const studentOptions = availableStudents.map(s =>
@@ -2677,7 +2693,7 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
             showToast(`Class ${name} created with ${checkedStudents.length} students.`, 'success');
             addLog(currentUser.id, 'Create Class', `Created class ${name} with ${checkedStudents.length} students.`);
             closeModal();
-            if (document.getElementById('page-classes').classList.contains('active')) {
+            if (document.getElementById('page-classes') && document.getElementById('page-classes').classList.contains('active')) {
                 renderClasses();
             }
         } else {
@@ -2977,6 +2993,38 @@ function openUserModal(editId = null) {
         const id = document.getElementById('user-id').value.trim().toUpperCase();
         const name = document.getElementById('user-name-input').value.trim();
         const role = document.getElementById('user-role-input').value;
+
+        // Developer role restrictions
+        if (role === 'developer' && currentUser.role === 'teacher') {
+            showToast('Only developers can create other developers.', 'error');
+            return;
+        }
+
+        if (role === 'developer' && currentUser.role !== 'developer') {
+            showToast('Only developers can assign the developer role.', 'error');
+            return;
+        }
+
+        // Prevent teachers from becoming developers
+        if (!isEdit && role === 'developer' && currentUser.role === 'teacher') {
+            showToast('Teachers cannot become developers.', 'error');
+            return;
+        }
+
+        // Check if a developer already exists (only when creating new developer)
+        if (!isEdit && role === 'developer') {
+            const existingDev = mockUsers.find(u => u.role === 'developer');
+            if (existingDev) {
+                showToast('Only one developer can exist in the system.', 'error');
+                return;
+            }
+        }
+
+        // Prevent changing a teacher to developer
+        if (isEdit && userToEdit.role !== 'developer' && role === 'developer' && currentUser.role === 'teacher') {
+            showToast('Teachers cannot make others developers.', 'error');
+            return;
+        }
 
         const perms = role === 'student' ? {
             canCreateProjects: document.getElementById('perm-create-proj').checked,
@@ -4509,7 +4557,6 @@ function _handleDebugBadgeClick() {
     }
 }
 document.getElementById('app-version-login')?.addEventListener('click', _handleDebugBadgeClick);
-document.getElementById('app-version-sidebar')?.addEventListener('click', _handleDebugBadgeClick);
 
 // ── Kiosk lock ────────────────────────────────────────────────────────
 const KIOSK_LOCK_SCREENS = {

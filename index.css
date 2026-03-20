@@ -167,6 +167,8 @@ h6 {
 .login-logo {
     display: flex;
     align-items: center;
+    justify-content: center;
+    width: 100%;
     gap: 0;
     margin-bottom: 1.5rem;
     color: var(--accent-primary);
@@ -193,6 +195,17 @@ h6 {
     padding: 0;
     margin-left: 0.25rem;
     transform: translateY(2px);
+}
+
+.login-version-wrap {
+    width: 100%;
+    margin-top: 1.5rem;
+    text-align: center;
+}
+
+.login-version-wrap .version-badge {
+    margin-left: 0;
+    transform: none;
 }
 
 .subtitle {
@@ -1029,6 +1042,9 @@ h6 {
 
 .class-modal .modal-body {
     padding-right: 0.5rem;
+    max-height: calc(92vh - 200px);
+    overflow-y: auto;
+    min-height: 0;
 }
 
 /* =========================================
