@@ -128,6 +128,24 @@ function resetInactivityTimer() {
     }
 }
 
+function withButtonPending(buttonEl, pendingLabel, callback) {
+    if (!buttonEl) return;
+    if (buttonEl.dataset.busy === '1') return;
+
+    const originalHtml = buttonEl.innerHTML;
+    buttonEl.dataset.busy = '1';
+    buttonEl.disabled = true;
+    buttonEl.innerHTML = `<i class="ph ph-spinner ph-spin"></i> ${pendingLabel}`;
+
+    Promise.resolve()
+        .then(callback)
+        .finally(() => {
+            buttonEl.dataset.busy = '0';
+            buttonEl.disabled = false;
+            buttonEl.innerHTML = originalHtml;
+        });
+}
+
 /* =======================================
    LOGIN RATE LIMITING
    ======================================= */
@@ -2093,7 +2111,7 @@ function renderProjects() {
     document.querySelectorAll('.view-proj-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
             const id = e.currentTarget.getAttribute('data-id');
-            showToast(`Project details for ${id} clicked.`);
+            openEditProjectModal(id);
         });
     });
 
@@ -3224,18 +3242,102 @@ document.getElementById('view-requests-btn')?.addEventListener('click', () => {
     });
 });
 
+function normalizeImportText(value) {
+    return String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function extractCourseOptionFromClassName(className) {
+    return String(className || '')
+        .replace(/^grade\s*(k|\d{1,2})\s*[-: ]\s*/i, '')
+        .replace(/\s*[-: ]\s*grade\s*(k|\d{1,2})$/i, '')
+        .trim();
+}
+
+function composeClassNameFromCourseAndGrade(course, grade) {
+    const c = String(course || '').trim();
+    const g = String(grade || '').trim();
+    if (c && g) return `${c} - Grade ${g}`;
+    if (c) return c;
+    if (g) return `Grade ${g}`;
+    return '';
+}
+
+function findClassByCourseAndGrade(course, grade) {
+    const c = String(course || '').trim();
+    const g = String(grade || '').trim();
+    if (!c && !g) return null;
+
+    const normalizedCourse = normalizeImportText(c);
+    const normalizedGrade = normalizeImportText(g);
+    const exactCandidates = new Set([
+        composeClassNameFromCourseAndGrade(c, g),
+        (c && g) ? `Grade ${g} ${c}` : '',
+        (c && g) ? `${c} ${g}` : '',
+        c
+    ].filter(Boolean).map(name => normalizeImportText(name)));
+
+    const exactMatch = studentClasses.find(cls => exactCandidates.has(normalizeImportText(cls.name)));
+    if (exactMatch) return exactMatch;
+
+    if (normalizedCourse && normalizedGrade) {
+        return studentClasses.find(cls => {
+            const normalizedName = normalizeImportText(cls.name);
+            return normalizedName.includes(normalizedCourse) && normalizedName.includes(normalizedGrade);
+        }) || null;
+    }
+
+    if (normalizedCourse) {
+        return studentClasses.find(cls => normalizeImportText(cls.name).includes(normalizedCourse)) || null;
+    }
+
+    if (normalizedGrade) {
+        return studentClasses.find(cls => normalizeImportText(cls.name).includes(normalizedGrade)) || null;
+    }
+
+    return null;
+}
+
 document.getElementById('bulk-users-btn')?.addEventListener('click', () => {
+    const gradeOptions = ['K', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12'];
+    const courseOptions = [...new Set(
+        studentClasses
+            .map(cls => extractCourseOptionFromClassName(cls.name))
+            .filter(Boolean)
+    )].sort((a, b) => a.localeCompare(b));
+
     const html = `
         <div class="modal-header">
             <h3>Bulk Import Users</h3>
             <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
         </div>
         <div class="modal-body">
-            <p class="text-secondary mb-4">Paste comma-separated user data in the format:<br><strong>ID,Name,Role</strong></p>
-            <div class="form-group">
-                <textarea id="bulk-users-data" class="form-control" rows="6" placeholder="STU-001,Alice Smith,student\nTCH-002,Bob Jones,teacher"></textarea>
+            <p class="text-secondary mb-4">Paste comma-separated user data in the format:<br><strong>ID,Name,Role,Course,Grade</strong></p>
+            <div class="form-group" style="display:grid;grid-template-columns:1fr 150px;gap:0.75rem;align-items:end;">
+                <div>
+                    <label>Default Course (optional)</label>
+                    <input list="bulk-course-options" id="bulk-default-course" class="form-control" placeholder="e.g. Biology">
+                    <datalist id="bulk-course-options">
+                        ${courseOptions.map(course => `<option value="${course}"></option>`).join('')}
+                    </datalist>
+                </div>
+                <div>
+                    <label>Default Grade (optional)</label>
+                    <select id="bulk-default-grade" class="form-control">
+                        <option value="">None</option>
+                        ${gradeOptions.map(g => `<option value="${g}">${g}</option>`).join('')}
+                    </select>
+                </div>
             </div>
-            <p class="text-sm text-muted">Roles must be 'student', 'teacher', or 'developer'. Existing IDs will be skipped.</p>
+            <div class="form-group" style="margin-top:0.75rem;">
+                <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
+                    <input type="checkbox" id="bulk-autocreate-class" checked>
+                    Auto-create class when Course/Grade does not match an existing class
+                </label>
+            </div>
+            <div class="form-group">
+                <textarea id="bulk-users-data" class="form-control" rows="6" placeholder="STU-001,Alice Smith,student,Biology,10\nTCH-002,Bob Jones,teacher,,"></textarea>
+            </div>
+            <p class="text-sm text-muted">Roles must be 'student', 'teacher', or 'developer'. Existing IDs are skipped. Course/Grade applies to students only.</p>
         </div>
         <div class="modal-footer">
             <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
@@ -3252,38 +3354,105 @@ document.getElementById('bulk-users-btn')?.addEventListener('click', () => {
             return;
         }
 
+        const defaultCourse = document.getElementById('bulk-default-course').value.trim();
+        const defaultGrade = document.getElementById('bulk-default-grade').value.trim();
+        const autoCreateClass = document.getElementById('bulk-autocreate-class').checked;
+
         const lines = data.split('\\n');
         let importCount = 0;
         let skipCount = 0;
+        let invalidCount = 0;
+        let assignedCount = 0;
+        let unassignedCount = 0;
+        let createdClassCount = 0;
+        const classesToPersist = new Set();
 
         for (const line of lines) {
             const parts = line.split(',');
-            if (parts.length >= 3) {
-                const id = parts[0].trim().toUpperCase();
-                const name = parts[1].trim();
-                const role = parts[2].trim().toLowerCase();
+            if (parts.length < 3) {
+                invalidCount++;
+                continue;
+            }
 
-                if (id && name && ['student', 'teacher', 'developer'].includes(role)) {
-                    if (!mockUsers.some(u => u.id === id)) {
-                        const created = await addUserToSupabase({
-                            id: id,
-                            name: name,
-                            role: role,
-                            status: 'Active'
-                        });
-                        if (created) importCount++;
-                    } else {
-                        skipCount++;
+            const id = parts[0].trim().toUpperCase();
+            const name = parts[1].trim();
+            const role = parts[2].trim().toLowerCase();
+            const course = (parts[3] ? parts[3].trim() : '') || defaultCourse;
+            const grade = (parts[4] ? parts[4].trim() : '') || defaultGrade;
+
+            if (!id || !name || !['student', 'teacher', 'developer'].includes(role)) {
+                invalidCount++;
+                continue;
+            }
+
+            if (mockUsers.some(u => u.id === id)) {
+                skipCount++;
+                continue;
+            }
+
+            const created = await addUserToSupabase({
+                id,
+                name,
+                role,
+                status: 'Active'
+            });
+
+            if (!created) {
+                invalidCount++;
+                continue;
+            }
+
+            importCount++;
+
+            if (role === 'student') {
+                let targetClass = findClassByCourseAndGrade(course, grade);
+
+                if (!targetClass && autoCreateClass && (course || grade)) {
+                    const newClassName = composeClassNameFromCourseAndGrade(course, grade);
+                    if (newClassName) {
+                        targetClass = {
+                            id: (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') ? crypto.randomUUID() : generateId('CLS'),
+                            name: newClassName,
+                            teacherId: currentUser.id,
+                            students: [],
+                            visibleItemIds: [],
+                            allowedVisibilityTags: [],
+                            duePolicy: normalizeDuePolicy(defaultDuePolicy),
+                            defaultPermissions: { canCreateProjects: false, canJoinProjects: true, canSignOut: true }
+                        };
+                        studentClasses.unshift(targetClass);
+                        createdClassCount++;
                     }
+                }
+
+                if (targetClass) {
+                    if (!targetClass.students.includes(id)) {
+                        targetClass.students.push(id);
+                    }
+                    classesToPersist.add(targetClass);
+                    assignedCount++;
+                } else {
+                    unassignedCount++;
                 }
             }
         }
 
-        await refreshUsersFromSupabase();
+        let classPersistFailures = 0;
+        for (const cls of classesToPersist) {
+            const saved = await saveStudentClassToSupabase(cls);
+            if (!saved) classPersistFailures++;
+        }
+
+        await Promise.all([
+            refreshUsersFromSupabase(),
+            loadStudentClasses()
+        ]);
 
         if (importCount > 0) {
-            showToast(`Successfully imported ${importCount} users. (${skipCount} skipped)`, 'success');
-            addLog(currentUser.id, 'Bulk Import', `Imported ${importCount} users.`);
+            const classSummary = ` | Class assigned: ${assignedCount} | Unassigned: ${unassignedCount} | New classes: ${createdClassCount}`;
+            const warningSummary = classPersistFailures > 0 ? ` | Class save issues: ${classPersistFailures}` : '';
+            showToast(`Imported ${importCount} users. (${skipCount} skipped, ${invalidCount} invalid)${classSummary}${warningSummary}`, classPersistFailures > 0 ? 'warning' : 'success');
+            addLog(currentUser.id, 'Bulk Import', `Imported ${importCount} users. Assigned classes for ${assignedCount} students. Created ${createdClassCount} classes.`);
         } else {
             showToast('No valid new users found to import.', 'error');
         }
@@ -3479,7 +3648,9 @@ function openAddItemModal() {
 
     openModal(html);
 
-    document.getElementById('confirm-add-item').addEventListener('click', async () => {
+    document.getElementById('confirm-add-item').addEventListener('click', () => {
+        const submitBtn = document.getElementById('confirm-add-item');
+        withButtonPending(submitBtn, 'Adding...', async () => {
         const name = document.getElementById('add-name').value.trim();
         const category = (document.getElementById('add-category').value || 'Uncategorized').trim();
         const manualSku = document.getElementById('add-sku').value.trim().toUpperCase();
@@ -3522,6 +3693,7 @@ function openAddItemModal() {
         if (document.getElementById('page-inventory').classList.contains('active')) {
             renderInventory();
         }
+        });
     });
 }
 
@@ -3639,7 +3811,9 @@ document.getElementById('create-project-btn')?.addEventListener('click', () => {
 
     openModal(html);
 
-    document.getElementById('confirm-add-proj').addEventListener('click', async () => {
+    document.getElementById('confirm-add-proj').addEventListener('click', () => {
+        const submitBtn = document.getElementById('confirm-add-proj');
+        withButtonPending(submitBtn, 'Creating...', async () => {
         const name = document.getElementById('add-proj-name').value.trim();
         const desc = document.getElementById('add-proj-desc').value.trim();
         const collaborators = Array.from(document.querySelectorAll('.proj-student-checkbox:checked')).map(cb => cb.value);
@@ -3674,6 +3848,7 @@ document.getElementById('create-project-btn')?.addEventListener('click', () => {
                 renderProjects();
             }
         }
+        });
     });
 });
 
