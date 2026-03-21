@@ -767,7 +767,10 @@ async function addItemToSupabase(item) {
         sku: item.sku,
         stock: item.stock || 0,
         threshold: item.threshold || 5,
-        status: item.status || 'Active'
+        status: item.status || 'Active',
+        part_number: item.part_number || null,
+        item_type: item.item_type || 'item',
+        visibility_level: item.visibility_level || 'standard'
     }]).select();
     
     if (error) {

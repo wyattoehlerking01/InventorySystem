@@ -1194,6 +1194,9 @@ function login(user) {
     currentUser = user;
     _trackLogin();
     startCountdown();
+    
+    // Log the login event
+    addLog(user.id, 'User Login', `${user.name} (${user.role}) logged in`);
 
     // Update Profile UI
     const profileAvatar = document.getElementById('user-avatar');
@@ -1662,7 +1665,7 @@ function loadDashboard() {
         if (studentWidgets) studentWidgets.style.display = 'none';
 
         const totalItems = inventoryItems.length;
-        const lowStockCount = inventoryItems.filter(i => i.stock <= i.threshold).length;
+        const lowStockCount = inventoryItems.filter(i => i.stock <= i.threshold && i.item_type !== 'consumable').length;
         const totalStock = inventoryItems.reduce((acc, curr) => acc + curr.stock, 0);
 
         // Count items signed out across all projects
@@ -1708,7 +1711,7 @@ function loadDashboard() {
             if (!tabContent) return;
 
             if (tab === 'lowstock') {
-                const lowStockItems = inventoryItems.filter(i => i.stock <= i.threshold).slice(0, 8);
+                const lowStockItems = inventoryItems.filter(i => i.stock <= i.threshold && i.item_type !== 'consumable').slice(0, 8);
                 tabContent.innerHTML = `<ul class="stock-list">${lowStockItems.map(item => `
                     <li class="stock-item">
                         <div>
@@ -1720,12 +1723,16 @@ function loadDashboard() {
                 `).join('') || '<p class="text-muted">All stock levels are healthy.</p>'}</ul>`;
             } else if (tab === 'activity') {
                 const recentLogs = activityLogs.slice(0, 8);
-                tabContent.innerHTML = `<ul class="activity-list mini">${recentLogs.map(log => `
+                tabContent.innerHTML = `<ul class="activity-list mini">${recentLogs.map(log => {
+                    const user = mockUsers.find(u => u.id === log.userId);
+                    const displayName = user?.name || (log.userId === 'SYSTEM' ? 'SYSTEM' : log.userId) || 'Unknown';
+                    return `
                     <li class="activity-item">
                         <div class="timestamp">${new Date(log.timestamp).toLocaleString()}</div>
-                        <div><span style="font-size:1rem;margin-right:0.3rem">${getRoleIcon(mockUsers.find(u => u.id === log.userId)?.role)}</span><strong>${mockUsers.find(u => u.id === log.userId)?.name || log.userId}</strong> - ${log.action}</div>
+                        <div><span style="font-size:1rem;margin-right:0.3rem">${user?.role ? getRoleIcon(user.role) : '👤'}</span><strong>${displayName}</strong> - ${log.action}</div>
                     </li>
-                `).join('')}</ul>`;
+                `;
+                }).join('')}</ul>`;
             } else if (tab === 'itemsout') {
                 let allItemsOut = [];
                 projects.forEach(p => {
@@ -1790,8 +1797,11 @@ function loadDashboard() {
 /* =======================================
    INVENTORY LOGIC
    ======================================= */
-function determineStatus(stock, threshold) {
-    if (stock <= 0) return 'Critical';
+function determineStatus(stock, threshold, itemType = 'item') {
+    // Consumables don't show stock status
+    if (itemType === 'consumable') return 'N/A';
+    // Items show out of stock or low stock
+    if (stock <= 0) return 'Out of Stock';
     if (stock <= threshold) return 'Low Stock';
     return 'In Stock';
 }
@@ -1832,8 +1842,8 @@ function renderInventory(filterStr = 'All') {
     }
 
     tbody.innerHTML = filtered.map(item => {
-        const currentStatus = determineStatus(item.stock, item.threshold);
-        const statusClass = currentStatus === 'In Stock' ? 'status-instock' : currentStatus === 'Low Stock' ? 'status-lowstock' : 'status-critical';
+        const currentStatus = determineStatus(item.stock, item.threshold, item.item_type);
+        const statusClass = currentStatus === 'In Stock' ? 'status-instock' : (currentStatus === 'Low Stock' || currentStatus === 'Out of Stock') ? 'status-lowstock' : 'status-na';
         const canSignOut = currentUser.perms?.canSignOut !== false;
 
         const tagsHtml = (item.visibilityTags || []).map(tag =>
@@ -2702,49 +2712,52 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
 
     attachPeriodRowHandlers('add-class-period-rows', 'add-class-add-period-btn');
 
-    document.getElementById('confirm-add-class').addEventListener('click', async () => {
-        const name = document.getElementById('add-class-name').value.trim();
-        const checkedStudents = Array.from(document.querySelectorAll('.student-checkbox:checked')).map(cb => cb.value);
-        const checkedItems = Array.from(document.querySelectorAll('.class-item-checkbox:checked')).map(cb => cb.value);
-        const checkedTags = Array.from(document.querySelectorAll('.add-class-tag-cb:checked')).map(cb => cb.value);
-        const defaultDueMinutes = Math.max(1, parseInt(document.getElementById('add-class-default-due').value, 10) || 80);
-        const classPeriodMinutes = Math.max(1, parseInt(document.getElementById('add-class-period-mins').value, 10) || 50);
-        const timezone = document.getElementById('add-class-timezone').value;
-        const parsedRanges = collectPeriodRowsFromModal('add-class-period-rows');
+    document.getElementById('confirm-add-class').addEventListener('click', async (e) => {
+        const submitBtn = e.currentTarget;
+        withButtonPending(submitBtn, 'Creating...', async () => {
+            const name = document.getElementById('add-class-name').value.trim();
+            const checkedStudents = Array.from(document.querySelectorAll('.student-checkbox:checked')).map(cb => cb.value);
+            const checkedItems = Array.from(document.querySelectorAll('.class-item-checkbox:checked')).map(cb => cb.value);
+            const checkedTags = Array.from(document.querySelectorAll('.add-class-tag-cb:checked')).map(cb => cb.value);
+            const defaultDueMinutes = Math.max(1, parseInt(document.getElementById('add-class-default-due').value, 10) || 80);
+            const classPeriodMinutes = Math.max(1, parseInt(document.getElementById('add-class-period-mins').value, 10) || 50);
+            const timezone = document.getElementById('add-class-timezone').value;
+            const parsedRanges = collectPeriodRowsFromModal('add-class-period-rows');
 
-        if (name) {
-            const newClass = {
-                id: (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') ? crypto.randomUUID() : generateId('CLS'),
-                name: name,
-                teacherId: currentUser.id,
-                students: checkedStudents,
-                visibleItemIds: checkedItems,
-                allowedVisibilityTags: checkedTags,
-                duePolicy: normalizeDuePolicy({
-                    defaultSignoutMinutes: defaultDueMinutes,
-                    classPeriodMinutes: classPeriodMinutes,
-                    timezone,
-                    periodRanges: parsedRanges
-                }),
-                defaultPermissions: { canCreateProjects: false, canJoinProjects: true, canSignOut: true }
-            };
+            if (name) {
+                const newClass = {
+                    id: (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') ? crypto.randomUUID() : generateId('CLS'),
+                    name: name,
+                    teacherId: currentUser.id,
+                    students: checkedStudents,
+                    visibleItemIds: checkedItems,
+                    allowedVisibilityTags: checkedTags,
+                    duePolicy: normalizeDuePolicy({
+                        defaultSignoutMinutes: defaultDueMinutes,
+                        classPeriodMinutes: classPeriodMinutes,
+                        timezone,
+                        periodRanges: parsedRanges
+                    }),
+                    defaultPermissions: { canCreateProjects: false, canJoinProjects: true, canSignOut: true }
+                };
 
-            const saved = await saveStudentClassToSupabase(newClass);
-            if (!saved) {
-                showToast('Failed to create class in Supabase.', 'error');
-                return;
+                const saved = await saveStudentClassToSupabase(newClass);
+                if (!saved) {
+                    showToast('Failed to create class in Supabase.', 'error');
+                    return;
+                }
+
+                studentClasses.unshift(newClass);
+                showToast(`Class ${name} created with ${checkedStudents.length} students.`, 'success');
+                addLog(currentUser.id, 'Create Class', `Created class ${name} with ${checkedStudents.length} students.`);
+                closeModal();
+                if (document.getElementById('page-classes') && document.getElementById('page-classes').classList.contains('active')) {
+                    renderClasses();
+                }
+            } else {
+                showToast('Class name is required', 'error');
             }
-
-            studentClasses.unshift(newClass);
-            showToast(`Class ${name} created with ${checkedStudents.length} students.`, 'success');
-            addLog(currentUser.id, 'Create Class', `Created class ${name} with ${checkedStudents.length} students.`);
-            closeModal();
-            if (document.getElementById('page-classes') && document.getElementById('page-classes').classList.contains('active')) {
-                renderClasses();
-            }
-        } else {
-            showToast('Class name is required', 'error');
-        }
+        });
     });
 });
 
@@ -2860,8 +2873,13 @@ function renderUsers() {
             const user = mockUsers.find(u => u.id === id);
             if (!user) return;
 
-            if (isSuspensionBypassedUser(user)) {
-                showToast('Suspension is disabled for this developer account.', 'error');
+            if (currentUser?.id === id) {
+                showToast('You cannot suspend your own account.', 'error');
+                return;
+            }
+
+            if (isSuspensionBypassedUser(user) || user.role === 'developer') {
+                showToast('Developers cannot be suspended.', 'error');
                 return;
             }
 
@@ -2897,6 +2915,11 @@ function renderUsers() {
             const id = e.currentTarget.getAttribute('data-id');
             const user = mockUsers.find(u => u.id === id);
             if (!user) return;
+
+            if (currentUser.role === 'teacher' && user.role === 'developer') {
+                showToast('Teachers cannot delete developers.', 'error');
+                return;
+            }
 
             if (confirm(`CRITICAL: Are you sure you want to delete ${user.name}? This action is permanent.`)) {
                 const deletingCurrentUser = currentUser?.id === id;
@@ -3473,6 +3496,15 @@ document.getElementById('bulk-delete-users-btn')?.addEventListener('click', asyn
 
     const selectedIds = selectedCbs.map(cb => cb.getAttribute('data-id'));
     const targetUsers = mockUsers.filter(u => selectedIds.includes(u.id));
+    
+    // Teachers cannot delete developers
+    if (currentUser.role === 'teacher') {
+        const developerCount = targetUsers.filter(u => u.role === 'developer').length;
+        if (developerCount > 0) {
+            showToast(`Teachers cannot delete developers. ${developerCount} developer(s) excluded from deletion.`, 'error');
+            return;
+        }
+    }
 
     if (confirm(`Are you absolutely sure you want to PERMANENTLY delete ${targetUsers.length} selected user(s)? This cannot be undone.`)) {
         let deleteCount = 0;
@@ -3512,10 +3544,10 @@ document.getElementById('bulk-suspend-users-btn')?.addEventListener('click', asy
     }
 
     const selectedIds = selectedCbs.map(cb => cb.getAttribute('data-id'));
-    const targetUsers = mockUsers.filter(u => selectedIds.includes(u.id) && u.role === 'student');
+    const targetUsers = mockUsers.filter(u => selectedIds.includes(u.id) && u.role === 'student' && u.id !== currentUser?.id);
 
     if (targetUsers.length === 0) {
-        showToast('Only students can be suspended. No students were selected.', 'error');
+        showToast('Only students can be suspended. No eligible students were selected.', 'error');
         return;
     }
 
@@ -3622,6 +3654,18 @@ function openAddItemModal() {
                 <label>SKU / Barcode</label>
                 <input type="text" id="add-sku" class="form-control" placeholder="Leave blank to auto-generate">
             </div>
+            <div class="form-group">
+                <label>Part Number (Optional)</label>
+                <input type="text" id="add-part-number" class="form-control" placeholder="e.g. SRM-42-001">
+            </div>
+            <div class="form-group">
+                <label>Item Type</label>
+                <select id="add-item-type" class="form-control">
+                    <option value="item">Item (Tracked, Sign In/Out)</option>
+                    <option value="consumable">Consumable (No Stock Tracking)</option>
+                </select>
+                <small class="text-muted">Items are tracked with sign-in/out. Consumables don't show stock levels.</small>
+            </div>
             <div class="grid-2-col" style="gap:1rem">
                 <div class="form-group">
                     <label>Initial Stock</label>
@@ -3631,6 +3675,15 @@ function openAddItemModal() {
                     <label>Low Threshold</label>
                     <input type="number" id="add-threshold" class="form-control" value="5">
                 </div>
+            </div>
+            <div class="form-group">
+                <label>Visibility</label>
+                <select id="add-visibility-level" class="form-control">
+                    <option value="standard">Standard (Class-based visibility)</option>
+                    <option value="low">Low (Limited visibility)</option>
+                    <option value="hidden">Hidden (Not visible to students)</option>
+                </select>
+                <small class="text-muted">Controls who can see this item based on class or role.</small>
             </div>
             <div class="form-group">
                 <label>Visibility Tags</label>
@@ -3648,12 +3701,14 @@ function openAddItemModal() {
 
     openModal(html);
 
-    document.getElementById('confirm-add-item').addEventListener('click', () => {
         const submitBtn = document.getElementById('confirm-add-item');
         withButtonPending(submitBtn, 'Adding...', async () => {
         const name = document.getElementById('add-name').value.trim();
         const category = (document.getElementById('add-category').value || 'Uncategorized').trim();
         const manualSku = document.getElementById('add-sku').value.trim().toUpperCase();
+        const partNumber = document.getElementById('add-part-number')?.value.trim() || '';
+        const itemType = document.getElementById('add-item-type')?.value || 'item';
+        const visibilityLevel = document.getElementById('add-visibility-level')?.value || 'standard';
         const stock = Math.max(0, parseInt(document.getElementById('add-stock').value, 10) || 0);
         const threshold = Math.max(0, parseInt(document.getElementById('add-threshold').value, 10) || 0);
         const selectedTags = Array.from(document.querySelectorAll('.add-item-tag-cb:checked')).map(cb => cb.value);
@@ -3671,6 +3726,9 @@ function openAddItemModal() {
             sku: manualSku || autoSku,
             stock,
             threshold,
+            part_number: partNumber || null,
+            item_type: itemType,
+            visibility_level: visibilityLevel,
             visibilityTags: selectedTags
         };
 

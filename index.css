@@ -198,9 +198,13 @@ h6 {
 }
 
 .login-version-wrap {
-    width: 100%;
-    margin-top: 1.5rem;
-    text-align: center;
+    position: fixed;
+    bottom: 1.5rem;
+    right: 1.5rem;
+    width: auto;
+    margin: 0;
+    text-align: right;
+    z-index: 1000;
 }
 
 .login-version-wrap .version-badge {
@@ -863,6 +867,11 @@ h6 {
 .status-critical {
     background: rgba(239, 68, 68, 0.15);
     color: var(--danger);
+}
+
+.status-na {
+    background: rgba(107, 114, 128, 0.15);
+    color: var(--text-secondary);
 }
 
 /* =========================================
