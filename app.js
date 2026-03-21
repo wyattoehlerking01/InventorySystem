@@ -8,6 +8,8 @@ let currentUser = null;
 const envConfig = window.APP_ENV || {};
 const kioskId = String(envConfig.KIOSK_ID ?? envConfig.kioskId ?? '').trim();
 let appVersion = String(envConfig.APP_VERSION ?? envConfig.APP_Version ?? 'VERSION').trim() || 'VERSION';
+const appName = String(envConfig.APP_NAME ?? 'LCHS').trim() || 'LCHS';
+const appSubtitle = String(envConfig.APP_SUBTITLE ?? 'Secure Inventory Management').trim() || 'Secure Inventory Management';
 window.RUNTIME_APP_VERSION = appVersion;
 
 let kioskVersionChannel = null;
@@ -383,7 +385,12 @@ function getVisibleItemIdsForClass(cls) {
 }
 
 function getVisibleItemCountForClass(cls) {
-    return getVisibleItemIdsForClass(cls).length;
+    const allowed = new Set(cls?.allowedVisibilityTags || []);
+    return inventoryItems.filter(item => {
+        const itemTags = item.visibilityTags || [];
+        if (itemTags.length === 0) return true;
+        return itemTags.some(tag => allowed.has(tag));
+    }).length;
 }
 
 function canUserSeeItem(user, item) {
@@ -393,13 +400,9 @@ function canUserSeeItem(user, item) {
     const classes = getStudentClassesForUser(user.id);
     if (classes.length === 0) return false;
 
-    // Step 1: item must be in at least one class's visibleItemIds (union)
-    const inVisibleIds = classes.some(cls => getVisibleItemIdsForClass(cls).includes(item.id));
-    if (!inVisibleIds) return false;
-
-    // Step 2: if the item carries visibility tags, at least one class must allow
-    //         at least one of those tags (union across both axes).
-    //         Items with NO tags are always visible once step 1 passes.
+    // Tag-only visibility model:
+    // - Untagged items are visible to students in any class.
+    // - Tagged items are visible if ANY class allows ANY matching tag.
     const itemTags = item.visibilityTags || [];
     if (itemTags.length === 0) return true;
 
@@ -415,6 +418,22 @@ function applyVersionBadges() {
         loginVersionEl.textContent = appVersion;
         loginVersionEl.style.display = appVersion ? '' : 'none';
     }
+}
+
+function applyBranding() {
+    const title = `${appName} Inventory System`;
+    const pageTitleEl = document.getElementById('app-page-title');
+    if (pageTitleEl) pageTitleEl.textContent = title;
+    document.title = title;
+
+    const loginNameEl = document.getElementById('app-login-name');
+    if (loginNameEl) loginNameEl.textContent = appName;
+
+    const sidebarNameEl = document.getElementById('app-sidebar-name');
+    if (sidebarNameEl) sidebarNameEl.textContent = appName;
+
+    const loginSubtitleEl = document.getElementById('app-login-subtitle');
+    if (loginSubtitleEl) loginSubtitleEl.textContent = appSubtitle;
 }
 
 function setRuntimeAppVersion(version) {
@@ -895,6 +914,8 @@ document.getElementById('checkout-basket-btn')?.addEventListener('click', openCh
 
 // Init application
 document.addEventListener('DOMContentLoaded', async () => {
+    applyBranding();
+
     if (!window.supabase || typeof window.supabase.createClient !== 'function') {
         showToast('Supabase client library failed to load. Check internet/CDN access and reload.', 'error');
         return;
@@ -1470,27 +1491,34 @@ function renderMyItems() {
         return;
     }
 
-    const personalProjectId = `PERS-${currentUser.id}`;
-    const personalProject = projects.find(p =>
-        p.id === personalProjectId || (p.name === 'Personal Use' && p.ownerId === currentUser.id)
-    );
+    // Get all projects where current user is owner or collaborator
+    const myProjects = projects.filter(p => p.ownerId === currentUser.id || p.collaborators.includes(currentUser.id));
 
-    const personalItems = (personalProject?.itemsOut || []).map(io => {
-        const item = inventoryItems.find(i => i.id === io.itemId);
-        return {
-            itemName: item ? item.name : io.itemId,
-            quantity: io.quantity,
-            signoutDate: io.signoutDate,
-            dueDate: io.dueDate
-        };
-    }).sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
+    // Collect all items from personal and project sign-outs
+    const allItems = [];
+    
+    myProjects.forEach(proj => {
+        (proj.itemsOut || []).forEach(io => {
+            const item = inventoryItems.find(i => i.id === io.itemId);
+            allItems.push({
+                itemName: item ? item.name : io.itemId,
+                quantity: io.quantity,
+                signoutDate: io.signoutDate,
+                dueDate: io.dueDate,
+                projectName: proj.name === 'Personal Use' ? '(Personal)' : proj.name
+            });
+        });
+    });
 
-    if (personalItems.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No personal sign-outs right now.</td></tr>';
+    // Sort by due date (overdue first, then by date)
+    allItems.sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
+
+    if (allItems.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No items signed out right now.</td></tr>';
         return;
     }
 
-    tbody.innerHTML = personalItems.map(entry => {
+    tbody.innerHTML = allItems.map(entry => {
         const due = new Date(entry.dueDate);
         const isOverdue = due < new Date();
         const statusStyle = isOverdue
@@ -1501,8 +1529,8 @@ function renderMyItems() {
             <tr>
                 <td><strong>${entry.itemName}</strong></td>
                 <td>${entry.quantity}</td>
+                <td><small class="text-muted">${entry.projectName}</small></td>
                 <td><small class="text-muted">${new Date(entry.signoutDate).toLocaleString()}</small></td>
-                <td><small>${due.toLocaleString()}</small></td>
                 <td><span class="badge" style="${statusStyle}">${isOverdue ? 'Overdue' : 'Signed Out'}</span></td>
             </tr>
         `;
@@ -1932,7 +1960,7 @@ function renderInventory(filterStr = 'All') {
                 <td><input type="checkbox" class="item-select-cb" data-id="${item.id}"></td>
                 <td>
                     <div class="font-bold">${item.name}${renderMissingMetadataIcon(item)}</div>
-                    <small class="text-xs text-muted">ID: ${item.id}</small>
+                    ${item.sku ? `<small class="text-xs text-muted">SKU: ${item.sku}</small>` : ''}
                     ${tagsHtml ? `<div class="visibility-tags-row">${tagsHtml}</div>` : ''}
                 </td>
                 <td>${item.category}</td>
@@ -2647,16 +2675,7 @@ function openEditClassModal(classId) {
         </div>`
     ).join('');
 
-    const visibleItemIds = getVisibleItemIdsForClass(cls);
     const classDuePolicy = normalizeDuePolicy(cls.duePolicy);
-    const itemOptions = inventoryItems.map(item =>
-        `<div class="class-list-option" data-label="${`${item.name} ${item.id}`.toLowerCase()}" style="margin-bottom:0.5rem">
-            <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">
-                <input type="checkbox" value="${item.id}" class="edit-class-item-checkbox" ${visibleItemIds.includes(item.id) ? 'checked' : ''}>
-                ${item.name} (${item.id})
-            </label>
-        </div>`
-    ).join('');
 
     const allowedTagSet = new Set(cls.allowedVisibilityTags || []);
     const tagOptions = visibilityTags.map(tag =>
@@ -2687,19 +2706,8 @@ function openEditClassModal(classId) {
                 </div>
             </div>
             <div class="form-group">
-                <label>Visible Inventory Items</label>
-                <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.5rem;flex-wrap:wrap;">
-                    <input type="text" id="edit-class-item-search" class="form-control" placeholder="Search items by name or ID" style="flex:1;min-width:220px;">
-                    <button type="button" class="btn btn-secondary" id="edit-class-item-select-all">Select Visible</button>
-                    <button type="button" class="btn btn-secondary" id="edit-class-item-clear">Clear Visible</button>
-                </div>
-                <div class="glass-panel" id="edit-class-item-list" style="padding:1rem; max-height:220px; overflow-y:auto">
-                    ${itemOptions || '<p class="text-muted">No items available.</p>'}
-                </div>
-            </div>
-            <div class="form-group">
                 <label>Allowed Visibility Tags</label>
-                <small class="text-muted" style="display:block;margin-bottom:0.5rem">Students in this class will see items that carry ANY of the checked tags (union). Items with no tags are always visible.</small>
+                <small class="text-muted" style="display:block;margin-bottom:0.5rem">Visibility is tag-based only. Students see items with ANY checked tag. Items with no tags are always visible.</small>
                 <div class="glass-panel" style="padding:0.75rem">
                     ${tagOptions || '<p class="text-muted text-sm">No visibility tags defined.</p>'}
                 </div>
@@ -2753,20 +2761,11 @@ function openEditClassModal(classId) {
         clearBtnId: 'edit-class-student-clear'
     });
 
-    bindCheckboxListControls({
-        searchInputId: 'edit-class-item-search',
-        listContainerId: 'edit-class-item-list',
-        checkboxClass: 'edit-class-item-checkbox',
-        selectAllBtnId: 'edit-class-item-select-all',
-        clearBtnId: 'edit-class-item-clear'
-    });
-
     attachPeriodRowHandlers('edit-class-period-rows', 'edit-class-add-period-btn');
 
     document.getElementById('confirm-edit-class').addEventListener('click', async () => {
         const name = document.getElementById('edit-class-name').value.trim();
         const checkedStudents = Array.from(document.querySelectorAll('.edit-class-student-checkbox:checked')).map(cb => cb.value);
-        const checkedItems = Array.from(document.querySelectorAll('.edit-class-item-checkbox:checked')).map(cb => cb.value);
         const checkedTags = Array.from(document.querySelectorAll('.edit-class-tag-cb:checked')).map(cb => cb.value);
         const defaultDueMinutes = Math.max(1, parseInt(document.getElementById('edit-class-default-due').value, 10) || 80);
         const classPeriodMinutes = Math.max(1, parseInt(document.getElementById('edit-class-period-mins').value, 10) || 50);
@@ -2776,7 +2775,7 @@ function openEditClassModal(classId) {
         if (name) {
             cls.name = name;
             cls.students = checkedStudents;
-            cls.visibleItemIds = checkedItems;
+            cls.visibleItemIds = [];
             cls.allowedVisibilityTags = checkedTags;
             cls.duePolicy = normalizeDuePolicy({
                 defaultSignoutMinutes: defaultDueMinutes,
@@ -2818,15 +2817,6 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
         </div>`
     ).join('');
 
-    const itemOptions = inventoryItems.map(item =>
-        `<div class="class-list-option" data-label="${`${item.name} ${item.id}`.toLowerCase()}" style="margin-bottom:0.5rem">
-            <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">
-                <input type="checkbox" value="${item.id}" class="class-item-checkbox" checked>
-                ${item.name} (${item.id})
-            </label>
-        </div>`
-    ).join('');
-
     const newClassTagOptions = visibilityTags.map(tag =>
         `<label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;margin-bottom:0.4rem">
             <input type="checkbox" class="add-class-tag-cb" value="${tag}"> ${tag}
@@ -2857,19 +2847,8 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
                 </div>
             </div>
             <div class="form-group">
-                <label>Visible Inventory Items</label>
-                <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.5rem;flex-wrap:wrap;">
-                    <input type="text" id="add-class-item-search" class="form-control" placeholder="Search items by name or ID" style="flex:1;min-width:220px;">
-                    <button type="button" class="btn btn-secondary" id="add-class-item-select-all">Select Visible</button>
-                    <button type="button" class="btn btn-secondary" id="add-class-item-clear">Clear Visible</button>
-                </div>
-                <div class="glass-panel" id="add-class-item-list" style="padding:1rem; max-height:220px; overflow-y:auto">
-                    ${itemOptions}
-                </div>
-            </div>
-            <div class="form-group">
                 <label>Allowed Visibility Tags</label>
-                <small class="text-muted" style="display:block;margin-bottom:0.5rem">Students in this class will see items that carry ANY of the checked tags. Items with no tags are always visible.</small>
+                <small class="text-muted" style="display:block;margin-bottom:0.5rem">Visibility is tag-based only. Students see items with ANY checked tag. Items with no tags are always visible.</small>
                 <div class="glass-panel" style="padding:0.75rem">
                     ${newClassTagOptions || '<p class="text-muted text-sm">No visibility tags defined.</p>'}
                 </div>
@@ -2923,14 +2902,6 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
         clearBtnId: 'add-class-student-clear'
     });
 
-    bindCheckboxListControls({
-        searchInputId: 'add-class-item-search',
-        listContainerId: 'add-class-item-list',
-        checkboxClass: 'class-item-checkbox',
-        selectAllBtnId: 'add-class-item-select-all',
-        clearBtnId: 'add-class-item-clear'
-    });
-
     attachPeriodRowHandlers('add-class-period-rows', 'add-class-add-period-btn');
 
     document.getElementById('confirm-add-class').addEventListener('click', async (e) => {
@@ -2938,7 +2909,6 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
         withButtonPending(submitBtn, 'Creating...', async () => {
             const name = document.getElementById('add-class-name').value.trim();
             const checkedStudents = Array.from(document.querySelectorAll('.student-checkbox:checked')).map(cb => cb.value);
-            const checkedItems = Array.from(document.querySelectorAll('.class-item-checkbox:checked')).map(cb => cb.value);
             const checkedTags = Array.from(document.querySelectorAll('.add-class-tag-cb:checked')).map(cb => cb.value);
             const defaultDueMinutes = Math.max(1, parseInt(document.getElementById('add-class-default-due').value, 10) || 80);
             const classPeriodMinutes = Math.max(1, parseInt(document.getElementById('add-class-period-mins').value, 10) || 50);
@@ -2951,7 +2921,7 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
                     name: name,
                     teacherId: currentUser.id,
                     students: checkedStudents,
-                    visibleItemIds: checkedItems,
+                    visibleItemIds: [],
                     allowedVisibilityTags: checkedTags,
                     duePolicy: normalizeDuePolicy({
                         defaultSignoutMinutes: defaultDueMinutes,
@@ -3236,7 +3206,7 @@ function openUserModal(editId = null) {
                     <label>Granular Permissions</label>
                     <small class="text-muted" id="perms-source-hint">Manual Overrides</small>
                 </div>
-                <div style="display:flex; flex-direction:column; gap:0.5rem; margin-top:0.5rem">
+                <div style="display:flex; flex-direction:column; gap:0.5rem; margin-top:1.5rem">
                     <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer">
                         <input type="checkbox" id="perm-create-proj" ${cProjects ? 'checked' : ''}> Can Create Projects
                     </label>
@@ -3642,7 +3612,7 @@ document.getElementById('bulk-users-btn')?.addEventListener('click', () => {
         const defaultGrade = document.getElementById('bulk-default-grade').value.trim();
         const autoCreateClass = document.getElementById('bulk-autocreate-class').checked;
 
-        const lines = data.split('\\n');
+        const lines = data.split('\n');
         let importCount = 0;
         let skipCount = 0;
         let invalidCount = 0;

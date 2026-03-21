@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LCHS Inventory System</title>
+    <title id="app-page-title">LCHS Inventory System</title>
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -70,9 +70,9 @@
     <div id="login-view" class="view active h-screen flex-center">
         <div class="login-card glass-panel flex-col flex-center">
             <div class="login-logo mb-4">
-                <h1>LCHS</h1>
+                <h1 id="app-login-name">LCHS</h1>
             </div>
-            <p class="subtitle">Secure Inventory Management</p>
+            <p class="subtitle" id="app-login-subtitle">Secure Inventory Management</p>
 
             <div class="scanner-container">
                 <div class="scanner-anim"></div>
@@ -127,7 +127,7 @@
         <aside class="sidebar glass-panel">
             <div class="sidebar-header">
                 <div class="logo">
-                    <h2>LCHS</h2>
+                    <h2 id="app-sidebar-name">LCHS</h2>
                 </div>
             </div>
 
@@ -359,10 +359,10 @@
                     </div>
                 </div>
 
-                <!-- My Items Page (Student Personal Sign-outs) -->
-                <div id="page-my-items" class="page hidden">
-                    <div class="action-bar">
-                        <h3>My Personal Sign-outs</h3>
+                <!-- My Items Page (Student Personal Sign-outs & Projects) -->
+                <div id=\"page-my-items\" class=\"page hidden\">
+                    <div class=\"action-bar\">
+                        <h3>My Items & Projects</h3>
                     </div>
 
                     <div class="table-container glass-panel">
@@ -371,6 +371,7 @@
                                 <tr>
                                     <th>Item</th>
                                     <th>Qty</th>
+                                    <th>Source</th>
                                     <th>Signed Out</th>
                                     <th>Due Date</th>
                                     <th>Status</th>
@@ -434,7 +435,7 @@
                                 <i class="ph ph-lifebuoy"></i> View Requests
                             </button>
                             <div class="view-toggles"
-                                style="display: flex; gap: 0.5rem; border-right: 1px solid var(--glass-border); padding-right: 1rem;">
+                                style="display: none; gap: 0.5rem; border-right: 1px solid var(--glass-border); padding-right: 1rem;">
                                 <button class="btn btn-secondary active-view" id="view-list-btn" title="List View">
                                     <i class="ph ph-list"></i>
                                 </button>

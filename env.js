@@ -1,5 +1,7 @@
 // Runtime environment configuration
 window.APP_ENV = {
+    APP_NAME: 'LCHS',
+    APP_SUBTITLE: 'Secure Inventory Management',
     APP_VERSION: 'OehlerOS Version 1.0',
     KIOSK_ID: 'KIOSK-001',
     APP_UPDATE_ACTION: 'overlay',
