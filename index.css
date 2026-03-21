@@ -944,6 +944,12 @@ h6 {
     border-top: 1px solid var(--glass-border);
 }
 
+.project-action-buttons {
+    display: flex;
+    align-items: center;
+    gap: 0.9rem;
+}
+
 .avatars {
     display: flex;
 }

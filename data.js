@@ -655,12 +655,25 @@ async function deleteStudentClassInSupabase(classId) {
  * Add a new user to the users table
  */
 async function addUserToSupabase(user) {
-    const { data, error } = await dbClient.from('users').insert([{
+    const payload = {
         id: user.id,
         name: user.name,
         role: user.role,
+        grade: user.grade || null,
         status: user.status || 'Active'
-    }]).select();
+    };
+
+    let { data, error } = await dbClient.from('users').insert([payload]).select();
+
+    if (error && /column .*grade|grade.*does not exist/i.test(String(error.message || ''))) {
+        const fallbackPayload = {
+            id: user.id,
+            name: user.name,
+            role: user.role,
+            status: user.status || 'Active'
+        };
+        ({ data, error } = await dbClient.from('users').insert([fallbackPayload]).select());
+    }
     
     if (error) {
         console.error('Error adding user:', error);
@@ -673,9 +686,16 @@ async function addUserToSupabase(user) {
  * Update user in the users table
  */
 async function updateUserInSupabase(userId, updates) {
-    const { data, error } = await dbClient.from('users')
+    let { data, error } = await dbClient.from('users')
         .update(updates)
         .eq('id', userId).select();
+
+    if (error && Object.prototype.hasOwnProperty.call(updates || {}, 'grade') && /column .*grade|grade.*does not exist/i.test(String(error.message || ''))) {
+        const { grade, ...fallbackUpdates } = updates || {};
+        ({ data, error } = await dbClient.from('users')
+            .update(fallbackUpdates)
+            .eq('id', userId).select());
+    }
     
     if (error) {
         console.error('Error updating user:', error);

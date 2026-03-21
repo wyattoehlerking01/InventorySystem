@@ -1652,10 +1652,18 @@ function loadDashboard() {
             </div>
         `;
 
+        myItemsOut.sort((a, b) => {
+            const aDue = a.dueDate ? new Date(a.dueDate).getTime() : Number.POSITIVE_INFINITY;
+            const bDue = b.dueDate ? new Date(b.dueDate).getTime() : Number.POSITIVE_INFINITY;
+            return aDue - bDue;
+        });
+
         list1.innerHTML = myItemsOut.length === 0 ? '<p class="text-muted">No items currently signed out.</p>' :
             myItemsOut.map((io, idx) => {
                 const item = inventoryItems.find(i => i.id === io.itemId);
-                const isOverdue = new Date(io.dueDate) < new Date();
+                const dueDate = io.dueDate ? new Date(io.dueDate) : null;
+                const isOverdue = dueDate ? dueDate < new Date() : false;
+                const dueLabel = dueDate ? dueDate.toLocaleDateString() : 'No due date';
                 return `
                 <li class="stock-item">
                     <div>
@@ -1664,7 +1672,7 @@ function loadDashboard() {
                     </div>
                     <div style="display:flex;align-items:center;gap:0.75rem">
                         <span class="${isOverdue ? 'text-danger' : 'text-warning'} font-bold text-sm">
-                            ${isOverdue ? 'Overdue!' : 'Due: ' + new Date(io.dueDate).toLocaleDateString()}
+                            ${isOverdue ? `Overdue (Due: ${dueLabel})` : `Due: ${dueLabel}`}
                         </span>
                         <button class="btn btn-secondary text-sm request-extension-btn" data-item-id="${io.itemId}" data-project="${io.projectName}" data-due="${io.dueDate}" style="padding:0.3rem 0.6rem;font-size:0.75rem;">
                             <i class="ph ph-clock-clockwise"></i> Extend
@@ -1878,7 +1886,9 @@ function loadDashboard() {
 
                 tabContent.innerHTML = allItemsOut.length === 0 ? '<p class="text-muted">No items currently signed out.</p>' :
                     `<ul class="stock-list">${allItemsOut.map(io => {
-                        const isOverdue = new Date(io.dueDate) < new Date();
+                        const dueDate = io.dueDate ? new Date(io.dueDate) : null;
+                        const isOverdue = dueDate ? dueDate < new Date() : false;
+                        const dueLabel = dueDate ? dueDate.toLocaleDateString() : 'No due date';
                         return `
                         <li class="stock-item">
                             <div>
@@ -1887,7 +1897,7 @@ function loadDashboard() {
                                 <span class="text-muted block text-sm">${io.userName} — ${io.projectName === 'Personal Use' ? '<span class="text-accent">Personal</span>' : io.projectName}</span>
                             </div>
                             <span class="${isOverdue ? 'text-danger' : 'text-warning'} font-bold text-sm" style="white-space:nowrap">
-                                ${isOverdue ? 'Overdue!' : 'Due: ' + new Date(io.dueDate).toLocaleDateString()}
+                                ${isOverdue ? `Overdue (Due: ${dueLabel})` : `Due: ${dueLabel}`}
                             </span>
                         </li>`;
                     }).join('')}</ul>`;
@@ -2207,6 +2217,13 @@ async function openProjectsPageAndFocusProject(projectId) {
     });
 }
 
+async function openMyItemsPage() {
+    const myItemsNavBtn = document.querySelector('.nav-btn[data-target="my-items"]');
+    navBtns.forEach(b => b.classList.remove('active'));
+    myItemsNavBtn?.classList.add('active');
+    await switchPage('my-items', 'My Items');
+}
+
 function openProjectItemsModal(projectId) {
     const project = projects.find(p => p.id === projectId);
     if (!project || !canCurrentUserViewProject(project)) {
@@ -2353,6 +2370,7 @@ async function returnProjectItem(projectId, signoutId) {
 
 function renderProjects() {
     const container = document.getElementById('projects-container');
+    if (!container) return; // Only render if on Projects page
 
     // Filter projects based on role
     // Students see only projects they own or collaborate on (active or past)
@@ -2392,6 +2410,9 @@ function renderProjects() {
             <div class="project-card glass-panel flex-col" style="border-left:4px solid var(--accent);">
                 <div class="project-header">
                     <h4 style="color:var(--accent);"><i class="ph ph-backpack"></i> Personal Items Signed Out</h4>
+                    <button class="btn btn-secondary text-sm open-my-items-from-projects-btn" style="padding:0.2rem 0.5rem;font-size:0.75rem;">
+                        <i class="ph ph-list-checks"></i> Open My Items
+                    </button>
                 </div>
                 <div style="display:flex; flex-direction:column; gap:0.5rem;">
                     ${personalItemsHtml}
@@ -2453,10 +2474,12 @@ function renderProjects() {
                 ${itemsOutHtml}
                 <div class="project-meta">
                     <span class="text-muted text-sm">${proj.itemsOut.length > 0 ? 'Use Sign In to return tools.' : 'No items currently signed out.'}</span>
-                    ${canManage ? `<button class="btn btn-secondary text-sm edit-proj-btn" data-id="${proj.id}">
-                        <i class="ph ph-pencil-simple"></i> Edit
-                    </button>` : ''}
-                    <button class="btn btn-secondary text-sm view-proj-btn" data-id="${proj.id}">Details</button>
+                    <div class="project-action-buttons">
+                        ${canManage ? `<button class="btn btn-secondary text-sm edit-proj-btn" data-id="${proj.id}">
+                            <i class="ph ph-pencil-simple"></i> Edit
+                        </button>` : ''}
+                        <button class="btn btn-secondary text-sm view-proj-btn" data-id="${proj.id}">Details</button>
+                    </div>
                 </div>
             </div>
         `;
@@ -2481,6 +2504,12 @@ function renderProjects() {
             const projectId = e.currentTarget.getAttribute('data-project-id');
             const signoutId = e.currentTarget.getAttribute('data-signout-id');
             await returnProjectItem(projectId, signoutId);
+        });
+    });
+
+    document.querySelectorAll('.open-my-items-from-projects-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            await openMyItemsPage();
         });
     });
 }
@@ -2751,12 +2780,6 @@ function renderClasses() {
                 <div class="project-meta text-sm">
                     <span class="text-muted">Teacher: ${teacher ? teacher.name : 'Unknown'}</span>
                 </div>
-                <div class="text-sm text-muted" style="margin-top:0.5rem">
-                    ${cls.students.map(sId => {
-            const s = mockUsers.find(u => u.id === sId);
-            return s ? s.name : sId;
-        }).join(', ') || 'No students'}
-                </div>
             </div>
         `;
     }).join('');
@@ -2854,6 +2877,7 @@ function openEditClassModal(classId) {
     if (!cls) return;
 
     const availableStudents = mockUsers.filter(u => u.role === 'student');
+    const teacherCandidates = mockUsers.filter(u => ['teacher', 'developer'].includes(u.role));
     const studentOptions = availableStudents.map(s =>
         `<div class="class-list-option" data-label="${`${s.name} ${s.id}`.toLowerCase()}" style="margin-bottom:0.5rem">
             <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">
@@ -2872,6 +2896,19 @@ function openEditClassModal(classId) {
         </label>`
     ).join('');
 
+    const teacherFieldHtml = currentUser.role === 'developer'
+        ? `
+            <div class="form-group">
+                <label>Class Teacher</label>
+                <select id="edit-class-teacher" class="form-control">
+                    <option value="">Unassigned</option>
+                    ${teacherCandidates.map(t => `<option value="${t.id}" ${cls.teacherId === t.id ? 'selected' : ''}>${t.name} (${t.id})</option>`).join('')}
+                </select>
+                <small class="text-muted">Developer override: assign or change the teacher for this class.</small>
+            </div>
+        `
+        : '';
+
     const html = `
         <div class="modal-header">
             <h3>Edit Class: ${cls.name}</h3>
@@ -2882,6 +2919,7 @@ function openEditClassModal(classId) {
                 <label>Class Name</label>
                 <input type="text" id="edit-class-name" class="form-control" value="${cls.name}">
             </div>
+            ${teacherFieldHtml}
             <div class="form-group">
                 <label>Students</label>
                 <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.5rem;flex-wrap:wrap;">
@@ -2959,9 +2997,13 @@ function openEditClassModal(classId) {
         const classPeriodMinutes = Math.max(1, parseInt(document.getElementById('edit-class-period-mins').value, 10) || 50);
         const timezone = document.getElementById('edit-class-timezone').value;
         const parsedRanges = collectPeriodRowsFromModal('edit-class-period-rows');
+        const selectedTeacherId = currentUser.role === 'developer'
+            ? (document.getElementById('edit-class-teacher')?.value || null)
+            : cls.teacherId;
 
         if (name) {
             cls.name = name;
+            cls.teacherId = selectedTeacherId;
             cls.students = checkedStudents;
             cls.visibleItemIds = [];
             cls.allowedVisibilityTags = checkedTags;
@@ -3012,6 +3054,19 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
     ).join('');
 
     const defaultRangesHtml = buildPeriodRowsHtml(defaultDuePolicy.periodRanges);
+    const teacherCandidates = mockUsers.filter(u => ['teacher', 'developer'].includes(u.role));
+    const teacherFieldHtml = currentUser.role === 'developer'
+        ? `
+            <div class="form-group">
+                <label>Class Teacher</label>
+                <select id="add-class-teacher" class="form-control">
+                    <option value="">Unassigned</option>
+                    ${teacherCandidates.map(t => `<option value="${t.id}" ${t.id === currentUser.id ? 'selected' : ''}>${t.name} (${t.id})</option>`).join('')}
+                </select>
+                <small class="text-muted">Developer override: choose which teacher this class belongs to.</small>
+            </div>
+        `
+        : '';
 
     const html = `
         <div class="modal-header">
@@ -3023,6 +3078,7 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
                 <label>Class Name</label>
                 <input type="text" id="add-class-name" class="form-control" placeholder="e.g. Adv. Electronics">
             </div>
+            ${teacherFieldHtml}
             <div class="form-group">
                 <label>Select Students</label>
                 <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.5rem;flex-wrap:wrap;">
@@ -3102,12 +3158,15 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
             const classPeriodMinutes = Math.max(1, parseInt(document.getElementById('add-class-period-mins').value, 10) || 50);
             const timezone = document.getElementById('add-class-timezone').value;
             const parsedRanges = collectPeriodRowsFromModal('add-class-period-rows');
+            const selectedTeacherId = currentUser.role === 'developer'
+                ? (document.getElementById('add-class-teacher')?.value || null)
+                : currentUser.id;
 
             if (name) {
                 const newClass = {
                     id: (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') ? crypto.randomUUID() : generateId('CLS'),
                     name: name,
-                    teacherId: currentUser.id,
+                    teacherId: selectedTeacherId,
                     students: checkedStudents,
                     visibleItemIds: [],
                     allowedVisibilityTags: checkedTags,
@@ -3200,11 +3259,24 @@ function renderUsers() {
     const tbody = document.getElementById('users-table-body');
     if (currentUser.role === 'student' || !tbody) return;
 
+    const getUserGradeLabel = (user) => {
+        const explicit = String(user.grade || '').trim();
+        if (explicit) return explicit;
+        if (user.role !== 'student') return 'N/A';
+
+        const matchedClass = studentClasses.find(cls => (cls.students || []).includes(user.id));
+        if (!matchedClass) return 'N/A';
+
+        const fromClassName = String(matchedClass.name || '').match(/grade\s*(k|\d{1,2})/i);
+        return fromClassName ? fromClassName[1].toUpperCase() : 'N/A';
+    };
+
     tbody.innerHTML = mockUsers.map(user => {
         const suspensionBypassed = isSuspensionBypassedUser(user);
         const isSuspended = user.status === 'Suspended' && !suspensionBypassed;
         const canEdit = !(currentUser.role === 'teacher' && user.role === 'developer') || (currentUser.id === user.id && user.role === 'developer');
         const isDeveloper = user.role === 'developer';
+        const gradeLabel = getUserGradeLabel(user);
 
         return `
             <tr class="${isSuspended ? 'opacity-60' : ''}">
@@ -3221,17 +3293,20 @@ function renderUsers() {
                     </div>
                 </td>
                 <td>
+                    <span class="text-muted">${gradeLabel}</span>
+                </td>
+                <td>
                     <div class="flex flex-col items-start gap-1">
+                        <span>
+                            <span class="status-indicator ${user.status === 'Active' ? 'bg-success' : 'bg-danger'}"></span>
+                            ${user.status}
+                        </span>
                         <span class="badge" style="color:${user.role === 'developer' ? '#8b5cf6' : user.role === 'teacher' ? '#f59e0b' : '#94a3b8'}">
                             ${user.role}
                         </span>
                         ${isSuspended ? `<span class="badge" style="background: rgba(239, 68, 68, 0.15); color: var(--danger); font-size: 0.7rem; border: 1px solid rgba(239,68,68,0.2)">SUSPENDED</span>` : ''}
                         ${suspensionBypassed ? `<span class="badge" style="background: rgba(16,185,129,0.18); color: var(--success); font-size: 0.7rem; border: 1px solid rgba(16,185,129,0.28)">ALWAYS ACTIVE</span>` : ''}
                     </div>
-                </td>
-                <td>
-                    <span class="status-indicator ${user.status === 'Active' ? 'bg-success' : 'bg-danger'}"></span>
-                    ${user.status}
                 </td>
                 <td>
                     <div class="flex gap-2 user-actions">
@@ -3356,6 +3431,7 @@ function openUserModal(editId = null) {
     const cProjects = isEdit ? (userToEdit.perms?.canCreateProjects ?? false) : false;
     const cJoin = isEdit ? (userToEdit.perms?.canJoinProjects ?? true) : true;
     const cSignOut = isEdit ? (userToEdit.perms?.canSignOut ?? false) : false;
+    const initialGrade = isEdit ? String(userToEdit.grade || '') : '';
 
     const html = `
         <div class="modal-header">
@@ -3375,6 +3451,10 @@ function openUserModal(editId = null) {
             <div class="form-group">
                 <label>Full Name</label>
                 <input type="text" id="user-name-input" class="form-control" placeholder="Jane Doe" value="${isEdit ? userToEdit.name : ''}">
+            </div>
+            <div class="form-group">
+                <label>Grade</label>
+                <input type="text" id="user-grade-input" class="form-control" placeholder="e.g. 10, 11, 12" value="${initialGrade}">
             </div>
             <div class="form-group">
                 <label>Role</label>
@@ -3448,6 +3528,7 @@ function openUserModal(editId = null) {
     document.getElementById('confirm-user-btn').addEventListener('click', async () => {
         const id = document.getElementById('user-id').value.trim().toUpperCase();
         const name = document.getElementById('user-name-input').value.trim();
+        const grade = document.getElementById('user-grade-input').value.trim();
         const role = document.getElementById('user-role-input').value;
 
         // Developer role restrictions
@@ -3537,6 +3618,7 @@ function openUserModal(editId = null) {
 
             userToEdit.name = name;
             userToEdit.role = role;
+            userToEdit.grade = grade;
             userToEdit.perms = perms;
 
             // Update Class Alignment
@@ -3548,7 +3630,7 @@ function openUserModal(editId = null) {
             });
 
             // Update in Supabase
-            const updated = await updateUserInSupabase(id, { name, role, status: userToEdit.status });
+            const updated = await updateUserInSupabase(id, { name, role, grade, status: userToEdit.status });
             if (!updated) {
                 showToast('Failed to update user in Supabase.', 'error');
                 return;
@@ -3565,6 +3647,7 @@ function openUserModal(editId = null) {
             const newUser = {
                 id: id,
                 name: name,
+                grade: grade,
                 role: role,
                 perms: perms,
                 status: 'Active'
