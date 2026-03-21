@@ -3701,7 +3701,8 @@ function openAddItemModal() {
 
     openModal(html);
 
-        const submitBtn = document.getElementById('confirm-add-item');
+    const submitBtn = document.getElementById('confirm-add-item');
+    submitBtn?.addEventListener('click', () => {
         withButtonPending(submitBtn, 'Adding...', async () => {
         const name = document.getElementById('add-name').value.trim();
         const category = (document.getElementById('add-category').value || 'Uncategorized').trim();
@@ -3748,9 +3749,9 @@ function openAddItemModal() {
         addLog(currentUser.id, 'Add Item', `Added new inventory item: ${name} (${stock} units)`);
         showToast(`${name} added to inventory.`, 'success');
         closeModal();
-        if (document.getElementById('page-inventory').classList.contains('active')) {
-            renderInventory();
-        }
+            if (document.getElementById('page-inventory').classList.contains('active')) {
+                renderInventory();
+            }
         });
     });
 }
