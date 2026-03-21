@@ -1251,7 +1251,7 @@ function login(user) {
         navLogs.classList.add('hidden');
         navUsers.classList.add('hidden');
         navClasses.classList.add('hidden');
-        navMyItems?.classList.remove('hidden');
+        navMyItems?.classList.add('hidden');
         navRequests?.classList.add('hidden');
         applyOrdersNavVisibility();
         document.getElementById('manage-categories-btn')?.classList.add('hidden');
@@ -1289,6 +1289,10 @@ function login(user) {
     if (user.role === 'teacher' || user.role === 'developer') createClassBtn?.classList.remove('hidden');
     else createClassBtn?.classList.add('hidden');
 
+    // Hide OehlerOS version badge after login
+    const versionOverlay = document.querySelector('.app-version-overlay');
+    if (versionOverlay) versionOverlay.style.display = 'none';
+
     showToast(`Welcome, ${user.name}`);
 
     // Switch Views
@@ -1317,6 +1321,9 @@ function logout(message = 'Logged out successfully') {
     setTimeout(() => {
         mainView.classList.add('hidden');
         loginView.classList.remove('hidden');
+        // Show OehlerOS version badge on login screen
+        const versionOverlay = document.querySelector('.app-version-overlay');
+        if (versionOverlay) versionOverlay.style.display = '';
         setTimeout(() => {
             loginView.classList.add('active');
             barcodeInput.focus();
@@ -1341,6 +1348,9 @@ function returnToLoginView(options = {}) {
         mainView.classList.add('hidden');
         loginHelpView.classList.add('hidden');
         loginView.classList.remove('hidden');
+        // Show OehlerOS version badge on login screen
+        const versionOverlay = document.querySelector('.app-version-overlay');
+        if (versionOverlay) versionOverlay.style.display = '';
         setTimeout(() => {
             loginView.classList.add('active');
             barcodeInput.focus();
@@ -1486,55 +1496,105 @@ function renderMyItems() {
     const tbody = document.getElementById('my-items-table-body');
     if (!tbody) return;
 
-    if (!currentUser || currentUser.role !== 'student') {
-        tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">This page is available to students only.</td></tr>';
-        return;
-    }
+    if (!currentUser) return;
 
-    // Get all projects where current user is owner or collaborator
-    const myProjects = projects.filter(p => p.ownerId === currentUser.id || p.collaborators.includes(currentUser.id));
+    // Student view: show own projects' items
+    if (currentUser.role === 'student') {
+        // Get all projects where current user is owner or collaborator
+        const myProjects = projects.filter(p => p.ownerId === currentUser.id || p.collaborators.includes(currentUser.id));
 
-    // Collect all items from personal and project sign-outs
-    const allItems = [];
-    
-    myProjects.forEach(proj => {
-        (proj.itemsOut || []).forEach(io => {
-            const item = inventoryItems.find(i => i.id === io.itemId);
-            allItems.push({
-                itemName: item ? item.name : io.itemId,
-                quantity: io.quantity,
-                signoutDate: io.signoutDate,
-                dueDate: io.dueDate,
-                projectName: proj.name === 'Personal Use' ? '(Personal)' : proj.name
+        // Collect all items from personal and project sign-outs
+        const allItems = [];
+        
+        myProjects.forEach(proj => {
+            (proj.itemsOut || []).forEach(io => {
+                const item = inventoryItems.find(i => i.id === io.itemId);
+                allItems.push({
+                    itemName: item ? item.name : io.itemId,
+                    quantity: io.quantity,
+                    signoutDate: io.signoutDate,
+                    dueDate: io.dueDate,
+                    projectName: proj.name === 'Personal Use' ? '(Personal)' : proj.name
+                });
             });
         });
-    });
 
-    // Sort by due date (overdue first, then by date)
-    allItems.sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
+        // Sort by due date (overdue first, then by date)
+        allItems.sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
 
-    if (allItems.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No items signed out right now.</td></tr>';
-        return;
+        if (allItems.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No items signed out right now.</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = allItems.map(entry => {
+            const due = new Date(entry.dueDate);
+            const isOverdue = due < new Date();
+            const statusStyle = isOverdue
+                ? 'background:rgba(239,68,68,0.2);color:var(--danger)'
+                : 'background:rgba(245,158,11,0.2);color:var(--warning)';
+
+            return `
+                <tr>
+                    <td><strong>${entry.itemName}</strong></td>
+                    <td>${entry.quantity}</td>
+                    <td><small class="text-muted">${entry.projectName}</small></td>
+                    <td><small class="text-muted">${new Date(entry.signoutDate).toLocaleString()}</small></td>
+                    <td><span class="badge" style="${statusStyle}">${isOverdue ? 'Overdue' : 'Signed Out'}</span></td>
+                </tr>
+            `;
+        }).join('');
+    } else {
+        // Teacher/Developer view: show all items from their classes
+        const myClasses = studentClasses.filter(c => c.teacherId === currentUser.id);
+        const allItems = [];
+
+        myClasses.forEach(cls => {
+            projects.forEach(proj => {
+                (proj.itemsOut || []).forEach(io => {
+                    const student = mockUsers.find(u => u.id === io.assignedToUserId || proj.ownerId);
+                    const isStudentInClass = cls.students.includes(io.assignedToUserId || proj.ownerId);
+                    if (isStudentInClass) {
+                        const item = inventoryItems.find(i => i.id === io.itemId);
+                        allItems.push({
+                            itemName: item ? item.name : io.itemId,
+                            quantity: io.quantity,
+                            signoutDate: io.signoutDate,
+                            dueDate: io.dueDate,
+                            projectName: proj.name === 'Personal Use' ? `(${student?.name || 'Unknown'})` : proj.name,
+                            className: cls.name
+                        });
+                    }
+                });
+            });
+        });
+
+        // Sort by due date (overdue first, then by date)
+        allItems.sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
+
+        if (allItems.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No items signed out by students in your classes.</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = allItems.map(entry => {
+            const due = new Date(entry.dueDate);
+            const isOverdue = due < new Date();
+            const statusStyle = isOverdue
+                ? 'background:rgba(239,68,68,0.2);color:var(--danger)'
+                : 'background:rgba(245,158,11,0.2);color:var(--warning)';
+
+            return `
+                <tr>
+                    <td><strong>${entry.itemName}</strong></td>
+                    <td>${entry.quantity}</td>
+                    <td><small class="text-muted">${entry.projectName}</small></td>
+                    <td><small class="text-muted">${new Date(entry.signoutDate).toLocaleString()}</small></td>
+                    <td><span class="badge" style="${statusStyle}">${isOverdue ? 'Overdue' : 'Signed Out'}</span></td>
+                </tr>
+            `;
+        }).join('');
     }
-
-    tbody.innerHTML = allItems.map(entry => {
-        const due = new Date(entry.dueDate);
-        const isOverdue = due < new Date();
-        const statusStyle = isOverdue
-            ? 'background:rgba(239,68,68,0.2);color:var(--danger)'
-            : 'background:rgba(245,158,11,0.2);color:var(--warning)';
-
-        return `
-            <tr>
-                <td><strong>${entry.itemName}</strong></td>
-                <td>${entry.quantity}</td>
-                <td><small class="text-muted">${entry.projectName}</small></td>
-                <td><small class="text-muted">${new Date(entry.signoutDate).toLocaleString()}</small></td>
-                <td><span class="badge" style="${statusStyle}">${isOverdue ? 'Overdue' : 'Signed Out'}</span></td>
-            </tr>
-        `;
-    }).join('');
 }
 
 /* =======================================
@@ -2160,6 +2220,7 @@ function openProjectItemsModal(projectId) {
             const item = inventoryItems.find(i => i.id === io.itemId);
             const assignedUserId = io.assignedToUserId || project.ownerId;
             const assignedUser = mockUsers.find(u => u.id === assignedUserId);
+            const signedOutByUser = mockUsers.find(u => u.id === io.signedOutByUserId);
             const due = io.dueDate ? new Date(io.dueDate) : null;
             const isDueNow = due ? due <= new Date() : false;
             return `
@@ -2167,6 +2228,7 @@ function openProjectItemsModal(projectId) {
                     <div>
                         <strong>${item ? item.name : io.itemId} (x${io.quantity})</strong>
                         <small class="text-muted block">Assigned: ${assignedUser ? assignedUser.name : assignedUserId}</small>
+                        ${signedOutByUser ? `<small class="text-muted block">Signed Out By: ${signedOutByUser.name}</small>` : ''}
                         <small class="text-muted block">SKU: ${item ? item.sku : 'N/A'}</small>
                     </div>
                     <span class="${isDueNow ? 'text-danger' : 'text-warning'} font-bold text-sm">
@@ -2300,12 +2362,50 @@ function renderProjects() {
         visibleProjects = projects.filter(p => p.ownerId === currentUser.id || p.collaborators.includes(currentUser.id));
     }
 
-    if (visibleProjects.length === 0) {
+    // Separate personal projects for display in a dedicated section
+    const personalProjectId = `PERS-${currentUser.id}`;
+    const personalProject = visibleProjects.find(p => p.id === personalProjectId);
+    const nonPersonalProjects = visibleProjects.filter(p => p.id !== personalProjectId);
+
+    let html = '';
+
+    // Add Personal Items section first if student has personal sign-outs
+    if (currentUser.role === 'student' && personalProject && personalProject.itemsOut.length > 0) {
+        const personalItemsHtml = personalProject.itemsOut.map(io => {
+            const item = inventoryItems.find(i => i.id === io.itemId);
+            const signoutId = io.id || `${io.itemId}-${io.signoutDate}-${io.quantity}`;
+            return `
+                <div class="flex justify-between items-center text-sm" style="gap:0.75rem;">
+                    <div>
+                        <span>${io.quantity}x <strong>${item ? item.name : 'Unknown'}</strong></span>
+                        <div class="text-xs text-muted">Signed Out: ${new Date(io.signoutDate).toLocaleDateString()}</div>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:0.5rem;">
+                        <span class="text-muted font-mono" style="font-size:0.75rem">${item ? item.sku : 'N/A'}</span>
+                        <button class="btn btn-secondary text-sm return-project-item-btn" data-project-id="${personalProject.id}" data-signout-id="${signoutId}" style="padding:0.2rem 0.5rem;font-size:0.75rem;"><i class="ph ph-arrow-counter-clockwise"></i> Sign In</button>
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        html += `
+            <div class="project-card glass-panel flex-col" style="border-left:4px solid var(--accent);">
+                <div class="project-header">
+                    <h4 style="color:var(--accent);"><i class="ph ph-backpack"></i> Personal Items Signed Out</h4>
+                </div>
+                <div style="display:flex; flex-direction:column; gap:0.5rem;">
+                    ${personalItemsHtml}
+                </div>
+            </div>
+        `;
+    }
+
+    if (nonPersonalProjects.length === 0 && html === '') {
         container.innerHTML = '<p class="text-muted col-span-full">No projects found.</p>';
         return;
     }
 
-    container.innerHTML = visibleProjects.map(proj => {
+    container.innerHTML = html + nonPersonalProjects.map(proj => {
         const owner = mockUsers.find(u => u.id === proj.ownerId);
         const outCount = proj.itemsOut.reduce((acc, curr) => acc + curr.quantity, 0);
         const canManage = canCurrentUserManageProject(proj);
@@ -2319,12 +2419,14 @@ function renderProjects() {
             const item = inventoryItems.find(i => i.id === io.itemId);
             const assignedUserId = io.assignedToUserId || proj.ownerId;
             const assignedUser = mockUsers.find(u => u.id === assignedUserId);
+            const signedOutByUser = mockUsers.find(u => u.id === io.signedOutByUserId);
             const signoutId = io.id || `${io.itemId}-${io.signoutDate}-${io.quantity}`;
             return `
                             <div class="flex justify-between items-center text-sm" style="gap:0.75rem;">
                                 <div>
                                     <span>${io.quantity}x <strong>${item ? item.name : 'Unknown'}</strong></span>
                                     <div class="text-xs text-muted">Assigned: ${assignedUser ? assignedUser.name : assignedUserId}</div>
+                                    ${signedOutByUser ? `<div class="text-xs text-muted">By: ${signedOutByUser.name}</div>` : ''}
                                 </div>
                                 <div style="display:flex;align-items:center;gap:0.5rem;">
                                     <span class="text-muted font-mono" style="font-size:0.75rem">${item ? item.sku : 'N/A'}</span>
@@ -2408,6 +2510,49 @@ function openSignOutModal(itemId) {
     const personalOption = `<option value="personal">Personal (Individual)</option>`;
     const projectsOptions = personalOption + myProjects.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
 
+    // Build assignee options based on first project (will update when project changes)
+    const getAssigneeOptions = (projId) => {
+        if (projId === 'personal') {
+            return `<option value="${currentUser.id}">${currentUser.name}</option>`;
+        }
+        const proj = projects.find(p => p.id === projId);
+        if (!proj) return '';
+        
+        let options = '';
+        // Add myself option for teachers
+        if (currentUser.role !== 'student') {
+            options += `<option value="${currentUser.id}">Myself (${currentUser.name})</option>`;
+        }
+        // Add project owner if not already added
+        if (currentUser.role === 'student' || proj.ownerId !== currentUser.id) {
+            const owner = mockUsers.find(u => u.id === proj.ownerId);
+            options += `<option value="${proj.ownerId}">${owner ? owner.name : proj.ownerId}</option>`;
+        }
+        // Add collaborators
+        if (proj.collaborators && proj.collaborators.length > 0) {
+            proj.collaborators.forEach(collab => {
+                const user = mockUsers.find(u => u.id === collab);
+                if (collab !== currentUser.id && collab !== proj.ownerId) {
+                    options += `<option value="${collab}">${user ? user.name : collab}</option>`;
+                }
+            });
+        }
+        return options;
+    };
+
+    // Determine default assignee based on role
+    const defaultAssigneeId = currentUser.role === 'student' ? projects.find(p => p.id === (myProjects[0]?.id || 'personal'))?.ownerId || currentUser.id : currentUser.id;
+
+    // Only show "Assign To" field for teachers
+    const assignToFieldHtml = currentUser.role !== 'student' ? `
+        <div class="form-group">
+            <label>Assign To</label>
+            <select id="so-assignee" class="form-control">
+                ${getAssigneeOptions(myProjects[0]?.id || 'personal')}
+            </select>
+        </div>
+    ` : '';
+
     const html = `
         <div class="modal-header">
             <h3>Sign Out Item</h3>
@@ -2437,6 +2582,7 @@ function openSignOutModal(itemId) {
                     ${projectsOptions}
                 </select>
             </div>
+            ${assignToFieldHtml}
             <div class="form-group">
                 <label>Quantity (Max: ${item.stock})</label>
                 <input type="number" id="so-qty" class="form-control" min="1" max="${item.stock}" value="1">
@@ -2450,9 +2596,26 @@ function openSignOutModal(itemId) {
 
     openModal(html);
 
+    // Update assignee options when project changes (for teachers)
+    if (currentUser.role !== 'student') {
+        document.getElementById('so-project')?.addEventListener('change', (e) => {
+            const projId = e.target.value;
+            const assigneeSelect = document.getElementById('so-assignee');
+            if (assigneeSelect) {
+                assigneeSelect.innerHTML = getAssigneeOptions(projId);
+            }
+        });
+    }
+
     document.getElementById('confirm-signout').addEventListener('click', async () => {
         const projId = document.getElementById('so-project').value;
         const qty = parseInt(document.getElementById('so-qty').value);
+        let assignedToUserId = null;
+        
+        // Get assignee from form if teacher, otherwise use project owner
+        if (currentUser.role !== 'student') {
+            assignedToUserId = document.getElementById('so-assignee')?.value;
+        }
 
         if (qty > 0 && qty <= item.stock) {
             let project;
@@ -2498,13 +2661,16 @@ function openSignOutModal(itemId) {
             // Update Project
             // Ensure project is set (already selected above)
 
+            // For students, assign to project owner; for teachers, use selected assignee
+            const finalAssignedToUserId = assignedToUserId || project.ownerId;
+
             const signoutData = {
                 id: generateId('OUT'),
                 itemId: item.id,
                 quantity: qty,
                 signoutDate: new Date().toISOString(),
                 dueDate: calculateDueDate(new Date(), currentUser),
-                assignedToUserId: project.ownerId,
+                assignedToUserId: finalAssignedToUserId,
                 signedOutByUserId: currentUser.id
             };
             project.itemsOut.push(signoutData);
@@ -2613,10 +2779,32 @@ function renderClasses() {
                     showToast('Failed to delete class from Supabase.', 'error');
                     return;
                 }
+                
+                // Delete students who are only in this class
+                let deletedStudentCount = 0;
+                if (cls.students && cls.students.length > 0) {
+                    for (const studentId of cls.students) {
+                        // Check if this student is in any other class
+                        const otherClasses = studentClasses.filter(c => c.id !== id && c.students.includes(studentId));
+                        if (otherClasses.length === 0) {
+                            // Student is only in this class, delete them
+                            const userDeleted = await deleteUserFromSupabase(studentId);
+                            if (userDeleted) {
+                                mockUsers = mockUsers.filter(u => u.id !== studentId);
+                                deletedStudentCount++;
+                            }
+                        }
+                    }
+                }
+                
                 studentClasses = studentClasses.filter(c => c.id !== id);
-                showToast(`Class ${cls.name} deleted.`, 'success');
-                addLog(currentUser.id, 'Delete Class', `Deleted student class: ${cls.name}`);
+                const toastMsg = deletedStudentCount > 0 
+                    ? `Class ${cls.name} deleted. ${deletedStudentCount} student(s) also deleted.`
+                    : `Class ${cls.name} deleted.`;
+                showToast(toastMsg, 'success');
+                addLog(currentUser.id, 'Delete Class', `Deleted student class: ${cls.name} (deleted ${deletedStudentCount} student(s))`);
                 renderClasses();
+                renderUsers();
             }
         });
     });
@@ -3015,7 +3203,8 @@ function renderUsers() {
     tbody.innerHTML = mockUsers.map(user => {
         const suspensionBypassed = isSuspensionBypassedUser(user);
         const isSuspended = user.status === 'Suspended' && !suspensionBypassed;
-        const canEdit = !(currentUser.role === 'teacher' && user.role === 'developer');
+        const canEdit = !(currentUser.role === 'teacher' && user.role === 'developer') || (currentUser.id === user.id && user.role === 'developer');
+        const isDeveloper = user.role === 'developer';
 
         return `
             <tr class="${isSuspended ? 'opacity-60' : ''}">
@@ -3047,10 +3236,10 @@ function renderUsers() {
                 <td>
                     <div class="flex gap-2 user-actions">
                         ${canEdit ? `<button class="btn btn-secondary btn-sm edit-user-btn" data-id="${user.id}" title="Edit User"><i class="ph ph-pencil"></i></button>` : `<i class="ph ph-lock text-muted" title="Developer locked"></i>`}
-                        <button class="btn btn-secondary btn-sm suspend-user-btn" data-id="${user.id}" title="${isSuspended ? 'Reactivate' : 'Suspend'}" ${suspensionBypassed ? 'disabled' : ''}>
+                        ${!isDeveloper ? `<button class="btn btn-secondary btn-sm suspend-user-btn" data-id="${user.id}" title="${isSuspended ? 'Reactivate' : 'Suspend'}" ${suspensionBypassed ? 'disabled' : ''}>
                             <i class="ph ${isSuspended ? 'ph-user-check' : 'ph-user-minus'}"></i>
                         </button>
-                        <button class="btn btn-danger btn-sm delete-user-btn" data-id="${user.id}" title="Delete"><i class="ph ph-trash"></i></button>
+                        <button class="btn btn-danger btn-sm delete-user-btn" data-id="${user.id}" title="Delete"><i class="ph ph-trash"></i></button>` : ''}
                     </div>
                 </td>
             </tr>
