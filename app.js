@@ -58,7 +58,6 @@ const pageTitle = document.getElementById('page-title');
 const navLogs = document.getElementById('nav-logs');
 const navUsers = document.getElementById('nav-users');
 const navClasses = document.getElementById('nav-classes');
-const navMyItems = document.getElementById('nav-my-items');
 const navOrders = document.getElementById('nav-orders');
 
 // DOM Elements - Pages
@@ -1251,7 +1250,6 @@ function login(user) {
         navLogs.classList.add('hidden');
         navUsers.classList.add('hidden');
         navClasses.classList.add('hidden');
-        navMyItems?.classList.add('hidden');
         navRequests?.classList.add('hidden');
         applyOrdersNavVisibility();
         document.getElementById('manage-categories-btn')?.classList.add('hidden');
@@ -1261,7 +1259,6 @@ function login(user) {
         navLogs.classList.remove('hidden');
         navUsers.classList.remove('hidden');
         navClasses.classList.remove('hidden');
-        navMyItems?.classList.add('hidden');
         navRequests?.classList.remove('hidden');
         applyOrdersNavVisibility();
         document.getElementById('manage-categories-btn')?.classList.remove('hidden');
@@ -1402,14 +1399,6 @@ async function refreshPageDataFromSupabase(targetId) {
         return;
     }
 
-    if (targetId === 'my-items') {
-        await Promise.all([
-            refreshProjectsFromSupabase(),
-            refreshInventoryFromSupabase()
-        ]);
-        return;
-    }
-
     if (targetId === 'logs') {
         await Promise.all([
             loadActivityLogs(),
@@ -1484,117 +1473,11 @@ async function switchPage(targetId, title) {
     if (targetId === 'dashboard') loadDashboard();
     if (targetId === 'inventory') renderInventory();
     if (targetId === 'projects') renderProjects();
-    if (targetId === 'my-items') renderMyItems();
     if (targetId === 'logs') renderLogs();
     if (targetId === 'users') renderUsers();
     if (targetId === 'classes') renderClasses();
     if (targetId === 'requests') renderRequests();
     if (targetId === 'orders') renderOrders();
-}
-
-function renderMyItems() {
-    const tbody = document.getElementById('my-items-table-body');
-    if (!tbody) return;
-
-    if (!currentUser) return;
-
-    // Student view: show own projects' items
-    if (currentUser.role === 'student') {
-        // Get all projects where current user is owner or collaborator
-        const myProjects = projects.filter(p => p.ownerId === currentUser.id || p.collaborators.includes(currentUser.id));
-
-        // Collect all items from personal and project sign-outs
-        const allItems = [];
-        
-        myProjects.forEach(proj => {
-            (proj.itemsOut || []).forEach(io => {
-                const item = inventoryItems.find(i => i.id === io.itemId);
-                allItems.push({
-                    itemName: item ? item.name : io.itemId,
-                    quantity: io.quantity,
-                    signoutDate: io.signoutDate,
-                    dueDate: io.dueDate,
-                    projectName: proj.name === 'Personal Use' ? '(Personal)' : proj.name
-                });
-            });
-        });
-
-        // Sort by due date (overdue first, then by date)
-        allItems.sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
-
-        if (allItems.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No items signed out right now.</td></tr>';
-            return;
-        }
-
-        tbody.innerHTML = allItems.map(entry => {
-            const due = new Date(entry.dueDate);
-            const isOverdue = due < new Date();
-            const statusStyle = isOverdue
-                ? 'background:rgba(239,68,68,0.2);color:var(--danger)'
-                : 'background:rgba(245,158,11,0.2);color:var(--warning)';
-
-            return `
-                <tr>
-                    <td><strong>${entry.itemName}</strong></td>
-                    <td>${entry.quantity}</td>
-                    <td><small class="text-muted">${entry.projectName}</small></td>
-                    <td><small class="text-muted">${new Date(entry.signoutDate).toLocaleString()}</small></td>
-                    <td><span class="badge" style="${statusStyle}">${isOverdue ? 'Overdue' : 'Signed Out'}</span></td>
-                </tr>
-            `;
-        }).join('');
-    } else {
-        // Teacher/Developer view: show all items from their classes
-        const myClasses = studentClasses.filter(c => c.teacherId === currentUser.id);
-        const allItems = [];
-
-        myClasses.forEach(cls => {
-            projects.forEach(proj => {
-                (proj.itemsOut || []).forEach(io => {
-                    const student = mockUsers.find(u => u.id === io.assignedToUserId || proj.ownerId);
-                    const isStudentInClass = cls.students.includes(io.assignedToUserId || proj.ownerId);
-                    if (isStudentInClass) {
-                        const item = inventoryItems.find(i => i.id === io.itemId);
-                        allItems.push({
-                            itemName: item ? item.name : io.itemId,
-                            quantity: io.quantity,
-                            signoutDate: io.signoutDate,
-                            dueDate: io.dueDate,
-                            projectName: proj.name === 'Personal Use' ? `(${student?.name || 'Unknown'})` : proj.name,
-                            className: cls.name
-                        });
-                    }
-                });
-            });
-        });
-
-        // Sort by due date (overdue first, then by date)
-        allItems.sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
-
-        if (allItems.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No items signed out by students in your classes.</td></tr>';
-            return;
-        }
-
-        tbody.innerHTML = allItems.map(entry => {
-            const due = new Date(entry.dueDate);
-            const isOverdue = due < new Date();
-            const statusStyle = isOverdue
-                ? 'background:rgba(239,68,68,0.2);color:var(--danger)'
-                : 'background:rgba(245,158,11,0.2);color:var(--warning)';
-
-            return `
-                <tr>
-                    <td><strong>${entry.itemName}</strong></td>
-                    <td>${entry.quantity}</td>
-                    <td><small class="text-muted">${entry.projectName}</small></td>
-                    <td><small class="text-muted">${new Date(entry.signoutDate).toLocaleString()}</small></td>
-                    <td><span class="badge" style="${statusStyle}">${isOverdue ? 'Overdue' : 'Signed Out'}</span></td>
-                </tr>
-            `;
-        }).join('');
-    }
 }
 
 /* =======================================
@@ -2217,13 +2100,6 @@ async function openProjectsPageAndFocusProject(projectId) {
     });
 }
 
-async function openMyItemsPage() {
-    const myItemsNavBtn = document.querySelector('.nav-btn[data-target="my-items"]');
-    navBtns.forEach(b => b.classList.remove('active'));
-    myItemsNavBtn?.classList.add('active');
-    await switchPage('my-items', 'My Items');
-}
-
 function openProjectItemsModal(projectId) {
     const project = projects.find(p => p.id === projectId);
     if (!project || !canCurrentUserViewProject(project)) {
@@ -2410,9 +2286,6 @@ function renderProjects() {
             <div class="project-card glass-panel flex-col" style="border-left:4px solid var(--accent);">
                 <div class="project-header">
                     <h4 style="color:var(--accent);"><i class="ph ph-backpack"></i> Personal Items Signed Out</h4>
-                    <button class="btn btn-secondary text-sm open-my-items-from-projects-btn" style="padding:0.2rem 0.5rem;font-size:0.75rem;">
-                        <i class="ph ph-list-checks"></i> Open My Items
-                    </button>
                 </div>
                 <div style="display:flex; flex-direction:column; gap:0.5rem;">
                     ${personalItemsHtml}
@@ -2507,11 +2380,6 @@ function renderProjects() {
         });
     });
 
-    document.querySelectorAll('.open-my-items-from-projects-btn').forEach(btn => {
-        btn.addEventListener('click', async () => {
-            await openMyItemsPage();
-        });
-    });
 }
 
 function openSignOutModal(itemId) {
