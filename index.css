@@ -197,7 +197,7 @@ h6 {
     transform: translateY(2px);
 }
 
-.login-version-wrap {
+.app-version-overlay {
     position: fixed;
     bottom: 1.5rem;
     right: 1.5rem;
@@ -205,11 +205,15 @@ h6 {
     margin: 0;
     text-align: right;
     z-index: 1000;
+    pointer-events: none;
 }
 
-.login-version-wrap .version-badge {
+.app-version-overlay .version-badge {
     margin-left: 0;
     transform: none;
+    opacity: 0.85;
+    cursor: pointer;
+    pointer-events: auto;
 }
 
 .subtitle {
@@ -634,6 +638,15 @@ h6 {
     transform: translateY(-5px);
 }
 
+.dashboard-project-summary {
+    border-left-color: var(--accent-primary);
+    cursor: pointer;
+}
+
+.dashboard-project-summary:hover {
+    border-left-color: var(--accent-secondary);
+}
+
 .stat-icon {
     width: 56px;
     height: 56px;
@@ -894,6 +907,11 @@ h6 {
 .project-card:hover {
     transform: translateY(-5px);
     border-color: rgba(139, 92, 246, 0.5);
+}
+
+.project-card.active-highlight {
+    border-color: var(--accent-secondary);
+    box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.35), 0 10px 30px rgba(0, 0, 0, 0.35);
 }
 
 .project-header {

@@ -1518,6 +1518,7 @@ function loadDashboard() {
     const tabbedWidget = document.getElementById('dashboard-tabbed-widget');
     const list1 = document.getElementById('low-stock-list');
     const list2 = document.getElementById('recent-activity-mini');
+    const now = new Date();
 
     if (currentUser.role === 'student') {
         // Student Dashboard view
@@ -1526,11 +1527,15 @@ function loadDashboard() {
 
         const myProjects = projects.filter(p => p.ownerId === currentUser.id || p.collaborators.includes(currentUser.id));
         let itemsOutCount = 0;
+        let dueBackCount = 0;
         let myItemsOut = [];
 
         myProjects.forEach(p => {
             p.itemsOut.forEach(outItem => {
                 itemsOutCount += outItem.quantity;
+                if (outItem.dueDate && new Date(outItem.dueDate) <= now) {
+                    dueBackCount += outItem.quantity;
+                }
                 myItemsOut.push({ ...outItem, projectName: p.name });
             });
         });
@@ -1548,6 +1553,13 @@ function loadDashboard() {
                 <div class="stat-details">
                     <h4>Items Signed Out</h4>
                     <p>${itemsOutCount}</p>
+                </div>
+            </div>
+            <div class="stat-card glass-panel">
+                <div class="stat-icon" style="background:rgba(239,68,68,0.15);color:var(--danger)"><i class="ph ph-timer"></i></div>
+                <div class="stat-details">
+                    <h4>Due Back Now</h4>
+                    <p>${dueBackCount}</p>
                 </div>
             </div>
         `;
@@ -1652,12 +1664,26 @@ function loadDashboard() {
         });
 
         list2.innerHTML = myProjects.length === 0 ? '<p class="text-muted">You are not in any projects.</p>' :
-            myProjects.slice(0, 5).map(p => `
-            <li class="activity-item">
-                <div class="timestamp">${p.status}</div>
-                <div><strong>${p.name}</strong></div>
-            </li>
-        `).join('');
+            myProjects.slice(0, 6).map(p => {
+                const projectOut = p.itemsOut.reduce((acc, io) => acc + io.quantity, 0);
+                const projectDue = p.itemsOut.reduce((acc, io) => acc + ((io.dueDate && new Date(io.dueDate) <= now) ? io.quantity : 0), 0);
+                return `
+                <li class="activity-item">
+                    <div class="timestamp">${p.status}</div>
+                    <div><strong>${p.name}</strong> · Out: ${projectOut} · Due: ${projectDue}</div>
+                    <div style="display:flex;gap:0.5rem;margin-top:0.55rem;">
+                        <button class="btn btn-secondary text-sm dashboard-project-open-btn" data-project-id="${p.id}" style="padding:0.3rem 0.55rem;font-size:0.75rem;">
+                            <i class="ph ph-folder-open"></i> Open
+                        </button>
+                        <button class="btn btn-primary text-sm dashboard-project-items-btn" data-project-id="${p.id}" style="padding:0.3rem 0.55rem;font-size:0.75rem;">
+                            <i class="ph ph-list"></i> Items
+                        </button>
+                    </div>
+                </li>
+            `;
+            }).join('');
+
+        wireDashboardProjectSummaryActions(document);
 
     } else {
         // Admin/Teacher Dashboard view
@@ -1670,8 +1696,14 @@ function loadDashboard() {
 
         // Count items signed out across all projects
         let totalItemsOut = 0;
+        let totalItemsDue = 0;
         projects.forEach(p => {
-            p.itemsOut.forEach(io => { totalItemsOut += io.quantity; });
+            p.itemsOut.forEach(io => {
+                totalItemsOut += io.quantity;
+                if (io.dueDate && new Date(io.dueDate) <= now) {
+                    totalItemsDue += io.quantity;
+                }
+            });
         });
 
         statsContainer.innerHTML = `
@@ -1701,6 +1733,13 @@ function loadDashboard() {
                 <div class="stat-details">
                     <h4>Items Signed Out</h4>
                     <p>${totalItemsOut}</p>
+                </div>
+            </div>
+            <div class="stat-card glass-panel">
+                <div class="stat-icon" style="background:rgba(239,68,68,0.15);color:var(--danger)"><i class="ph ph-timer"></i></div>
+                <div class="stat-details">
+                    <h4>Due Back Now</h4>
+                    <p>${totalItemsDue}</p>
                 </div>
             </div>
         `;
@@ -1764,6 +1803,44 @@ function loadDashboard() {
                             </span>
                         </li>`;
                     }).join('')}</ul>`;
+            } else if (tab === 'projectsummary') {
+                const visibleProjects = projects.filter(p => canCurrentUserViewProject(p));
+                const summaryRows = visibleProjects
+                    .map(p => {
+                        const outQty = p.itemsOut.reduce((acc, io) => acc + io.quantity, 0);
+                        const dueQty = p.itemsOut.reduce((acc, io) => acc + ((io.dueDate && new Date(io.dueDate) <= now) ? io.quantity : 0), 0);
+                        return {
+                            id: p.id,
+                            name: p.name,
+                            owner: getProjectOwnerLabel(p),
+                            outQty,
+                            dueQty
+                        };
+                    })
+                    .filter(row => row.outQty > 0)
+                    .sort((a, b) => b.outQty - a.outQty);
+
+                tabContent.innerHTML = summaryRows.length === 0
+                    ? '<p class="text-muted">No projects currently have items signed out.</p>'
+                    : `<ul class="stock-list">${summaryRows.map(row => `
+                        <li class="stock-item dashboard-project-summary" style="gap:0.75rem;align-items:flex-start;">
+                            <div>
+                                <strong>${row.name}</strong>
+                                <small class="text-muted block">Owner: ${row.owner}</small>
+                                <small class="text-muted block">Out: ${row.outQty} · Due now: ${row.dueQty}</small>
+                            </div>
+                            <div style="display:flex;gap:0.5rem;flex-wrap:wrap;justify-content:flex-end;">
+                                <button class="btn btn-secondary text-sm dashboard-project-open-btn" data-project-id="${row.id}" style="padding:0.25rem 0.5rem;font-size:0.75rem;">
+                                    <i class="ph ph-folder-open"></i> Open
+                                </button>
+                                <button class="btn btn-primary text-sm dashboard-project-items-btn" data-project-id="${row.id}" style="padding:0.25rem 0.5rem;font-size:0.75rem;">
+                                    <i class="ph ph-list"></i> Items
+                                </button>
+                            </div>
+                        </li>
+                    `).join('')}</ul>`;
+
+                wireDashboardProjectSummaryActions(tabContent);
             }
         }
 
@@ -1969,6 +2046,149 @@ function canCurrentUserReturnProjectItem(project) {
     return project.ownerId === currentUser.id || project.collaborators.includes(currentUser.id);
 }
 
+function canCurrentUserViewProject(project) {
+    if (!currentUser || !project) return false;
+    if (currentUser.role !== 'student') return true;
+    return project.ownerId === currentUser.id || project.collaborators.includes(currentUser.id);
+}
+
+function canCurrentUserManageProject(project) {
+    if (!currentUser || !project) return false;
+    if (currentUser.role !== 'student') return true;
+    return project.ownerId === currentUser.id;
+}
+
+function getProjectStudentCandidates() {
+    return mockUsers.filter(u => u.role === 'student');
+}
+
+function buildProjectCollaboratorOptions({ selectedOwnerId = '', selectedCollaborators = [] } = {}) {
+    const selectedSet = new Set(selectedCollaborators || []);
+    return getProjectStudentCandidates()
+        .filter(student => student.id !== selectedOwnerId)
+        .map(student => `
+            <div style="margin-bottom:0.5rem">
+                <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">
+                    <input type="checkbox" value="${student.id}" class="proj-student-checkbox" ${selectedSet.has(student.id) ? 'checked' : ''}>
+                    ${student.name} (${student.id})
+                </label>
+            </div>
+        `)
+        .join('');
+}
+
+function getProjectOwnerLabel(project) {
+    const owner = mockUsers.find(u => u.id === project.ownerId);
+    return owner ? `${owner.name} (${owner.id})` : project.ownerId;
+}
+
+async function syncProjectCollaboratorsInSupabase(projectId, nextCollaborators, prevCollaborators) {
+    const prev = new Set(prevCollaborators || []);
+    const next = new Set(nextCollaborators || []);
+
+    for (const userId of prev) {
+        if (!next.has(userId)) {
+            const removed = await removeProjectCollaboratorFromSupabase(projectId, userId);
+            if (!removed) return false;
+        }
+    }
+
+    for (const userId of next) {
+        if (!prev.has(userId)) {
+            const added = await addProjectCollaboratorToSupabase(projectId, userId);
+            if (!added) return false;
+        }
+    }
+
+    return true;
+}
+
+async function openProjectsPageAndFocusProject(projectId) {
+    const projectsNavBtn = document.querySelector('.nav-btn[data-target="projects"]');
+    navBtns.forEach(b => b.classList.remove('active'));
+    projectsNavBtn?.classList.add('active');
+
+    await switchPage('projects', 'Projects');
+
+    requestAnimationFrame(() => {
+        const card = document.querySelector(`.project-card[data-project-id="${projectId}"]`);
+        if (!card) return;
+        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        card.classList.add('active-highlight');
+        setTimeout(() => card.classList.remove('active-highlight'), 1800);
+    });
+}
+
+function openProjectItemsModal(projectId) {
+    const project = projects.find(p => p.id === projectId);
+    if (!project || !canCurrentUserViewProject(project)) {
+        showToast('You do not have access to that project.', 'error');
+        return;
+    }
+
+    const itemsHtml = project.itemsOut.length === 0
+        ? '<p class="text-muted">No items are currently signed out for this project.</p>'
+        : project.itemsOut.map(io => {
+            const item = inventoryItems.find(i => i.id === io.itemId);
+            const assignedUserId = io.assignedToUserId || project.ownerId;
+            const assignedUser = mockUsers.find(u => u.id === assignedUserId);
+            const due = io.dueDate ? new Date(io.dueDate) : null;
+            const isDueNow = due ? due <= new Date() : false;
+            return `
+                <li class="stock-item dashboard-project-summary" style="border-left-width:3px;">
+                    <div>
+                        <strong>${item ? item.name : io.itemId} (x${io.quantity})</strong>
+                        <small class="text-muted block">Assigned: ${assignedUser ? assignedUser.name : assignedUserId}</small>
+                        <small class="text-muted block">SKU: ${item ? item.sku : 'N/A'}</small>
+                    </div>
+                    <span class="${isDueNow ? 'text-danger' : 'text-warning'} font-bold text-sm">
+                        ${due ? (isDueNow ? 'Due now' : `Due: ${due.toLocaleDateString()}`) : 'No due date'}
+                    </span>
+                </li>
+            `;
+        }).join('');
+
+    const html = `
+        <div class="modal-header">
+            <h3>Project Items: ${project.name}</h3>
+            <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
+        </div>
+        <div class="modal-body" style="max-height:65vh;overflow-y:auto;">
+            <p class="text-muted mb-4">Owner: ${getProjectOwnerLabel(project)}</p>
+            <ul class="stock-list">${itemsHtml}</ul>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+            <button class="btn btn-primary" id="open-project-tab-btn" data-project-id="${project.id}">
+                <i class="ph ph-folder-open"></i> Open In Projects
+            </button>
+        </div>
+    `;
+
+    openModal(html);
+    document.getElementById('open-project-tab-btn')?.addEventListener('click', async (e) => {
+        const id = e.currentTarget.getAttribute('data-project-id');
+        closeModal();
+        await openProjectsPageAndFocusProject(id);
+    });
+}
+
+function wireDashboardProjectSummaryActions(scope = document) {
+    scope.querySelectorAll('.dashboard-project-open-btn').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+            const id = e.currentTarget.getAttribute('data-project-id');
+            await openProjectsPageAndFocusProject(id);
+        });
+    });
+
+    scope.querySelectorAll('.dashboard-project-items-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const id = e.currentTarget.getAttribute('data-project-id');
+            openProjectItemsModal(id);
+        });
+    });
+}
+
 function findSignoutIndex(project, signoutId) {
     return project.itemsOut.findIndex(io => (io.id || `${io.itemId}-${io.signoutDate}-${io.quantity}`) === signoutId);
 }
@@ -2060,6 +2280,7 @@ function renderProjects() {
     container.innerHTML = visibleProjects.map(proj => {
         const owner = mockUsers.find(u => u.id === proj.ownerId);
         const outCount = proj.itemsOut.reduce((acc, curr) => acc + curr.quantity, 0);
+        const canManage = canCurrentUserManageProject(proj);
 
         // List items out
         const itemsOutHtml = proj.itemsOut.length > 0 ? `
@@ -2089,7 +2310,7 @@ function renderProjects() {
         ` : '';
 
         return `
-            <div class="project-card glass-panel flex-col">
+            <div class="project-card glass-panel flex-col" data-project-id="${proj.id}">
                 <div class="project-header">
                     <div>
                         <h4>${proj.name}</h4>
@@ -2102,9 +2323,9 @@ function renderProjects() {
                 ${itemsOutHtml}
                 <div class="project-meta">
                     <span class="text-muted text-sm">${proj.itemsOut.length > 0 ? 'Use Sign In to return tools.' : 'No items currently signed out.'}</span>
-                    <button class="btn btn-secondary text-sm edit-proj-btn" data-id="${proj.id}">
+                    ${canManage ? `<button class="btn btn-secondary text-sm edit-proj-btn" data-id="${proj.id}">
                         <i class="ph ph-pencil-simple"></i> Edit
-                    </button>
+                    </button>` : ''}
                     <button class="btn btn-secondary text-sm view-proj-btn" data-id="${proj.id}">Details</button>
                 </div>
             </div>
@@ -2121,7 +2342,7 @@ function renderProjects() {
     document.querySelectorAll('.view-proj-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
             const id = e.currentTarget.getAttribute('data-id');
-            openEditProjectModal(id);
+            openProjectItemsModal(id);
         });
     });
 
@@ -3269,6 +3490,46 @@ function normalizeImportText(value) {
     return String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
+function normalizeImportCell(value) {
+    return String(value || '')
+        .replace(/^\uFEFF/, '')
+        .trim()
+        .replace(/^"(.*)"$/, '$1')
+        .replace(/""/g, '"')
+        .trim();
+}
+
+function parseCsvRow(line) {
+    const cells = [];
+    let current = '';
+    let inQuotes = false;
+
+    for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+
+        if (ch === '"') {
+            if (inQuotes && line[i + 1] === '"') {
+                current += '"';
+                i++;
+            } else {
+                inQuotes = !inQuotes;
+            }
+            continue;
+        }
+
+        if (ch === ',' && !inQuotes) {
+            cells.push(current);
+            current = '';
+            continue;
+        }
+
+        current += ch;
+    }
+
+    cells.push(current);
+    return cells.map(normalizeImportCell);
+}
+
 function extractCourseOptionFromClassName(className) {
     return String(className || '')
         .replace(/^grade\s*(k|\d{1,2})\s*[-: ]\s*/i, '')
@@ -3321,7 +3582,7 @@ function findClassByCourseAndGrade(course, grade) {
 }
 
 document.getElementById('bulk-users-btn')?.addEventListener('click', () => {
-    const gradeOptions = ['K', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12'];
+    const gradeOptions = ['10', '11', '12'];
     const courseOptions = [...new Set(
         studentClasses
             .map(cls => extractCourseOptionFromClassName(cls.name))
@@ -3389,26 +3650,44 @@ document.getElementById('bulk-users-btn')?.addEventListener('click', () => {
         let unassignedCount = 0;
         let createdClassCount = 0;
         const classesToPersist = new Set();
+        const seenIds = new Set(mockUsers.map(u => String(u.id || '').trim().toUpperCase()));
+        const roleMap = {
+            student: 'student',
+            students: 'student',
+            teacher: 'teacher',
+            teachers: 'teacher',
+            developer: 'developer',
+            developers: 'developer',
+            dev: 'developer'
+        };
 
         for (const line of lines) {
-            const parts = line.split(',');
+            const parts = parseCsvRow(line);
+            if (parts.every(part => !part)) continue;
+
+            const maybeHeader = parts.map(normalizeImportText);
+            if (maybeHeader[0] === 'id' && maybeHeader[1] === 'name' && maybeHeader[2] === 'role') {
+                continue;
+            }
+
             if (parts.length < 3) {
                 invalidCount++;
                 continue;
             }
 
-            const id = parts[0].trim().toUpperCase();
-            const name = parts[1].trim();
-            const role = parts[2].trim().toLowerCase();
-            const course = (parts[3] ? parts[3].trim() : '') || defaultCourse;
-            const grade = (parts[4] ? parts[4].trim() : '') || defaultGrade;
+            const id = normalizeImportCell(parts[0]).toUpperCase();
+            const name = normalizeImportCell(parts[1]);
+            const roleRaw = normalizeImportText(parts[2]);
+            const role = roleMap[roleRaw] || roleRaw;
+            const course = normalizeImportCell(parts[3] || '') || defaultCourse;
+            const grade = normalizeImportCell(parts[4] || '') || defaultGrade;
 
             if (!id || !name || !['student', 'teacher', 'developer'].includes(role)) {
                 invalidCount++;
                 continue;
             }
 
-            if (mockUsers.some(u => u.id === id)) {
+            if (seenIds.has(id)) {
                 skipCount++;
                 continue;
             }
@@ -3425,6 +3704,7 @@ document.getElementById('bulk-users-btn')?.addEventListener('click', () => {
                 continue;
             }
 
+            seenIds.add(id);
             importCount++;
 
             if (role === 'student') {
@@ -3760,11 +4040,21 @@ function openEditProjectModal(projectId) {
     const project = projects.find(p => p.id === projectId);
     if (!project) return;
 
-    // Only teachers/devs or the project owner can edit
-    if (currentUser.role === 'student' && project.ownerId !== currentUser.id) {
-        showToast('You can only edit projects you created.', 'error');
+    if (!canCurrentUserManageProject(project)) {
+        showToast('Only project owners, teachers, or developers can edit this project.', 'error');
         return;
     }
+
+    const canAssignOwner = currentUser.role !== 'student';
+    const ownerCandidates = getProjectStudentCandidates();
+    const ownerOptions = ownerCandidates.map(student =>
+        `<option value="${student.id}" ${student.id === project.ownerId ? 'selected' : ''}>${student.name} (${student.id})</option>`
+    ).join('');
+
+    const collaboratorOptions = buildProjectCollaboratorOptions({
+        selectedOwnerId: project.ownerId,
+        selectedCollaborators: project.collaborators || []
+    });
 
     const html = `
         <div class="modal-header">
@@ -3788,6 +4078,20 @@ function openEditProjectModal(projectId) {
                     <option value="Archived" ${project.status === 'Archived' ? 'selected' : ''}>Archived</option>
                 </select>
             </div>
+            ${canAssignOwner ? `
+            <div class="form-group">
+                <label>Project Owner</label>
+                <select id="edit-proj-owner" class="form-control">
+                    ${ownerOptions || '<option value="">No students found</option>'}
+                </select>
+                <small class="text-muted">Teachers and developers can assign ownership to a student.</small>
+            </div>` : ''}
+            <div class="form-group">
+                <label>Student Collaborators</label>
+                <div id="edit-proj-collaborators-wrap" class="glass-panel" style="padding:1rem; max-height:180px; overflow-y:auto">
+                    ${collaboratorOptions || '<p class="text-sm text-muted">No eligible student collaborators.</p>'}
+                </div>
+            </div>
         </div>
         <div class="modal-footer">
             <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
@@ -3797,14 +4101,34 @@ function openEditProjectModal(projectId) {
 
     openModal(html);
 
+    const ownerSelect = document.getElementById('edit-proj-owner');
+    ownerSelect?.addEventListener('change', () => {
+        const wrapper = document.getElementById('edit-proj-collaborators-wrap');
+        if (!wrapper) return;
+        wrapper.innerHTML = buildProjectCollaboratorOptions({
+            selectedOwnerId: ownerSelect.value,
+            selectedCollaborators: project.collaborators || []
+        }) || '<p class="text-sm text-muted">No eligible student collaborators.</p>';
+    });
+
     document.getElementById('confirm-edit-proj').addEventListener('click', async () => {
         const name = document.getElementById('edit-proj-name').value.trim();
         const desc = document.getElementById('edit-proj-desc').value.trim();
         const status = document.getElementById('edit-proj-status').value;
+        const selectedOwnerId = canAssignOwner
+            ? (document.getElementById('edit-proj-owner')?.value || project.ownerId)
+            : project.ownerId;
+        const collaborators = Array.from(document.querySelectorAll('#edit-proj-collaborators-wrap .proj-student-checkbox:checked')).map(cb => cb.value);
+
+        if (!selectedOwnerId) {
+            showToast('Please select a project owner.', 'error');
+            return;
+        }
 
         if (name) {
             const updated = await updateProjectInSupabase(project.id, {
                 name,
+                owner_id: selectedOwnerId,
                 description: desc,
                 status
             });
@@ -3813,9 +4137,14 @@ function openEditProjectModal(projectId) {
                 return;
             }
 
+            const collaboratorsSaved = await syncProjectCollaboratorsInSupabase(project.id, collaborators, project.collaborators || []);
+            if (!collaboratorsSaved) {
+                showToast('Project updated, but collaborator sync failed.', 'warning');
+            }
+
             await refreshProjectsFromSupabase();
 
-            addLog(currentUser.id, 'Edit Project', `Updated project: ${name}`);
+            addLog(currentUser.id, 'Edit Project', `Updated project: ${name} (owner ${selectedOwnerId}, ${collaborators.length} collaborators)`);
             showToast(`Project updated.`, 'success');
             closeModal();
             if (document.getElementById('page-projects').classList.contains('active')) {
@@ -3827,19 +4156,17 @@ function openEditProjectModal(projectId) {
 
 // Create Project Flow
 document.getElementById('create-project-btn')?.addEventListener('click', () => {
-    // Determine students that can be added as collaborators (only those with canJoinProjects perms)
-    // and exclude the current user from the list.
-    const availableStudents = mockUsers.filter(u => u.role === 'student' && u.id !== currentUser.id && u.perms?.canJoinProjects !== false);
+    const canAssignOwner = currentUser.role !== 'student';
+    const ownerCandidates = getProjectStudentCandidates();
+    const defaultOwnerId = canAssignOwner
+        ? (ownerCandidates[0]?.id || '')
+        : currentUser.id;
 
-    // Students can add other students to their project
-    const studentOptions = availableStudents.map(s =>
-        `<div style="margin-bottom:0.5rem">
-            <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">
-                <input type="checkbox" value="${s.id}" class="proj-student-checkbox">
-                ${s.name} (${s.id})
-            </label>
-        </div>`
+    const ownerOptions = ownerCandidates.map(student =>
+        `<option value="${student.id}" ${student.id === defaultOwnerId ? 'selected' : ''}>${student.name} (${student.id})</option>`
     ).join('');
+
+    const collaboratorOptions = buildProjectCollaboratorOptions({ selectedOwnerId: defaultOwnerId });
 
     const html = `
         <div class="modal-header">
@@ -3855,10 +4182,18 @@ document.getElementById('create-project-btn')?.addEventListener('click', () => {
                 <label>Description</label>
                 <textarea id="add-proj-desc" class="form-control" rows="3" placeholder="Brief details about the project..."></textarea>
             </div>
+            ${canAssignOwner ? `
+            <div class="form-group">
+                <label>Project Owner</label>
+                <select id="add-proj-owner" class="form-control">
+                    ${ownerOptions || '<option value="">No students found</option>'}
+                </select>
+                <small class="text-muted">Teachers and developers can create projects directly for students.</small>
+            </div>` : ''}
             <div class="form-group">
                 <label>Add Student Collaborators (Optional)</label>
-                <div class="glass-panel" style="padding:1rem; max-height:150px; overflow-y:auto">
-                    ${studentOptions || '<p class="text-sm text-muted">No available student collaborators.</p>'}
+                <div id="add-proj-collaborators-wrap" class="glass-panel" style="padding:1rem; max-height:150px; overflow-y:auto">
+                    ${collaboratorOptions || '<p class="text-sm text-muted">No available student collaborators.</p>'}
                 </div>
             </div>
         </div>
@@ -3870,43 +4205,59 @@ document.getElementById('create-project-btn')?.addEventListener('click', () => {
 
     openModal(html);
 
+    const ownerSelect = document.getElementById('add-proj-owner');
+    ownerSelect?.addEventListener('change', () => {
+        const wrap = document.getElementById('add-proj-collaborators-wrap');
+        if (!wrap) return;
+        wrap.innerHTML = buildProjectCollaboratorOptions({ selectedOwnerId: ownerSelect.value })
+            || '<p class="text-sm text-muted">No available student collaborators.</p>';
+    });
+
     document.getElementById('confirm-add-proj').addEventListener('click', () => {
         const submitBtn = document.getElementById('confirm-add-proj');
         withButtonPending(submitBtn, 'Creating...', async () => {
-        const name = document.getElementById('add-proj-name').value.trim();
-        const desc = document.getElementById('add-proj-desc').value.trim();
-        const collaborators = Array.from(document.querySelectorAll('.proj-student-checkbox:checked')).map(cb => cb.value);
+            const name = document.getElementById('add-proj-name').value.trim();
+            const desc = document.getElementById('add-proj-desc').value.trim();
+            const ownerId = canAssignOwner
+                ? (document.getElementById('add-proj-owner')?.value || '')
+                : currentUser.id;
+            const collaborators = Array.from(document.querySelectorAll('#add-proj-collaborators-wrap .proj-student-checkbox:checked')).map(cb => cb.value);
 
-        if (name) {
-            const newProject = {
-                id: generateId('PRJ'),
-                name: name,
-                ownerId: currentUser.id,
-                description: desc,
-                collaborators: collaborators,
-                status: 'Active',
-                itemsOut: []
-            };
-
-            const created = await addProjectToSupabase(newProject);
-            if (!created) {
-                showToast('Failed to create project in Supabase.', 'error');
+            if (!ownerId) {
+                showToast('Please select a project owner.', 'error');
                 return;
             }
 
-            for (const collaboratorId of collaborators) {
-                await addProjectCollaboratorToSupabase(newProject.id, collaboratorId);
-            }
+            if (name) {
+                const newProject = {
+                    id: generateId('PRJ'),
+                    name: name,
+                    ownerId,
+                    description: desc,
+                    collaborators: collaborators,
+                    status: 'Active',
+                    itemsOut: []
+                };
 
-            await refreshProjectsFromSupabase();
+                const created = await addProjectToSupabase(newProject);
+                if (!created) {
+                    showToast('Failed to create project in Supabase.', 'error');
+                    return;
+                }
 
-            addLog(currentUser.id, 'Create Project', `Created new project: ${name} with ${collaborators.length} collaborators.`);
-            showToast(`Project ${name} created.`, 'success');
-            closeModal();
-            if (document.getElementById('page-projects').classList.contains('active')) {
-                renderProjects();
+                for (const collaboratorId of collaborators) {
+                    await addProjectCollaboratorToSupabase(newProject.id, collaboratorId);
+                }
+
+                await refreshProjectsFromSupabase();
+
+                addLog(currentUser.id, 'Create Project', `Created new project: ${name} for ${ownerId} with ${collaborators.length} collaborators.`);
+                showToast(`Project ${name} created.`, 'success');
+                closeModal();
+                if (document.getElementById('page-projects').classList.contains('active')) {
+                    renderProjects();
+                }
             }
-        }
         });
     });
 });
