@@ -445,6 +445,15 @@ function escapeHtml(value) {
 
 function openAppInfoMenu() {
     const popupHeading = String(envConfig.INFO_POPUP_HEADING || 'System Information').trim();
+    const licenseStatusLabel = !appLicenseState.checked
+        ? 'Not checked'
+        : appLicenseState.valid
+            ? 'Valid'
+            : 'Invalid';
+
+    const buildInfoText = String(envConfig.INFO_POPUP_BUILD_INFO || '').trim() ||
+        `App: ${appName} Inventory System\nVersion: ${appVersion}\nKiosk ID: ${kioskId || 'Not set'}\nLicense Status: ${licenseStatusLabel}`;
+
     const sectionValues = [
         {
             subheading: String(envConfig.INFO_POPUP_SUBHEADING_1 || '').trim(),
@@ -457,6 +466,10 @@ function openAppInfoMenu() {
         {
             subheading: String(envConfig.INFO_POPUP_SUBHEADING_3 || '').trim(),
             description: String(envConfig.INFO_POPUP_DESCRIPTION_3 || '').trim()
+        },
+        {
+            subheading: 'Build Information',
+            description: buildInfoText
         }
     ].filter(section => section.subheading || section.description);
 
@@ -464,17 +477,17 @@ function openAppInfoMenu() {
         ? sectionValues.map(section => `
             <div class="glass-panel" style="padding:0.9rem;border-radius:var(--radius-sm);margin-bottom:0.7rem;">
                 ${section.subheading ? `<h4 style="margin-bottom:0.4rem;color:var(--text-primary);">${escapeHtml(section.subheading)}</h4>` : ''}
-                ${section.description ? `<p class="text-muted" style="font-size:0.88rem;line-height:1.45;">${escapeHtml(section.description)}</p>` : ''}
+                ${section.description ? `<p class="text-muted" style="font-size:0.88rem;line-height:1.45;white-space:pre-wrap;">${escapeHtml(section.description)}</p>` : ''}
             </div>
         `).join('')
         : `<p class="text-muted">No popup content configured in env.js.</p>`;
 
     const html = `
-        <div class="modal-header">
-            <h3>${escapeHtml(popupHeading)}</h3>
+        <div class="modal-header debug-modal-header">
+            <h3 style="color:#a78bfa"><i class="ph ph-info"></i> ${escapeHtml(popupHeading)}</h3>
             <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
         </div>
-        <div class="modal-body">
+        <div class="debug-modal-body">
             <div class="glass-panel" style="padding:0.85rem;border-radius:var(--radius-sm);margin-bottom:0.8rem;display:flex;justify-content:space-between;gap:0.75rem;align-items:center;">
                 <span class="text-muted" style="font-size:0.82rem;">${escapeHtml(appName)} Inventory System</span>
                 <span class="badge">${escapeHtml(appVersion)}</span>
@@ -487,6 +500,7 @@ function openAppInfoMenu() {
     `;
 
     openModal(html);
+    dynamicModal.classList.add('debug-modal');
 }
 
 function bindAppInfoTriggers() {
