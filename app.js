@@ -4,6 +4,14 @@
    STATE & INITIALIZATION
    ======================================= */
 let currentUser = null;
+let currentAuthLicenseContext = {
+    session: null,
+    profile: null,
+    organization: null,
+    licenseStatus: 'unknown',
+    licenseMessage: 'Not validated',
+    canAccess: false
+};
 
 const envConfig = window.APP_ENV || {};
 const kioskId = String(envConfig.KIOSK_ID ?? envConfig.kioskId ?? '').trim();
@@ -13,6 +21,15 @@ const appSubtitle = String(envConfig.APP_SUBTITLE ?? 'Secure Inventory Managemen
 window.RUNTIME_APP_VERSION = appVersion;
 
 let kioskVersionChannel = null;
+let appLicenseBlocked = false;
+let appLicenseState = {
+    checked: false,
+    configured: false,
+    valid: false,
+    expectedHash: '',
+    providedHash: '',
+    message: 'License has not been checked yet.'
+};
 
 const defaultDuePolicy = {
     defaultSignoutMinutes: 80,
@@ -48,6 +65,9 @@ const barcodeInput = document.getElementById('barcode-input');
 const showHelpBtn = document.getElementById('show-help-btn');
 const backToLoginBtn = document.getElementById('back-to-login-btn');
 const submitHelpBtn = document.getElementById('submit-help-btn');
+const authSignInBtn = document.getElementById('auth-signin-btn');
+const authSignOutBtn = document.getElementById('auth-signout-btn');
+const authStatusBadge = document.getElementById('auth-status-badge');
 
 // DOM Elements - Sidebar & Profile
 const userNameEl = document.getElementById('user-name');
@@ -145,6 +165,123 @@ function withButtonPending(buttonEl, pendingLabel, callback) {
             buttonEl.disabled = false;
             buttonEl.innerHTML = originalHtml;
         });
+}
+
+function setAuthStatusBadge(text, mode = 'neutral') {
+    if (!authStatusBadge) return;
+    authStatusBadge.textContent = text;
+    authStatusBadge.dataset.mode = mode;
+}
+
+function applyAuthLicenseContext(context) {
+    currentAuthLicenseContext = context || {
+        session: null,
+        profile: null,
+        organization: null,
+        licenseStatus: 'unknown',
+        licenseMessage: 'Not validated',
+        canAccess: false
+    };
+
+    if (currentAuthLicenseContext.canAccess) {
+        const orgName = currentAuthLicenseContext.organization?.name || 'Organization';
+        setAuthStatusBadge(`${orgName} licensed`, 'ok');
+    } else {
+        setAuthStatusBadge(currentAuthLicenseContext.licenseMessage || 'Auth required', 'error');
+    }
+}
+
+async function refreshAuthLicenseContext() {
+    if (typeof loadAuthLicenseContext !== 'function') {
+        applyAuthLicenseContext({
+            session: null,
+            profile: null,
+            organization: null,
+            licenseStatus: 'unavailable',
+            licenseMessage: 'Auth context loader is unavailable.',
+            canAccess: false
+        });
+        return currentAuthLicenseContext;
+    }
+
+    const context = await loadAuthLicenseContext();
+    applyAuthLicenseContext(context);
+    return currentAuthLicenseContext;
+}
+
+async function ensureLicensedAccess(options = {}) {
+    const interactive = options.interactive === true;
+    const context = await refreshAuthLicenseContext();
+    if (context.canAccess) return true;
+
+    if (options.showToast !== false) {
+        showToast(context.licenseMessage || 'Sign in is required.', 'error');
+    }
+
+    if (interactive) {
+        openAuthSignInModal();
+    }
+
+    return false;
+}
+
+function openAuthSignInModal() {
+    const html = `
+        <div class="modal-header">
+            <h3>Supabase Sign In</h3>
+            <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
+        </div>
+        <div class="modal-body">
+            <p class="text-secondary" style="margin-bottom:1rem;">Sign in to load your profile and organization license.</p>
+            <div class="form-group">
+                <label>Email</label>
+                <input id="auth-email" class="form-control" type="email" autocomplete="username" placeholder="you@example.com">
+            </div>
+            <div class="form-group">
+                <label>Password</label>
+                <input id="auth-password" class="form-control" type="password" autocomplete="current-password" placeholder="Password">
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            <button class="btn btn-primary" id="auth-signin-submit">Sign In</button>
+        </div>
+    `;
+
+    openModal(html);
+
+    document.getElementById('auth-signin-submit')?.addEventListener('click', async (e) => {
+        const email = String(document.getElementById('auth-email')?.value || '').trim();
+        const password = String(document.getElementById('auth-password')?.value || '');
+
+        if (!email || !password) {
+            showToast('Email and password are required.', 'error');
+            return;
+        }
+
+        if (typeof signInWithSupabasePassword !== 'function') {
+            showToast('Supabase auth helper is unavailable.', 'error');
+            return;
+        }
+
+        withButtonPending(e.currentTarget, 'Signing In...', async () => {
+            const result = await signInWithSupabasePassword(email, password);
+            if (!result.ok) {
+                showToast(result.error?.message || 'Sign in failed.', 'error');
+                return;
+            }
+
+            const context = await refreshAuthLicenseContext();
+            if (!context.canAccess) {
+                showToast(context.licenseMessage || 'Access blocked by license policy.', 'error');
+                return;
+            }
+
+            showToast('Auth session established. Scan your barcode to continue.', 'success');
+            closeModal();
+            barcodeInput.focus();
+        });
+    });
 }
 
 /* =======================================
@@ -419,6 +556,119 @@ function applyVersionBadges() {
     }
 }
 
+function updateAppInfoOverlayVisibility() {
+    const infoOverlay = document.querySelector('.app-info-overlay');
+    if (!infoOverlay) return;
+    infoOverlay.style.display = currentUser ? 'none' : '';
+}
+
+function escapeHtml(value) {
+    return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function openAppInfoMenu() {
+    const lockLabel = debugConfig?.kioskLocked ? 'Disabled' : 'Enabled';
+    const licenseStatus = !appLicenseState.checked
+        ? 'Not checked'
+        : appLicenseState.valid
+            ? 'Valid'
+            : 'Invalid';
+
+    const licenseColor = !appLicenseState.checked
+        ? 'var(--text-muted)'
+        : appLicenseState.valid
+            ? 'var(--success)'
+            : 'var(--danger)';
+
+    const html = `
+        <div class="modal-header">
+            <h3>System Info</h3>
+            <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
+        </div>
+        <div class="modal-body">
+            <div class="glass-panel" style="padding:1rem;border-radius:var(--radius-sm)">
+                <div style="display:grid;grid-template-columns:130px 1fr;gap:0.5rem 0.75rem;font-size:0.92rem">
+                    <div class="text-muted">App</div><div>${escapeHtml(appName)} Inventory System</div>
+                    <div class="text-muted">Version</div><div>${escapeHtml(appVersion)}</div>
+                    <div class="text-muted">Kiosk ID</div><div>${escapeHtml(kioskId || 'Not set')}</div>
+                    <div class="text-muted">Kiosk</div><div style="color:${debugConfig?.kioskLocked ? 'var(--danger)' : 'var(--success)'}">${lockLabel}</div>
+                    <div class="text-muted">License</div><div style="color:${licenseColor}">${licenseStatus}</div>
+                </div>
+            </div>
+            <p class="text-muted" style="margin-top:0.85rem;font-size:0.82rem">
+                ${escapeHtml(appLicenseState.message)}
+            </p>
+            ${appLicenseState.expectedHash ? `<p class="text-muted" style="font-size:0.74rem;word-break:break-all">Expected hash: ${escapeHtml(appLicenseState.expectedHash)}</p>` : ''}
+            ${appLicenseState.providedHash ? `<p class="text-muted" style="font-size:0.74rem;word-break:break-all">Provided hash: ${escapeHtml(appLicenseState.providedHash)}</p>` : ''}
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+        </div>
+    `;
+
+    openModal(html);
+}
+
+function bindAppInfoTriggers() {
+    document.getElementById('app-login-name')?.addEventListener('click', openAppInfoMenu);
+    document.getElementById('app-sidebar-name')?.addEventListener('click', openAppInfoMenu);
+    document.getElementById('app-info-trigger')?.addEventListener('click', openAppInfoMenu);
+}
+
+async function sha256Hex(input) {
+    if (!window.crypto?.subtle || typeof TextEncoder === 'undefined') return '';
+    const bytes = new TextEncoder().encode(String(input || ''));
+    const hashBuffer = await window.crypto.subtle.digest('SHA-256', bytes);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function getConfiguredLicenseKey() {
+    return String(envConfig.APP_LICENSE_KEY ?? envConfig.appLicenseKey ?? '').trim();
+}
+
+function normalizeLicenseHash(raw) {
+    return String(raw || '').trim().toLowerCase();
+}
+
+async function validateAppLicense(licenseHashFromDb) {
+    const key = getConfiguredLicenseKey();
+    const expectedHash = normalizeLicenseHash(licenseHashFromDb);
+
+    if (!key || !expectedHash) {
+        appLicenseState = {
+            checked: true,
+            configured: false,
+            valid: true,
+            expectedHash,
+            providedHash: '',
+            message: 'License check is not fully configured yet. Add APP_LICENSE_KEY and kiosk_settings.license_hash to enforce validation.'
+        };
+        appLicenseBlocked = false;
+        return true;
+    }
+
+    const providedHash = normalizeLicenseHash(await sha256Hex(key));
+    const valid = providedHash !== '' && providedHash === expectedHash;
+    appLicenseState = {
+        checked: true,
+        configured: true,
+        valid,
+        expectedHash,
+        providedHash,
+        message: valid
+            ? 'License key hash matches the database record.'
+            : 'License key hash mismatch. This kiosk is disabled until the key is corrected.'
+    };
+    appLicenseBlocked = !valid;
+    return valid;
+}
+
 function applyBranding() {
     const title = `${appName} Inventory System`;
     const pageTitleEl = document.getElementById('app-page-title');
@@ -452,8 +702,14 @@ function getSettingsSupabaseClient() {
     return window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 }
 
-async function fetchKioskAppVersion(targetKioskId = kioskId) {
-    const fallback = String(envConfig.APP_VERSION ?? envConfig.APP_Version ?? 'VERSION').trim() || 'VERSION';
+async function fetchKioskSettings(targetKioskId = kioskId) {
+    const fallbackVersion = String(envConfig.APP_VERSION ?? envConfig.APP_Version ?? 'VERSION').trim() || 'VERSION';
+    const fallback = {
+        app_version: fallbackVersion,
+        license_hash: '',
+        is_locked: false,
+        lock_screen: 'systemLocked'
+    };
 
     if (!targetKioskId) return fallback;
 
@@ -463,18 +719,23 @@ async function fetchKioskAppVersion(targetKioskId = kioskId) {
     try {
         const { data, error } = await client
             .from('kiosk_settings')
-            .select('app_version')
+            .select('*')
             .eq('kiosk_id', targetKioskId)
             .maybeSingle();
 
         if (error) {
-            console.warn('Failed to fetch kiosk app version:', error);
+            console.warn('Failed to fetch kiosk settings:', error);
             return fallback;
         }
 
-        return String(data?.app_version || '').trim() || fallback;
+        return {
+            app_version: String(data?.app_version || '').trim() || fallbackVersion,
+            license_hash: String(data?.license_hash || data?.app_license_hash || '').trim(),
+            is_locked: !!(data?.is_locked ?? data?.kiosk_locked),
+            lock_screen: String(data?.lock_screen || data?.kiosk_lock_screen || 'systemLocked')
+        };
     } catch (error) {
-        console.warn('Unexpected error fetching kiosk app version:', error);
+        console.warn('Unexpected error fetching kiosk settings:', error);
         return fallback;
     }
 }
@@ -512,19 +773,38 @@ function showNewUpdateOverlay(newVersion) {
     });
 }
 
-function handleRemoteAppVersionChange(nextVersion) {
-    const normalized = String(nextVersion || '').trim();
-    if (!normalized || normalized === appVersion) return;
+async function handleRemoteKioskSettingsChange(nextSettings = {}) {
+    const wasBlocked = appLicenseBlocked;
+    const normalized = String(nextSettings.app_version || '').trim();
 
-    setRuntimeAppVersion(normalized);
-
-    const action = String(envConfig.APP_UPDATE_ACTION || 'reload').trim().toLowerCase();
-    if (action === 'overlay') {
-        showNewUpdateOverlay(normalized);
+    const licenseStillValid = await validateAppLicense(nextSettings.license_hash);
+    if (!licenseStillValid) {
+        await applyKioskLock(true, 'kioskUnavailable');
+        showToast('Kiosk disabled: invalid app license.', 'error');
         return;
     }
 
-    window.location.reload();
+    if (wasBlocked && !appLicenseBlocked) {
+        window.location.reload();
+        return;
+    }
+
+    if (normalized && normalized !== appVersion) {
+        setRuntimeAppVersion(normalized);
+
+        const action = String(envConfig.APP_UPDATE_ACTION || 'reload').trim().toLowerCase();
+        if (action === 'overlay') {
+            showNewUpdateOverlay(normalized);
+        } else {
+            window.location.reload();
+        }
+    }
+
+    if (typeof nextSettings.is_locked === 'boolean' || nextSettings.lock_screen) {
+        const remoteLocked = !!nextSettings.is_locked;
+        const remoteLockScreen = String(nextSettings.lock_screen || 'systemLocked');
+        await applyKioskLock(remoteLocked, remoteLockScreen);
+    }
 }
 
 function startKioskVersionRealtimeListener(targetKioskId = kioskId) {
@@ -545,14 +825,52 @@ function startKioskVersionRealtimeListener(targetKioskId = kioskId) {
             schema: 'public',
             table: 'kiosk_settings',
             filter: `kiosk_id=eq.${targetKioskId}`
-        }, payload => {
-            handleRemoteAppVersionChange(payload?.new?.app_version);
+        }, async payload => {
+            const next = {
+                app_version: payload?.new?.app_version,
+                license_hash: payload?.new?.license_hash || payload?.new?.app_license_hash,
+                is_locked: payload?.new?.is_locked ?? payload?.new?.kiosk_locked,
+                lock_screen: payload?.new?.lock_screen || payload?.new?.kiosk_lock_screen
+            };
+            await handleRemoteKioskSettingsChange(next);
         })
         .subscribe(status => {
             if (status === 'CHANNEL_ERROR') {
                 console.warn('kiosk_settings app_version realtime channel error');
             }
         });
+}
+
+async function syncKioskLockStateToSupabase(lock, screenKey) {
+    if (!kioskId) return;
+    const client = getSettingsSupabaseClient();
+    if (!client) return;
+
+    const primaryPayload = {
+        kiosk_id: kioskId,
+        is_locked: !!lock,
+        lock_screen: screenKey || 'systemLocked'
+    };
+
+    const { error } = await client
+        .from('kiosk_settings')
+        .upsert([primaryPayload], { onConflict: 'kiosk_id' });
+
+    if (!error) return;
+
+    const fallbackPayload = {
+        kiosk_id: kioskId,
+        kiosk_locked: !!lock,
+        kiosk_lock_screen: screenKey || 'systemLocked'
+    };
+
+    const { error: fallbackError } = await client
+        .from('kiosk_settings')
+        .upsert([fallbackPayload], { onConflict: 'kiosk_id' });
+
+    if (fallbackError) {
+        console.warn('Failed to sync kiosk lock state to Supabase:', fallbackError);
+    }
 }
 
 // Inventory Basket Logic
@@ -914,6 +1232,8 @@ document.getElementById('checkout-basket-btn')?.addEventListener('click', openCh
 // Init application
 document.addEventListener('DOMContentLoaded', async () => {
     applyBranding();
+    bindAppInfoTriggers();
+    updateAppInfoOverlayVisibility();
 
     if (!window.supabase || typeof window.supabase.createClient !== 'function') {
         showToast('Supabase client library failed to load. Check internet/CDN access and reload.', 'error');
@@ -930,18 +1250,34 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
     }
 
-    // Load all data from Supabase tables before initializing the app
-    try {
-        await loadAllData();
-    } catch (error) {
-        console.error('Initial Supabase load failed:', error);
-        showToast('Unable to load data from Supabase. Login may not work until this is fixed.', 'error');
-    }
-    
-    // Pull kiosk app version from Supabase at startup and keep in global state.
-    const remoteVersion = await fetchKioskAppVersion(kioskId);
-    setRuntimeAppVersion(remoteVersion);
+    await refreshAuthLicenseContext();
+
+    const kioskSettings = await fetchKioskSettings(kioskId);
+    const licenseValid = await validateAppLicense(kioskSettings.license_hash);
+    setRuntimeAppVersion(kioskSettings.app_version);
+    await applyKioskLock(!!kioskSettings.is_locked, kioskSettings.lock_screen || 'systemLocked');
     startKioskVersionRealtimeListener(kioskId);
+
+    if (!licenseValid) {
+        await applyKioskLock(true, 'kioskUnavailable');
+        showToast('Kiosk disabled: invalid app license.', 'error');
+        return;
+    }
+
+    const licensed = await ensureLicensedAccess({ interactive: false, showToast: false });
+    if (!licensed) {
+        showToast('Sign in is required before barcode login.', 'error');
+    }
+
+    // Load all data from Supabase tables before initializing the app
+    if (licensed) {
+        try {
+            await loadAllData();
+        } catch (error) {
+            console.error('Initial Supabase load failed:', error);
+            showToast('Unable to load data from Supabase. Login may not work until this is fixed.', 'error');
+        }
+    }
 
     // Bring focus to barcode scanner input
     if (barcodeInput) {
@@ -1030,33 +1366,35 @@ async function handleBarcodeLogin(rawId) {
         return;
     }
 
-    // --- INTERCEPT SIGNED OUT ITEM SCANS ---
-    const scannedItem = inventoryItems.find(i => i.id === id || i.sku === id);
-    if (scannedItem) {
-        let signedOutRecord = null;
-        for (const p of projects) {
-            const found = p.itemsOut.find(io => io.itemId === scannedItem.id);
-            if (found) {
-                signedOutRecord = { ...found, projectName: p.name };
-                break;
-            }
-        }
-        
-        if (signedOutRecord) {
-            showHardwareReturnModal(scannedItem, signedOutRecord);
-            return;
-        }
-    }
-    // ---------------------------------------
-
     if (typeof fetchUserByIdFromSupabase !== 'function') {
         showToast('Supabase data module is not loaded. Refresh and verify script loading.', 'error');
+        return;
+    }
+
+    if (typeof loginWithBarcode !== 'function') {
+        showToast('Barcode Edge Function helper is unavailable.', 'error');
         return;
     }
 
     if (!checkLoginRateLimit()) return;
 
     try {
+        const loginResult = await loginWithBarcode(id);
+        if (loginResult.error) {
+            recordFailedLoginAttempt();
+            showToast(loginResult.error || 'Login failed', 'error');
+            return;
+        }
+
+        await refreshAuthLicenseContext();
+
+        try {
+            await loadAllData();
+        } catch (loadError) {
+            console.error('Post-login load failed:', loadError);
+            showToast('Login succeeded, but data refresh failed.', 'error');
+        }
+
         const user = await fetchUserByIdFromSupabase(id);
         if (user) {
             if (user.status === 'Suspended' && !isSuspensionBypassedUser(user)) {
@@ -1072,7 +1410,13 @@ async function handleBarcodeLogin(rawId) {
             }
             clearFailedLoginAttempts();
             try {
-                login(user);
+                login({
+                    ...user,
+                    authUserId: currentAuthLicenseContext.session?.user?.id || null,
+                    organizationId: currentAuthLicenseContext.profile?.organization_id || null,
+                    organization: currentAuthLicenseContext.organization || loginResult.organization || null,
+                    licenseStatus: currentAuthLicenseContext.licenseStatus || 'unknown'
+                });
             } catch (loginError) {
                 console.error('Login transition failed:', loginError);
                 showToast('Login succeeded but dashboard failed to load.', 'error');
@@ -1289,6 +1633,7 @@ function login(user) {
     // Hide OehlerOS version badge after login
     const versionOverlay = document.querySelector('.app-version-overlay');
     if (versionOverlay) versionOverlay.style.display = 'none';
+    updateAppInfoOverlayVisibility();
 
     showToast(`Welcome, ${user.name}`);
 
@@ -1321,6 +1666,7 @@ function logout(message = 'Logged out successfully') {
         // Show OehlerOS version badge on login screen
         const versionOverlay = document.querySelector('.app-version-overlay');
         if (versionOverlay) versionOverlay.style.display = '';
+        updateAppInfoOverlayVisibility();
         setTimeout(() => {
             loginView.classList.add('active');
             barcodeInput.focus();
@@ -1348,6 +1694,7 @@ function returnToLoginView(options = {}) {
         // Show OehlerOS version badge on login screen
         const versionOverlay = document.querySelector('.app-version-overlay');
         if (versionOverlay) versionOverlay.style.display = '';
+        updateAppInfoOverlayVisibility();
         setTimeout(() => {
             loginView.classList.add('active');
             barcodeInput.focus();
@@ -1358,6 +1705,17 @@ function returnToLoginView(options = {}) {
 }
 
 logoutBtn.addEventListener('click', () => logout());
+authSignInBtn?.addEventListener('click', () => openAuthSignInModal());
+authSignOutBtn?.addEventListener('click', async () => {
+    if (typeof signOutSupabaseAuth !== 'function') {
+        showToast('Supabase auth helper is unavailable.', 'error');
+        return;
+    }
+
+    await signOutSupabaseAuth();
+    await refreshAuthLicenseContext();
+    returnToLoginView({ message: 'Supabase auth session signed out.' });
+});
 
 /* =======================================
    ROUTING
@@ -1441,6 +1799,12 @@ async function refreshPageDataFromSupabase(targetId) {
 }
 
 async function switchPage(targetId, title) {
+    const licensed = await ensureLicensedAccess({ interactive: false, showToast: true });
+    if (!licensed) {
+        returnToLoginView({ message: 'Session blocked by profile/license policy.' });
+        return;
+    }
+
     if (targetId === 'orders' && !canCurrentUserViewOrders()) {
         showToast('Orders view is disabled for students.', 'error');
         return;
@@ -1642,24 +2006,34 @@ function loadDashboard() {
             });
         });
 
-        list2.innerHTML = myProjects.length === 0 ? '<p class="text-muted">You are not in any projects.</p>' :
-            myProjects.slice(0, 6).map(p => {
-                const projectOut = p.itemsOut.reduce((acc, io) => acc + io.quantity, 0);
-                const projectDue = p.itemsOut.reduce((acc, io) => acc + ((io.dueDate && new Date(io.dueDate) <= now) ? io.quantity : 0), 0);
+        const widget2Title = document.getElementById('widget-2-title');
+        if (widget2Title) widget2Title.textContent = 'My Items';
+
+        const personalProject = projects.find(p => p.id === `PERS-${currentUser.id}`);
+        const personalItems = personalProject?.itemsOut || [];
+
+        list2.innerHTML = personalItems.length === 0
+            ? '<p class="text-muted">No personal items are currently signed out.</p>'
+            : personalItems.slice(0, 6).map(io => {
+                const item = inventoryItems.find(i => i.id === io.itemId);
+                const dueDate = io.dueDate ? new Date(io.dueDate) : null;
+                const isOverdue = dueDate ? dueDate < now : false;
+                const dueLabel = dueDate ? dueDate.toLocaleDateString() : 'No due date';
                 return `
-                <li class="activity-item">
-                    <div class="timestamp">${p.status}</div>
-                    <div><strong>${p.name}</strong> · Out: ${projectOut} · Due: ${projectDue}</div>
-                    <div style="display:flex;gap:0.5rem;margin-top:0.55rem;">
-                        <button class="btn btn-secondary text-sm dashboard-project-open-btn" data-project-id="${p.id}" style="padding:0.3rem 0.55rem;font-size:0.75rem;">
-                            <i class="ph ph-folder-open"></i> Open
-                        </button>
-                        <button class="btn btn-primary text-sm dashboard-project-items-btn" data-project-id="${p.id}" style="padding:0.3rem 0.55rem;font-size:0.75rem;">
-                            <i class="ph ph-list"></i> Items
-                        </button>
-                    </div>
-                </li>
-            `;
+                    <li class="activity-item">
+                        <div class="timestamp">Personal</div>
+                        <div><strong>${item ? item.name : io.itemId}</strong> · Qty: ${io.quantity}</div>
+                        <div class="text-muted text-sm">${isOverdue ? 'Overdue' : 'Due'}: ${dueLabel}</div>
+                        <div style="display:flex;gap:0.5rem;margin-top:0.55rem;">
+                            <button class="btn btn-secondary text-sm dashboard-project-open-btn" data-project-id="${personalProject.id}" style="padding:0.3rem 0.55rem;font-size:0.75rem;">
+                                <i class="ph ph-folder-open"></i> Open
+                            </button>
+                            <button class="btn btn-primary text-sm dashboard-project-items-btn" data-project-id="${personalProject.id}" style="padding:0.3rem 0.55rem;font-size:0.75rem;">
+                                <i class="ph ph-list"></i> Items
+                            </button>
+                        </div>
+                    </li>
+                `;
             }).join('');
 
         wireDashboardProjectSummaryActions(document);
@@ -1852,9 +2226,13 @@ function loadDashboard() {
     }
 }
 
+function renderDashboard() {
+     loadDashboard();
+}
+
 /* =======================================
-   INVENTORY LOGIC
-   ======================================= */
+    INVENTORY LOGIC
+    ======================================= */
 function determineStatus(stock, threshold, itemType = 'item') {
     // Consumables don't show stock status
     if (itemType === 'consumable') return 'N/A';
@@ -2254,6 +2632,11 @@ function renderProjects() {
     let visibleProjects = projects;
     if (currentUser.role === 'student') {
         visibleProjects = projects.filter(p => p.ownerId === currentUser.id || p.collaborators.includes(currentUser.id));
+    } else {
+        visibleProjects = projects.filter(p => {
+            if (!String(p.id || '').startsWith('PERS-')) return true;
+            return p.ownerId === currentUser.id;
+        });
     }
 
     // Separate personal projects for display in a dedicated section
@@ -2263,8 +2646,8 @@ function renderProjects() {
 
     let html = '';
 
-    // Add Personal Items section first if student has personal sign-outs
-    if (currentUser.role === 'student' && personalProject && personalProject.itemsOut.length > 0) {
+    // Add Personal Items section first when the current user has personal sign-outs.
+    if (personalProject && personalProject.itemsOut.length > 0) {
         const personalItemsHtml = personalProject.itemsOut.map(io => {
             const item = inventoryItems.find(i => i.id === io.itemId);
             const signoutId = io.id || `${io.itemId}-${io.signoutDate}-${io.quantity}`;
@@ -3144,6 +3527,8 @@ function renderUsers() {
         const isSuspended = user.status === 'Suspended' && !suspensionBypassed;
         const canEdit = !(currentUser.role === 'teacher' && user.role === 'developer') || (currentUser.id === user.id && user.role === 'developer');
         const isDeveloper = user.role === 'developer';
+        const userItemsOut = getItemsOutForUser(user.id);
+        const userOutQty = userItemsOut.reduce((sum, row) => sum + row.quantity, 0);
         const gradeLabel = getUserGradeLabel(user);
 
         return `
@@ -3153,10 +3538,11 @@ function renderUsers() {
                 </td>
                 <td>
                     <div class="flex items-center gap-2">
-                        <div class="avatar-sm" style="width:32px;height:32px;display:flex;align-items:center;justify-content:center;background:var(--glass-border);border-radius:50%;">${getRoleIcon(user.role)}</div>
+                        <div class="avatar-sm">${getRoleIcon(user.role)}</div>
                         <div>
                             <div class="font-bold">${user.name}</div>
                             <small class="text-muted">${user.id}</small>
+                            <div class="text-xs text-muted">Items Out: ${userOutQty}</div>
                         </div>
                     </div>
                 </td>
@@ -3178,7 +3564,8 @@ function renderUsers() {
                 </td>
                 <td>
                     <div class="flex gap-2 user-actions">
-                        ${canEdit ? `<button class="btn btn-secondary btn-sm edit-user-btn" data-id="${user.id}" title="Edit User"><i class="ph ph-pencil"></i></button>` : `<i class="ph ph-lock text-muted" title="Developer locked"></i>`}
+                        ${canEdit ? `<button class="btn btn-secondary btn-sm edit-user-btn" data-id="${user.id}" title="Edit User"><i class="ph ph-pencil"></i></button>` : ''}
+                        <button class="btn btn-secondary btn-sm view-user-items-btn" data-id="${user.id}" title="View Items Out"><i class="ph ph-package"></i></button>
                         ${!isDeveloper ? `<button class="btn btn-secondary btn-sm suspend-user-btn" data-id="${user.id}" title="${isSuspended ? 'Reactivate' : 'Suspend'}" ${suspensionBypassed ? 'disabled' : ''}>
                             <i class="ph ${isSuspended ? 'ph-user-check' : 'ph-user-minus'}"></i>
                         </button>
@@ -3230,6 +3617,13 @@ function renderUsers() {
         btn.addEventListener('click', (e) => {
             const id = e.currentTarget.getAttribute('data-id');
             openUserModal(id);
+        });
+    });
+
+    document.querySelectorAll('.view-user-items-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const id = e.currentTarget.getAttribute('data-id');
+            openUserItemsModal(id);
         });
     });
 
@@ -3310,11 +3704,6 @@ function openUserModal(editId = null) {
             <div class="form-group">
                 <label>User ID / Barcode</label>
                 <input type="text" id="user-id" class="form-control" placeholder="e.g. STU-999" ${(isEdit && !canEditBarcode) ? 'disabled' : ''} value="${isEdit ? userToEdit.id : ''}">
-                ${isEdit
-            ? canEditBarcode
-                ? '<small class="text-muted">Teachers and developers can edit this barcode. Changes apply immediately.</small>'
-                : '<small class="text-muted">Only teachers and developers can edit this barcode.</small>'
-            : ''}
             </div>
             <div class="form-group">
                 <label>Full Name</label>
@@ -3359,7 +3748,7 @@ function openUserModal(editId = null) {
         <div class="modal-footer">
             <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
             ${(currentUser.role === 'teacher' && isEdit && userToEdit.role === 'developer') ?
-            `<span class="text-danger text-sm" style="margin-right:1rem"><i class="ph ph-lock"></i> Developer role locked</span>` :
+            `<span class="text-danger text-sm" style="margin-right:1rem">Developer role locked</span>` :
             `<button class="btn btn-primary" id="confirm-user-btn">${isEdit ? 'Save Changes' : 'Add User'}</button>`
         }
         </div>
@@ -3545,6 +3934,73 @@ function openUserModal(editId = null) {
             renderUsers();
         }
     });
+}
+
+function getItemsOutForUser(userId) {
+    if (!userId) return [];
+    const rows = [];
+
+    projects.forEach(project => {
+        project.itemsOut.forEach(io => {
+            const assignedUserId = io.assignedToUserId || project.ownerId;
+            if (assignedUserId !== userId) return;
+
+            const item = inventoryItems.find(i => i.id === io.itemId);
+            rows.push({
+                projectId: project.id,
+                projectName: project.name,
+                quantity: io.quantity,
+                itemId: io.itemId,
+                itemName: item?.name || io.itemId,
+                sku: item?.sku || 'N/A',
+                dueDate: io.dueDate
+            });
+        });
+    });
+
+    rows.sort((a, b) => String(a.itemName).localeCompare(String(b.itemName)));
+    return rows;
+}
+
+function openUserItemsModal(userId) {
+    const user = mockUsers.find(u => u.id === userId);
+    if (!user) return;
+
+    const itemsOut = getItemsOutForUser(userId);
+    const itemsHtml = itemsOut.length === 0
+        ? '<p class="text-muted">No items are currently signed out to this user.</p>'
+        : `<ul class="stock-list">${itemsOut.map(row => {
+            const dueDate = row.dueDate ? new Date(row.dueDate) : null;
+            const dueLabel = dueDate ? dueDate.toLocaleDateString() : 'No due date';
+            const isOverdue = dueDate ? dueDate < new Date() : false;
+            return `
+                <li class="stock-item" style="gap:0.75rem;align-items:flex-start;">
+                    <div>
+                        <strong>${row.itemName} (x${row.quantity})</strong>
+                        <small class="text-muted block">SKU: ${row.sku}</small>
+                        <small class="text-muted block">Project: ${row.projectName}</small>
+                    </div>
+                    <span class="${isOverdue ? 'text-danger' : 'text-warning'} font-bold text-sm" style="white-space:nowrap">
+                        ${isOverdue ? `Overdue (${dueLabel})` : `Due: ${dueLabel}`}
+                    </span>
+                </li>
+            `;
+        }).join('')}</ul>`;
+
+    const html = `
+        <div class="modal-header">
+            <h3>${user.name} - Items Out</h3>
+            <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
+        </div>
+        <div class="modal-body" style="max-height:65vh;overflow-y:auto;">
+            ${itemsHtml}
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+        </div>
+    `;
+
+    openModal(html);
 }
 
 document.getElementById('add-user-btn')?.addEventListener('click', () => openUserModal());
@@ -5389,11 +5845,11 @@ function openKioskLockPreview(startScreenKey = debugConfig.kioskLockScreen || 's
     });
     document.getElementById('kiosk-preview-prev')?.addEventListener('click', () => step(-1));
     document.getElementById('kiosk-preview-next')?.addEventListener('click', () => step(1));
-    document.getElementById('kiosk-preview-lock')?.addEventListener('click', () => {
+    document.getElementById('kiosk-preview-lock')?.addEventListener('click', async () => {
         const chosen = KIOSK_LOCK_SCREEN_ORDER[kioskPreviewState.activeIndex] || 'systemLocked';
         debugConfig.kioskLockScreen = chosen;
         closeKioskLockPreview();
-        applyKioskLock(true, chosen);
+        await applyKioskLock(true, chosen, { syncRemote: true });
         showToast(`Kiosk locked: ${KIOSK_LOCK_SCREENS[chosen].label}.`, 'error');
         closeModal();
     });
@@ -5424,7 +5880,8 @@ function closeKioskLockPreview() {
     }
 }
 
-function applyKioskLock(lock, screenKey = debugConfig.kioskLockScreen || 'systemLocked') {
+async function applyKioskLock(lock, screenKey = debugConfig.kioskLockScreen || 'systemLocked', options = {}) {
+    const syncRemote = options.syncRemote === true;
     debugConfig.kioskLocked = lock;
     debugConfig.kioskLockScreen = Object.keys(KIOSK_LOCK_SCREENS).includes(screenKey)
         ? screenKey
@@ -5458,6 +5915,10 @@ function applyKioskLock(lock, screenKey = debugConfig.kioskLockScreen || 'system
         }
     } else if (overlay) {
         overlay.style.display = 'none';
+    }
+
+    if (syncRemote) {
+        await syncKioskLockStateToSupabase(lock, debugConfig.kioskLockScreen);
     }
 }
 
@@ -5710,10 +6171,10 @@ function renderDebugSession(el) {
     document.getElementById('dbg-kiosk-preview')?.addEventListener('click', () => {
         openKioskLockPreview(debugConfig.kioskLockScreen);
     });
-    document.getElementById('dbg-kiosk')?.addEventListener('click', () => {
+    document.getElementById('dbg-kiosk')?.addEventListener('click', async () => {
         const locking = !debugConfig.kioskLocked;
         const chosen = debugConfig.kioskLockScreen || 'systemLocked';
-        applyKioskLock(locking, chosen);
+        await applyKioskLock(locking, chosen, { syncRemote: true });
         const screenName = getKioskLockScreen(chosen).label;
         showToast(locking ? `Kiosk locked: ${screenName}.` : 'Kiosk unlocked.', locking ? 'error' : 'success');
         if (locking) { closeModal(); } else { renderDebugTab('session'); }
