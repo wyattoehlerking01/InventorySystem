@@ -232,7 +232,8 @@ function openAuthSignInModal() {
             <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
         </div>
         <div class="modal-body">
-            <p class="text-secondary" style="margin-bottom:1rem;">Sign in to load your profile and organization license.</p>
+            <p class="text-secondary" style="margin-bottom:0.5rem;">Optional manual sign-in for debugging/admin access.</p>
+            <p class="text-muted" style="font-size:0.82rem;margin-bottom:1rem;">Use a Supabase Auth email/password user for this project. Barcode login does not use this form.</p>
             <div class="form-group">
                 <label>Email</label>
                 <input id="auth-email" class="form-control" type="email" autocomplete="username" placeholder="you@example.com">
@@ -267,7 +268,17 @@ function openAuthSignInModal() {
         withButtonPending(e.currentTarget, 'Signing In...', async () => {
             const result = await signInWithSupabasePassword(email, password);
             if (!result.ok) {
-                showToast(result.error?.message || 'Sign in failed.', 'error');
+                const raw = String(result.error?.message || 'Sign in failed.');
+                const lowered = raw.toLowerCase();
+                let hint = raw;
+
+                if (lowered.includes('invalid login credentials')) {
+                    hint = 'Invalid credentials. Use a Supabase Auth user email/password (not barcode or dashboard account).';
+                } else if (lowered.includes('email not confirmed')) {
+                    hint = 'Email not confirmed. Confirm the user email in Supabase Auth, or disable confirmation for testing.';
+                }
+
+                showToast(hint, 'error');
                 return;
             }
 
@@ -1266,7 +1277,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     const licensed = await ensureLicensedAccess({ interactive: false, showToast: false });
     if (!licensed) {
-        showToast('Sign in is required before barcode login.', 'error');
+        showToast('Ready for barcode sign-in.', 'info');
     }
 
     // Load all data from Supabase tables before initializing the app
