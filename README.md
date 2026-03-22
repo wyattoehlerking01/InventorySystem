@@ -43,3 +43,6 @@ At this stage, the project is in early development. Feedback, testing results, a
 License
 
 License information will be added in a future release.
+Copyright Information:
+Copyright © 2026 Wyatt Oehlerking. All rights reserved. This software is proprietary and may not be reproduced, distributed, or used without explicit permission from the author.
+Currently used under license. Until further notice, École Secondaire Lacombe Composite High School is granted the right to use this software solely for the purpose of managing the inventory of the Automotive Mechanics, Electro-Technologies, After-School Robotics Program (Also known as the United Robotics of Lacombe or URL). This software is only to be used for non-commercial purposes only whithin these deparments. Furthermore, Any redistribution or modification to/of software, use in unauthorized school enviroments or departments, without my explicit written consent to be considered a breach of this license agreement and use must be ceased immediately.'
