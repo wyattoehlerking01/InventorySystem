@@ -4,14 +4,6 @@
    STATE & INITIALIZATION
    ======================================= */
 let currentUser = null;
-let currentAuthLicenseContext = {
-    session: null,
-    profile: null,
-    organization: null,
-    licenseStatus: 'unknown',
-    licenseMessage: 'Not validated',
-    canAccess: false
-};
 
 const envConfig = window.APP_ENV || {};
 const kioskId = String(envConfig.KIOSK_ID ?? envConfig.kioskId ?? '').trim();
@@ -65,9 +57,6 @@ const barcodeInput = document.getElementById('barcode-input');
 const showHelpBtn = document.getElementById('show-help-btn');
 const backToLoginBtn = document.getElementById('back-to-login-btn');
 const submitHelpBtn = document.getElementById('submit-help-btn');
-const authSignInBtn = document.getElementById('auth-signin-btn');
-const authSignOutBtn = document.getElementById('auth-signout-btn');
-const authStatusBadge = document.getElementById('auth-status-badge');
 
 // DOM Elements - Sidebar & Profile
 const userNameEl = document.getElementById('user-name');
@@ -166,186 +155,6 @@ function withButtonPending(buttonEl, pendingLabel, callback) {
             buttonEl.disabled = false;
             buttonEl.innerHTML = originalHtml;
         });
-}
-
-function setAuthStatusBadge(text, mode = 'neutral') {
-    if (!authStatusBadge) return;
-    authStatusBadge.textContent = text;
-    authStatusBadge.dataset.mode = mode;
-}
-
-function applyAuthLicenseContext(context) {
-    currentAuthLicenseContext = context || {
-        session: null,
-        profile: null,
-        organization: null,
-        licenseStatus: 'unknown',
-        licenseMessage: 'Not validated',
-        canAccess: false
-    };
-
-    if (currentAuthLicenseContext.canAccess) {
-        const orgName = currentAuthLicenseContext.organization?.name || 'Organization';
-        setAuthStatusBadge(`${orgName} licensed`, 'ok');
-    } else {
-        setAuthStatusBadge(currentAuthLicenseContext.licenseMessage || 'Auth required', 'error');
-    }
-}
-
-async function refreshAuthLicenseContext() {
-    if (typeof loadAuthLicenseContext !== 'function') {
-        applyAuthLicenseContext({
-            session: null,
-            profile: null,
-            organization: null,
-            licenseStatus: 'unavailable',
-            licenseMessage: 'Auth context loader is unavailable.',
-            canAccess: false
-        });
-        return currentAuthLicenseContext;
-    }
-
-    const context = await loadAuthLicenseContext();
-    applyAuthLicenseContext(context);
-    return currentAuthLicenseContext;
-}
-
-async function ensureLicensedAccess(options = {}) {
-    const interactive = options.interactive === true;
-    const context = await refreshAuthLicenseContext();
-    if (context.canAccess) return true;
-
-    if (options.showToast !== false) {
-        showToast(context.licenseMessage || 'Sign in is required.', 'error');
-    }
-
-    if (interactive) {
-        openAuthSignInModal();
-    }
-
-    return false;
-}
-
-async function protectRoute() {
-    if (typeof getCurrentAuthSession !== 'function') {
-        return false;
-    }
-
-    const session = await getCurrentAuthSession();
-    if (session) return true;
-
-    returnToLoginView({ showMessage: false });
-    const loginRoute = String(window.APP_ENV?.APP_LOGIN_ROUTE || '').trim();
-    if (loginRoute) {
-        window.location.href = loginRoute;
-    }
-    return false;
-}
-
-function openAuthSignInModal() {
-    const html = `
-        <div class="modal-header">
-            <h3>Supabase Sign In</h3>
-            <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
-        </div>
-        <div class="modal-body">
-            <p class="text-secondary" style="margin-bottom:0.5rem;">Optional manual sign-in for debugging/admin access.</p>
-            <p class="text-muted" style="font-size:0.82rem;margin-bottom:1rem;">Use a Supabase Auth email/password user for this project. Barcode login does not use this form.</p>
-            <div class="form-group">
-                <label>Email</label>
-                <input id="auth-email" class="form-control" type="email" autocomplete="username" placeholder="you@example.com">
-            </div>
-            <div class="form-group">
-                <label>Password</label>
-                <input id="auth-password" class="form-control" type="password" autocomplete="current-password" placeholder="Password">
-            </div>
-        </div>
-        <div class="modal-footer">
-            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-            <button class="btn btn-primary" id="auth-signin-submit">Sign In</button>
-        </div>
-    `;
-
-    openModal(html);
-
-    // Ensure text entry starts in the modal and not in the hidden barcode field.
-    setTimeout(() => {
-        document.getElementById('auth-email')?.focus();
-    }, 0);
-
-    document.getElementById('auth-signin-submit')?.addEventListener('click', async (e) => {
-        const email = String(document.getElementById('auth-email')?.value || '').trim();
-        const password = String(document.getElementById('auth-password')?.value || '');
-
-        if (!email || !password) {
-            showToast('Email and password are required.', 'error');
-            return;
-        }
-
-        if (typeof signInWithSupabasePassword !== 'function') {
-            showToast('Supabase auth helper is unavailable.', 'error');
-            return;
-        }
-
-        withButtonPending(e.currentTarget, 'Signing In...', async () => {
-            const result = await signInWithSupabasePassword(email, password);
-            if (!result.ok) {
-                const raw = String(result.error?.message || 'Sign in failed.');
-                const lowered = raw.toLowerCase();
-                let hint = raw;
-
-                if (lowered.includes('invalid login credentials')) {
-                    hint = 'Invalid credentials. Use a Supabase Auth user email/password (not barcode or dashboard account).';
-                } else if (lowered.includes('email not confirmed')) {
-                    hint = 'Email not confirmed. Confirm the user email in Supabase Auth, or disable confirmation for testing.';
-                }
-
-                showToast(hint, 'error');
-                return;
-            }
-
-            const context = await refreshAuthLicenseContext();
-            if (!context.canAccess) {
-                showToast(context.licenseMessage || 'Access blocked by license policy.', 'error');
-                return;
-            }
-
-            const profileBarcode = String(context.profile?.barcode || '').trim().toUpperCase();
-            if (!profileBarcode) {
-                showToast('Signed in, but your profile has no barcode assigned.', 'error');
-                closeModal();
-                return;
-            }
-
-            try {
-                await loadAllData();
-            } catch (loadErr) {
-                console.error('Data load failed after auth sign-in:', loadErr);
-                showToast('Signed in, but failed to load app data.', 'error');
-                return;
-            }
-
-            const user = await fetchUserByIdFromSupabase(profileBarcode);
-            if (!user) {
-                showToast('Signed in, but no app user matches your profile barcode.', 'error');
-                return;
-            }
-
-            if (user.status === 'Suspended' && !isSuspensionBypassedUser(user)) {
-                showToast('Your account is suspended. Please contact a teacher.', 'error');
-                return;
-            }
-
-            closeModal();
-            login({
-                ...user,
-                authUserId: context.session?.user?.id || null,
-                organizationId: context.profile?.organization_id || null,
-                organization: context.organization || null,
-                licenseStatus: context.licenseStatus || 'unknown'
-            });
-        });
-    });
 }
 
 /* =======================================
@@ -1314,11 +1123,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
     }
 
-    await refreshAuthLicenseContext();
-
-    // Route/session guard for protected app areas.
-    await protectRoute();
-
     const kioskSettings = await fetchKioskSettings(kioskId);
     const licenseValid = await validateAppLicense(kioskSettings.license_hash);
     setRuntimeAppVersion(kioskSettings.app_version);
@@ -1331,19 +1135,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
     }
 
-    const licensed = await ensureLicensedAccess({ interactive: false, showToast: false });
-    if (!licensed) {
-        showToast('Ready for barcode sign-in.', 'info');
-    }
-
     // Load all data from Supabase tables before initializing the app
-    if (licensed) {
-        try {
-            await loadAllData();
-        } catch (error) {
-            console.error('Initial Supabase load failed:', error);
-            showToast('Unable to load data from Supabase. Login may not work until this is fixed.', 'error');
-        }
+    try {
+        await loadAllData();
+    } catch (error) {
+        console.error('Initial Supabase load failed:', error);
+        showToast('Unable to load data from Supabase. Login may not work until this is fixed.', 'error');
     }
 
     // Bring focus to barcode scanner input
@@ -1445,11 +1242,6 @@ async function handleBarcodeLogin(rawId) {
         return;
     }
 
-    if (typeof loginWithBarcode !== 'function') {
-        showToast('Barcode Edge Function helper is unavailable.', 'error');
-        return;
-    }
-
     if (!checkLoginRateLimit()) return;
 
     try {
@@ -1460,8 +1252,6 @@ async function handleBarcodeLogin(rawId) {
             return;
         }
 
-        await refreshAuthLicenseContext();
-
         try {
             await loadAllData();
         } catch (loadError) {
@@ -1469,7 +1259,7 @@ async function handleBarcodeLogin(rawId) {
             showToast('Login succeeded, but data refresh failed.', 'error');
         }
 
-        const user = await fetchUserByIdFromSupabase(id);
+        const user = loginResult.user || null;
         if (user) {
             if (user.status === 'Suspended' && !isSuspensionBypassedUser(user)) {
                 showToast('Your account is suspended. Please contact a teacher.', 'error');
@@ -1484,13 +1274,7 @@ async function handleBarcodeLogin(rawId) {
             }
             clearFailedLoginAttempts();
             try {
-                login({
-                    ...user,
-                    authUserId: currentAuthLicenseContext.session?.user?.id || null,
-                    organizationId: currentAuthLicenseContext.profile?.organization_id || null,
-                    organization: currentAuthLicenseContext.organization || loginResult.organization || null,
-                    licenseStatus: currentAuthLicenseContext.licenseStatus || 'unknown'
-                });
+                login(user);
             } catch (loginError) {
                 console.error('Login transition failed:', loginError);
                 showToast('Login succeeded but dashboard failed to load.', 'error');
@@ -1795,17 +1579,6 @@ function returnToLoginView(options = {}) {
 }
 
 logoutBtn.addEventListener('click', () => logout());
-authSignInBtn?.addEventListener('click', () => openAuthSignInModal());
-authSignOutBtn?.addEventListener('click', async () => {
-    if (typeof signOutSupabaseAuth !== 'function') {
-        showToast('Supabase auth helper is unavailable.', 'error');
-        return;
-    }
-
-    await signOutSupabaseAuth();
-    await refreshAuthLicenseContext();
-    returnToLoginView({ message: 'Supabase auth session signed out.' });
-});
 
 /* =======================================
    ROUTING
@@ -1897,15 +1670,6 @@ async function refreshPageDataFromSupabase(targetId) {
 }
 
 async function switchPage(targetId, title) {
-    const hasSession = await protectRoute();
-    if (!hasSession) return;
-
-    const licensed = await ensureLicensedAccess({ interactive: false, showToast: true });
-    if (!licensed) {
-        returnToLoginView({ message: 'Session blocked by profile/license policy.' });
-        return;
-    }
-
     if (targetId === 'orders' && !canCurrentUserViewOrders()) {
         showToast('Orders view is disabled for students.', 'error');
         return;

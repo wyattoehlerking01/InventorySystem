@@ -36,275 +36,26 @@ function createUuid() {
         return v.toString(16);
     });
 }
-
-/* =======================================
-   AUTH & LICENSE CONTEXT
-   ======================================= */
-
-let authLicenseContext = {
-    session: null,
-    profile: null,
-    organization: null,
-    licenseStatus: 'unknown',
-    licenseMessage: 'Not validated',
-    canAccess: false
-};
-
-function getAuthLicenseContext() {
-    return authLicenseContext;
-}
-
-async function getCurrentAuthSession() {
-    const client = requireSupabaseClient('getCurrentAuthSession');
-    const { data, error } = await client.auth.getSession();
-    if (error) {
-        console.error('Failed to fetch auth session:', error);
-        return null;
-    }
-    return data?.session || null;
-}
-
-function evaluateLicenseStatus(org) {
-    if (!org) {
-        return {
-            licenseStatus: 'missing',
-            canAccess: false,
-            message: 'No organization record is associated with this account.'
-        };
-    }
-
-    const status = String(org.license_status || '').toLowerCase();
-    const expiresAt = org.license_expires_at ? new Date(org.license_expires_at) : null;
-    const expiredByDate = !!(expiresAt && Number.isFinite(expiresAt.getTime()) && expiresAt.getTime() <= Date.now());
-
-    if (status !== 'active') {
-        return {
-            licenseStatus: status || 'unknown',
-            canAccess: false,
-            message: `Organization license is ${status || 'unknown'}.`
-        };
-    }
-
-    if (expiredByDate) {
-        return {
-            licenseStatus: 'expired',
-            canAccess: false,
-            message: 'Organization license has expired.'
-        };
-    }
-
-    return {
-        licenseStatus: 'active',
-        canAccess: true,
-        message: 'Organization license is active.'
-    };
-}
-
-async function loadAuthLicenseContext() {
-    const client = requireSupabaseClient('loadAuthLicenseContext');
-    const session = await getCurrentAuthSession();
-
-    if (!session?.user?.id) {
-        authLicenseContext = {
-            session: null,
-            profile: null,
-            organization: null,
-            licenseStatus: 'signed_out',
-            licenseMessage: 'No active Supabase auth session found.',
-            canAccess: false
-        };
-        return authLicenseContext;
-    }
-
-    const { data, error } = await client
-        .from('profiles')
-        .select('id, organization_id, is_active, barcode, organizations:organization_id(id, name, license_status, license_expires_at)')
-        .eq('id', session.user.id)
-        .maybeSingle();
-
-    if (error) {
-        console.error('Failed loading profile + organization:', error);
-        authLicenseContext = {
-            session,
-            profile: null,
-            organization: null,
-            licenseStatus: 'lookup_failed',
-            licenseMessage: 'Unable to verify organization license for this account.',
-            canAccess: false
-        };
-        return authLicenseContext;
-    }
-
-    const profile = data || null;
-    const organization = profile?.organizations || null;
-
-    if (!profile) {
-        authLicenseContext = {
-            session,
-            profile: null,
-            organization,
-            licenseStatus: 'profile_missing',
-            licenseMessage: 'No profile is linked to this auth account.',
-            canAccess: false
-        };
-        return authLicenseContext;
-    }
-
-    if (!profile.is_active) {
-        authLicenseContext = {
-            session,
-            profile,
-            organization,
-            licenseStatus: 'user_inactive',
-            licenseMessage: 'Your user profile is inactive.',
-            canAccess: false
-        };
-        return authLicenseContext;
-    }
-
-    const licenseEval = evaluateLicenseStatus(organization);
-    authLicenseContext = {
-        session,
-        profile,
-        organization,
-        licenseStatus: licenseEval.licenseStatus,
-        licenseMessage: licenseEval.message,
-        canAccess: !!licenseEval.canAccess
-    };
-
-    return authLicenseContext;
-}
-
-async function signInWithSupabasePassword(email, password) {
-    const client = requireSupabaseClient('signInWithSupabasePassword');
-    const { data, error } = await client.auth.signInWithPassword({
-        email,
-        password
-    });
-
-    if (error) {
-        console.error('Supabase sign-in failed:', error);
-        return { ok: false, error };
-    }
-
-    await loadAuthLicenseContext();
-    return { ok: true, session: data?.session || null };
-}
-
-function getBarcodeLoginFunctionUrl() {
-    const configured = String(window.APP_ENV?.BARCODE_LOGIN_FUNCTION_URL || '').trim();
-    if (configured) return configured;
-
-    if (SUPABASE_URL) {
-        return `${String(SUPABASE_URL).replace(/\/$/, '')}/functions/v1/barcode-login`;
-    }
-
-    return '/edge-functions/barcode-login';
-}
-
-async function signInWithBarcodeEdgeFunction(scannedBarcode) {
-    const client = requireSupabaseClient('signInWithBarcodeEdgeFunction');
-    const barcode = String(scannedBarcode || '').trim();
-    if (!barcode) {
-        return { ok: false, error: { message: 'Barcode is required.' } };
-    }
-
-    const endpoint = getBarcodeLoginFunctionUrl();
-
-    let response;
-    try {
-        response = await fetch(endpoint, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                apikey: SUPABASE_KEY,
-                Authorization: `Bearer ${SUPABASE_KEY}`
-            },
-            body: JSON.stringify({ barcode })
-        });
-    } catch (error) {
-        console.error('Barcode login Edge Function request failed:', error);
-        return { ok: false, error: { message: 'Unable to reach barcode login service.' } };
-    }
-
-    let payload = null;
-    try {
-        payload = await response.json();
-    } catch {
-        payload = null;
-    }
-
-    if (!response.ok || !payload?.session) {
-        return {
-            ok: false,
-            error: {
-                message: payload?.error || 'Barcode login failed.'
-            },
-            data: payload
-        };
-    }
-
-    const session = payload.session;
-    const { error: sessionError } = await client.auth.setSession(session);
-    if (sessionError) {
-        console.error('Failed to set Supabase session from barcode login:', sessionError);
-        return { ok: false, error: { message: 'Failed to apply auth session.' }, data: payload };
-    }
-
-    const context = await loadAuthLicenseContext();
-    if (!context.canAccess) {
-        return {
-            ok: false,
-            error: { message: context.licenseMessage || 'Access blocked by license policy.' },
-            data: payload
-        };
-    }
-
-    return {
-        ok: true,
-        session,
-        user: payload.user || null,
-        organization: payload.organization || null,
-        context,
-        data: payload
-    };
-}
-
 async function loginWithBarcode(barcode) {
     try {
-        const result = await signInWithBarcodeEdgeFunction(barcode);
-        if (!result.ok) {
-            return { error: result.error?.message || 'Login failed' };
+        const normalizedBarcode = String(barcode || '').trim().toUpperCase();
+        if (!normalizedBarcode) {
+            return { error: 'Barcode is required' };
+        }
+
+        const user = await fetchUserByIdFromSupabase(normalizedBarcode);
+        if (!user) {
+            return { error: 'Invalid barcode scanned.' };
         }
 
         return {
-            user: result.user,
-            profile: result.context?.profile || null,
-            organization: result.organization || result.context?.organization || null,
+            user,
             error: null
         };
     } catch (err) {
         console.error('loginWithBarcode failed:', err);
         return { error: 'Login failed' };
     }
-}
-
-async function signOutSupabaseAuth() {
-    const client = requireSupabaseClient('signOutSupabaseAuth');
-    const { error } = await client.auth.signOut();
-    if (error) {
-        console.warn('Supabase auth sign-out failed:', error);
-        return false;
-    }
-    authLicenseContext = {
-        session: null,
-        profile: null,
-        organization: null,
-        licenseStatus: 'signed_out',
-        licenseMessage: 'Signed out.',
-        canAccess: false
-    };
-    return true;
 }
 
 /* =======================================
@@ -331,11 +82,6 @@ let orderRequests = [];
  */
 async function loadAllData() {
     requireSupabaseClient('loadAllData');
-
-    const access = await loadAuthLicenseContext();
-    if (!access.canAccess) {
-        throw new Error(access.licenseMessage || 'Auth/license check failed.');
-    }
 
     try {
         await Promise.all([
@@ -386,10 +132,6 @@ async function refreshUsersFromSupabase() {
  */
 async function fetchUserByIdFromSupabase(userId) {
     const client = requireSupabaseClient('fetchUserByIdFromSupabase');
-    const access = await loadAuthLicenseContext();
-    if (!access.canAccess) {
-        throw new Error(access.licenseMessage || 'Auth/license check failed.');
-    }
 
     const { data, error } = await client
         .from('users')
