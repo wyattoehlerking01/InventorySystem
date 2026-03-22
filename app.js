@@ -288,9 +288,40 @@ function openAuthSignInModal() {
                 return;
             }
 
-            showToast('Auth session established. Scan your barcode to continue.', 'success');
+            const profileBarcode = String(context.profile?.barcode || '').trim().toUpperCase();
+            if (!profileBarcode) {
+                showToast('Signed in, but your profile has no barcode assigned.', 'error');
+                closeModal();
+                return;
+            }
+
+            try {
+                await loadAllData();
+            } catch (loadErr) {
+                console.error('Data load failed after auth sign-in:', loadErr);
+                showToast('Signed in, but failed to load app data.', 'error');
+                return;
+            }
+
+            const user = await fetchUserByIdFromSupabase(profileBarcode);
+            if (!user) {
+                showToast('Signed in, but no app user matches your profile barcode.', 'error');
+                return;
+            }
+
+            if (user.status === 'Suspended' && !isSuspensionBypassedUser(user)) {
+                showToast('Your account is suspended. Please contact a teacher.', 'error');
+                return;
+            }
+
             closeModal();
-            barcodeInput.focus();
+            login({
+                ...user,
+                authUserId: context.session?.user?.id || null,
+                organizationId: context.profile?.organization_id || null,
+                organization: context.organization || null,
+                licenseStatus: context.licenseStatus || 'unknown'
+            });
         });
     });
 }
