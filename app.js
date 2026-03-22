@@ -267,6 +267,11 @@ function openAuthSignInModal() {
 
     openModal(html);
 
+    // Ensure text entry starts in the modal and not in the hidden barcode field.
+    setTimeout(() => {
+        document.getElementById('auth-email')?.focus();
+    }, 0);
+
     document.getElementById('auth-signin-submit')?.addEventListener('click', async (e) => {
         const email = String(document.getElementById('auth-email')?.value || '').trim();
         const password = String(document.getElementById('auth-password')?.value || '');
@@ -4548,6 +4553,14 @@ modalContainer.addEventListener('click', (e) => {
     if (e.target === modalContainer) {
         closeModal();
     }
+});
+
+// Keep modal interactions isolated from global document/login click handlers.
+dynamicModal.addEventListener('click', (e) => {
+    e.stopPropagation();
+});
+dynamicModal.addEventListener('mousedown', (e) => {
+    e.stopPropagation();
 });
 
 // Setup Add Item flow
