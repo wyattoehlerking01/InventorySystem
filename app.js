@@ -493,6 +493,7 @@ function bindAppInfoTriggers() {
     document.getElementById('app-login-name')?.addEventListener('click', openAppInfoMenu);
     document.getElementById('app-sidebar-name')?.addEventListener('click', openAppInfoMenu);
     document.getElementById('app-info-trigger')?.addEventListener('click', openAppInfoMenu);
+    document.getElementById('app-version-login')?.addEventListener('click', openAppInfoMenu);
 }
 
 async function sha256Hex(input) {
@@ -5573,7 +5574,7 @@ let _dbgTapCount = 0, _dbgTapTimer = null;
 (function _createDebugTapZone() {
     const zone = document.createElement('div');
     zone.id = 'debug-tap-zone';
-    zone.style.cssText = 'position:fixed;bottom:0;left:0;width:64px;height:64px;z-index:10001;-webkit-tap-highlight-color:transparent;user-select:none;pointer-events:all;';
+    zone.style.cssText = 'position:fixed;bottom:0;left:0;width:64px;height:64px;z-index:950;-webkit-tap-highlight-color:transparent;user-select:none;pointer-events:all;';
     zone.addEventListener('click', () => {
         _dbgTapCount++;
         if (_dbgTapTimer) clearTimeout(_dbgTapTimer);
