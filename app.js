@@ -225,6 +225,22 @@ async function ensureLicensedAccess(options = {}) {
     return false;
 }
 
+async function protectRoute() {
+    if (typeof getCurrentAuthSession !== 'function') {
+        return false;
+    }
+
+    const session = await getCurrentAuthSession();
+    if (session) return true;
+
+    returnToLoginView({ showMessage: false });
+    const loginRoute = String(window.APP_ENV?.APP_LOGIN_ROUTE || '').trim();
+    if (loginRoute) {
+        window.location.href = loginRoute;
+    }
+    return false;
+}
+
 function openAuthSignInModal() {
     const html = `
         <div class="modal-header">
@@ -1294,6 +1310,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     await refreshAuthLicenseContext();
 
+    // Route/session guard for protected app areas.
+    await protectRoute();
+
     const kioskSettings = await fetchKioskSettings(kioskId);
     const licenseValid = await validateAppLicense(kioskSettings.license_hash);
     setRuntimeAppVersion(kioskSettings.app_version);
@@ -1324,7 +1343,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Bring focus to barcode scanner input
     if (barcodeInput) {
         barcodeInput.focus();
-        document.addEventListener('click', () => {
+        document.addEventListener('click', (e) => {
+            const modalOpen = modalContainer && !modalContainer.classList.contains('hidden');
+            if (modalOpen) return;
+
+            const target = e.target;
+            const isInteractive = target?.closest?.('input, textarea, select, button, [contenteditable="true"]');
+            if (isInteractive) return;
+
             if (!currentUser && !loginView.classList.contains('hidden')) {
                 barcodeInput.focus();
             }
@@ -1538,6 +1564,18 @@ document.addEventListener('keydown', async (e) => {
     if (currentUser) return;
     if (loginView.classList.contains('hidden')) return;
     if (loginHelpView && !loginHelpView.classList.contains('hidden')) return;
+    if (modalContainer && !modalContainer.classList.contains('hidden')) return;
+
+    const active = document.activeElement;
+    if (active && (
+        active.tagName === 'INPUT' ||
+        active.tagName === 'TEXTAREA' ||
+        active.tagName === 'SELECT' ||
+        active.isContentEditable
+    )) {
+        return;
+    }
+
     if (document.activeElement === barcodeInput) return;
     if (e.ctrlKey || e.metaKey || e.altKey) return;
 
@@ -1560,6 +1598,8 @@ document.addEventListener('keydown', async (e) => {
 
 // Enforce focus on barcode input when clicking anywhere on the login view (except buttons)
 document.getElementById('login-view')?.addEventListener('click', (e) => {
+    if (modalContainer && !modalContainer.classList.contains('hidden')) return;
+
     if (e.target.tagName !== 'BUTTON' && !e.target.closest('button')) {
         barcodeInput.focus();
     }
@@ -1841,6 +1881,9 @@ async function refreshPageDataFromSupabase(targetId) {
 }
 
 async function switchPage(targetId, title) {
+    const hasSession = await protectRoute();
+    if (!hasSession) return;
+
     const licensed = await ensureLicensedAccess({ interactive: false, showToast: true });
     if (!licensed) {
         returnToLoginView({ message: 'Session blocked by profile/license policy.' });

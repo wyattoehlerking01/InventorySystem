@@ -7,7 +7,12 @@ const { SUPABASE_URL, SUPABASE_KEY } = window.APP_ENV || {};
 let dbClient = null;
 try {
     if (SUPABASE_URL && SUPABASE_KEY && window.supabase && typeof window.supabase.createClient === 'function') {
-        dbClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+        dbClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
+            auth: {
+                persistSession: false,
+                autoRefreshToken: false
+            }
+        });
     }
 } catch (e) {
     console.error('Supabase createClient failed:', e);
