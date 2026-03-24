@@ -458,8 +458,21 @@ h6 {
     padding: 1.5rem 1rem;
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    gap: 0.9rem;
     overflow-y: auto;
+}
+
+.sidebar-nav-main,
+.sidebar-nav-bottom {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.sidebar-nav-bottom {
+    margin-top: auto;
+    padding-top: 0.8rem;
+    border-top: 1px solid var(--glass-border);
 }
 
 .nav-btn {
@@ -1385,6 +1398,10 @@ h6 {
 
 .basket-item:hover {
     background: rgba(255, 255, 255, 0.05);
+}
+
+.basket-qty-input {
+    text-align: center;
 }
 
 @keyframes slideInRight {

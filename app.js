@@ -36,7 +36,7 @@ const defaultDuePolicy = {
     defaultSignoutMinutes: 80,
     timezone: 'America/Edmonton',
     periodRanges: [
-        { start: '08:00', end: '08:55', dueMode: 'at_period_end', dueMinutesBeforeEnd: 0 }
+        { start: '08:00', end: '08:55', dueAtTime: '08:55' }
     ]
 };
 
@@ -86,9 +86,9 @@ let ordersStudentViewEnabled = localStorage.getItem(ordersStudentViewStorageKey)
     : localStorage.getItem(ordersStudentViewStorageKey) === 'true';
 
 let inventorySearchTerm = '';
-let inventoryCategoryFilter = 'All';
-let inventorySupplierFilter = 'All';
-let inventoryBrandFilter = 'All';
+let inventoryCategoryFilter = '';
+let inventorySupplierFilter = '';
+let inventoryBrandFilter = '';
 let ordersTabMode = 'all';
 
 // Modals & Toasts
@@ -228,19 +228,31 @@ function normalizeDuePolicy(policy) {
     const ranges = Array.isArray(policy?.periodRanges) ? policy.periodRanges : fallbackRanges;
     const normalizedRanges = ranges
         .map(range => {
-            const rawMode = String(range?.dueMode || '').trim();
-            const dueMode = rawMode === 'minutes_before_end'
-                ? 'minutes_before_end'
-                : 'at_period_end';
+            const start = range?.start || '';
+            const end = range?.end || '';
+            const startMinutes = parseTimeToMinutes(start);
+            const endMinutes = parseTimeToMinutes(end);
+
+            let resolvedDueAt = String(range?.dueAtTime || '').slice(0, 5);
+            const dueAtFromLegacyMode = String(range?.dueMode || '').trim();
+
+            // Backward compatibility: convert old mode-based rows to an explicit due-at time.
+            if (!resolvedDueAt && startMinutes !== null && endMinutes !== null) {
+                if (dueAtFromLegacyMode === 'minutes_before_end') {
+                    const minutesBefore = Math.max(0, parseInt(range?.dueMinutesBeforeEnd, 10) || 0);
+                    const target = Math.max(startMinutes, endMinutes - minutesBefore);
+                    const hh = String(Math.floor(target / 60)).padStart(2, '0');
+                    const mm = String(target % 60).padStart(2, '0');
+                    resolvedDueAt = `${hh}:${mm}`;
+                } else {
+                    resolvedDueAt = end;
+                }
+            }
 
             return {
-                start: range?.start || '',
-                end: range?.end || '',
-                dueMode,
-                dueMinutesBeforeEnd: dueMode === 'minutes_before_end'
-                    ? Math.max(0, parseInt(range?.dueMinutesBeforeEnd, 10) || 0)
-                    : 0,
-                dueAtTime: ''
+                start,
+                end,
+                dueAtTime: resolvedDueAt || end
             };
         })
         .filter(range => parseTimeToMinutes(range.start) !== null && parseTimeToMinutes(range.end) !== null);
@@ -351,19 +363,19 @@ function calculateDueDate(signoutDate = new Date(), user = currentUser, project 
 
     const matchingRange = getMatchingPolicyRange(signoutDate, duePolicy);
     if (matchingRange) {
-        const rangeModeDueDate = resolveDueDateFromMode(
+        const classDueDate = resolveDueDateFromMode(
             signoutDate,
             duePolicy,
             matchingRange,
-            matchingRange.dueMode,
-            matchingRange.dueMinutesBeforeEnd,
+            'due_at_time',
+            0,
             matchingRange.dueAtTime
         );
 
-        if (rangeModeDueDate) {
-            dueDate = rangeModeDueDate;
+        if (classDueDate) {
+            dueDate = classDueDate;
         } else {
-            const fallbackRangeDueDate = resolveDueDateFromMode(
+            const fallbackToPeriodEnd = resolveDueDateFromMode(
                 signoutDate,
                 duePolicy,
                 matchingRange,
@@ -371,7 +383,7 @@ function calculateDueDate(signoutDate = new Date(), user = currentUser, project 
                 0,
                 ''
             );
-            dueDate = fallbackRangeDueDate || dueDate;
+            dueDate = fallbackToPeriodEnd || dueDate;
         }
     } else {
         dueDate.setMinutes(dueDate.getMinutes() + duePolicy.defaultSignoutMinutes);
@@ -418,22 +430,18 @@ function buildTimezoneOptionsHtml(selectedTz) {
     ).join('');
 }
 
-function buildPeriodRowHtml(start = '', end = '', dueMode = 'at_period_end', dueMinutesBeforeEnd = 15) {
+function buildPeriodRowHtml(start = '', end = '', dueAtTime = '') {
     return `
-        <div class="period-row" style="display:grid;grid-template-columns:1fr 1fr 220px 110px 36px;gap:0.5rem;align-items:center;margin-bottom:0.5rem">
+        <div class="period-row" style="display:grid;grid-template-columns:1fr 1fr 1fr 36px;gap:0.5rem;align-items:center;margin-bottom:0.5rem">
             <input type="time" class="form-control period-start" value="${start}" title="Period start time">
             <input type="time" class="form-control period-end" value="${end}" title="Period end time">
-            <select class="form-control period-due-mode" title="How due time is calculated in this period">
-                <option value="at_period_end" ${dueMode === 'at_period_end' ? 'selected' : ''}>Due At Period End</option>
-                <option value="minutes_before_end" ${dueMode === 'minutes_before_end' ? 'selected' : ''}>Due Minutes Before End</option>
-            </select>
-            <input type="number" class="form-control period-due-minutes" min="0" value="${Math.max(0, parseInt(dueMinutesBeforeEnd, 10) || 0)}" title="Minutes before period end" ${dueMode === 'minutes_before_end' ? '' : 'disabled'}>
+            <input type="time" class="form-control period-due-at" value="${dueAtTime || end || ''}" title="Due back time for this period">
             <button type="button" class="btn btn-secondary remove-period-row-btn" style="padding:0.25rem 0.5rem" title="Remove period"><i class="ph ph-trash"></i></button>
         </div>`;
 }
 
 function buildPeriodRowsHtml(periodRanges) {
-    return periodRanges.map(r => buildPeriodRowHtml(r.start, r.end, r.dueMode, r.dueMinutesBeforeEnd)).join('');
+    return periodRanges.map(r => buildPeriodRowHtml(r.start, r.end, r.dueAtTime)).join('');
 }
 
 function collectPeriodRowsFromModal(containerId) {
@@ -442,42 +450,25 @@ function collectPeriodRowsFromModal(containerId) {
     rows.forEach(row => {
         const start = row.querySelector('.period-start').value;
         const end = row.querySelector('.period-end').value;
-        const dueMode = row.querySelector('.period-due-mode')?.value === 'minutes_before_end'
-            ? 'minutes_before_end'
-            : 'at_period_end';
-        const dueMinutesBeforeEnd = Math.max(0, parseInt(row.querySelector('.period-due-minutes')?.value, 10) || 0);
-        if (parseTimeToMinutes(start) !== null && parseTimeToMinutes(end) !== null) {
-            ranges.push({ start, end, dueMode, dueMinutesBeforeEnd });
+        const dueAtTime = row.querySelector('.period-due-at')?.value || '';
+        if (
+            parseTimeToMinutes(start) !== null
+            && parseTimeToMinutes(end) !== null
+            && parseTimeToMinutes(dueAtTime) !== null
+        ) {
+            ranges.push({ start, end, dueAtTime });
         }
     });
     return ranges;
-}
-
-function syncPeriodRowDueMinutesState(row) {
-    const dueModeEl = row?.querySelector('.period-due-mode');
-    const dueMinutesEl = row?.querySelector('.period-due-minutes');
-    if (!dueModeEl || !dueMinutesEl) return;
-
-    const useMinutesBeforeEnd = dueModeEl.value === 'minutes_before_end';
-    dueMinutesEl.disabled = !useMinutesBeforeEnd;
-    if (!useMinutesBeforeEnd) dueMinutesEl.value = '0';
 }
 
 function attachPeriodRowHandlers(containerId, addBtnId) {
     const container = document.getElementById(containerId);
     const addBtn = document.getElementById(addBtnId);
     if (container) {
-        container.querySelectorAll('.period-row').forEach(syncPeriodRowDueMinutesState);
-
         container.addEventListener('click', e => {
             const removeBtn = e.target.closest('.remove-period-row-btn');
             if (removeBtn) removeBtn.closest('.period-row').remove();
-        });
-
-        container.addEventListener('change', e => {
-            if (!e.target.classList.contains('period-due-mode')) return;
-            const row = e.target.closest('.period-row');
-            if (row) syncPeriodRowDueMinutesState(row);
         });
     }
 
@@ -485,10 +476,8 @@ function attachPeriodRowHandlers(containerId, addBtnId) {
         addBtn.addEventListener('click', () => {
             if (!container) return;
             const div = document.createElement('div');
-            div.innerHTML = buildPeriodRowHtml('', '', 'at_period_end', 0);
-            const row = div.firstElementChild;
-            container.appendChild(row);
-            syncPeriodRowDueMinutesState(row);
+            div.innerHTML = buildPeriodRowHtml('', '', '');
+            container.appendChild(div.firstElementChild);
         });
     }
 }
@@ -1154,7 +1143,7 @@ function renderBasket() {
                     <div class="text-xs text-muted" style="display:flex;align-items:center;gap:0.35rem;flex-wrap:wrap;">
                         <span>Quantity:</span>
                         <button class="icon-btn basket-qty-minus" data-id="${item.id}" title="Decrease quantity" style="width:24px;height:24px;min-width:24px;"><i class="ph ph-minus"></i></button>
-                        <input type="number" min="1" class="form-control basket-qty-input" data-id="${item.id}" value="${item.qty}" style="width:68px;padding:0.2rem 0.35rem;height:auto;">
+                        <input type="number" min="1" class="form-control basket-qty-input" data-id="${item.id}" value="${item.qty}" style="width:68px;padding:0.2rem 0.35rem;height:auto;text-align:center;">
                         <button class="icon-btn basket-qty-plus" data-id="${item.id}" title="Increase quantity" style="width:24px;height:24px;min-width:24px;"><i class="ph ph-plus"></i></button>
                     </div>
                 </div>
@@ -1954,6 +1943,7 @@ function logout(message = 'Logged out successfully') {
     _trackLogout();
     currentUser = null;
     inventoryBasket = [];
+    toggleBasket(false);
     clearInterval(countdownInterval);
     mainView.classList.remove('active');
     setTimeout(() => {
@@ -1980,6 +1970,7 @@ function returnToLoginView(options = {}) {
     if (currentUser) _trackLogout();
     currentUser = null;
     inventoryBasket = [];
+    toggleBasket(false);
     clearInterval(countdownInterval);
 
     mainView.classList.remove('active');
@@ -2679,25 +2670,28 @@ function renderInventory(filterStr = 'All') {
     const supplierSelect = document.getElementById('inventory-supplier-filter');
     const brandSelect = document.getElementById('inventory-brand-filter');
 
-    inventoryCategoryFilter = categorySelect?.value || filterStr;
-    inventorySupplierFilter = supplierSelect?.value || 'All';
-    inventoryBrandFilter = brandSelect?.value || 'All';
+    inventoryCategoryFilter = String(categorySelect?.value || (filterStr === 'All' ? '' : filterStr)).trim();
+    inventorySupplierFilter = String(supplierSelect?.value || '').trim();
+    inventoryBrandFilter = String(brandSelect?.value || '').trim();
     inventorySearchTerm = String(document.getElementById('inventory-search')?.value || '').trim().toLowerCase();
 
     let filtered = currentUser.role === 'student'
         ? inventoryItems.filter(item => canUserSeeItem(currentUser, item))
         : inventoryItems;
 
-    if (inventoryCategoryFilter !== 'All') {
-        filtered = filtered.filter(i => i.category === inventoryCategoryFilter);
+    if (inventoryCategoryFilter) {
+        const categoryNeedle = inventoryCategoryFilter.toLowerCase();
+        filtered = filtered.filter(i => String(i.category || 'Uncategorized').toLowerCase().includes(categoryNeedle));
     }
 
-    if (inventorySupplierFilter !== 'All') {
-        filtered = filtered.filter(i => String(i.supplier || 'Unspecified') === inventorySupplierFilter);
+    if (inventorySupplierFilter) {
+        const supplierNeedle = inventorySupplierFilter.toLowerCase();
+        filtered = filtered.filter(i => String(i.supplier || 'Unspecified').toLowerCase().includes(supplierNeedle));
     }
 
-    if (inventoryBrandFilter !== 'All') {
-        filtered = filtered.filter(i => String(i.brand || 'Unspecified') === inventoryBrandFilter);
+    if (inventoryBrandFilter) {
+        const brandNeedle = inventoryBrandFilter.toLowerCase();
+        filtered = filtered.filter(i => String(i.brand || 'Unspecified').toLowerCase().includes(brandNeedle));
     }
 
     if (inventorySearchTerm) {
@@ -2831,44 +2825,44 @@ function renderInventory(filterStr = 'All') {
 }
 
 function rebuildInventoryFilterOptions() {
-    const categorySelect = document.getElementById('inventory-category-filter');
-    const supplierSelect = document.getElementById('inventory-supplier-filter');
-    const brandSelect = document.getElementById('inventory-brand-filter');
-    if (!categorySelect || !supplierSelect || !brandSelect) return;
+    const categoryInput = document.getElementById('inventory-category-filter');
+    const supplierInput = document.getElementById('inventory-supplier-filter');
+    const brandInput = document.getElementById('inventory-brand-filter');
+    const categoryOptions = document.getElementById('inventory-category-filter-options');
+    const supplierOptions = document.getElementById('inventory-supplier-filter-options');
+    const brandOptions = document.getElementById('inventory-brand-filter-options');
+    if (!categoryInput || !supplierInput || !brandInput || !categoryOptions || !supplierOptions || !brandOptions) return;
 
     const uniqueCategories = [...new Set(inventoryItems.map(i => String(i.category || 'Uncategorized')))].sort((a, b) => a.localeCompare(b));
     const uniqueSuppliers = [...new Set(inventoryItems.map(i => String(i.supplier || 'Unspecified')))].sort((a, b) => a.localeCompare(b));
     const uniqueBrands = [...new Set(inventoryItems.map(i => String(i.brand || 'Unspecified')))].sort((a, b) => a.localeCompare(b));
 
-    categorySelect.innerHTML = '<option value="All">All Categories</option>' +
-        uniqueCategories.map(c => `<option value="${c}">${c}</option>`).join('');
-    supplierSelect.innerHTML = '<option value="All">All Suppliers</option>' +
-        uniqueSuppliers.map(s => `<option value="${s}">${s}</option>`).join('');
-    brandSelect.innerHTML = '<option value="All">All Brands</option>' +
-        uniqueBrands.map(b => `<option value="${b}">${b}</option>`).join('');
+    categoryOptions.innerHTML = uniqueCategories.map(c => `<option value="${escapeHtml(c)}"></option>`).join('');
+    supplierOptions.innerHTML = uniqueSuppliers.map(s => `<option value="${escapeHtml(s)}"></option>`).join('');
+    brandOptions.innerHTML = uniqueBrands.map(b => `<option value="${escapeHtml(b)}"></option>`).join('');
 
-    categorySelect.value = inventoryCategoryFilter || 'All';
-    supplierSelect.value = inventorySupplierFilter || 'All';
-    brandSelect.value = inventoryBrandFilter || 'All';
+    categoryInput.value = inventoryCategoryFilter || '';
+    supplierInput.value = inventorySupplierFilter || '';
+    brandInput.value = inventoryBrandFilter || '';
 }
 
-document.getElementById('inventory-category-filter')?.addEventListener('change', () => {
+document.getElementById('inventory-category-filter')?.addEventListener('input', () => {
     inventoryCategoryFilter = document.getElementById('inventory-category-filter').value;
-    renderInventory(inventoryCategoryFilter);
+    renderInventory();
 });
 
-document.getElementById('inventory-supplier-filter')?.addEventListener('change', () => {
+document.getElementById('inventory-supplier-filter')?.addEventListener('input', () => {
     inventorySupplierFilter = document.getElementById('inventory-supplier-filter').value;
-    renderInventory(inventoryCategoryFilter);
+    renderInventory();
 });
 
-document.getElementById('inventory-brand-filter')?.addEventListener('change', () => {
+document.getElementById('inventory-brand-filter')?.addEventListener('input', () => {
     inventoryBrandFilter = document.getElementById('inventory-brand-filter').value;
-    renderInventory(inventoryCategoryFilter);
+    renderInventory();
 });
 
 document.getElementById('inventory-search')?.addEventListener('input', () => {
-    renderInventory(inventoryCategoryFilter);
+    renderInventory();
 });
 
 document.getElementById('request-item-btn')?.addEventListener('click', () => {
@@ -4042,18 +4036,17 @@ function openEditClassModal(classId) {
             </div>
             <div class="form-group">
                 <label>Class Periods</label>
-                <div style="display:grid;grid-template-columns:1fr 1fr 220px 110px 36px;gap:0.5rem;margin-bottom:0.25rem">
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr 36px;gap:0.5rem;margin-bottom:0.25rem">
                     <span class="text-muted" style="font-size:0.8rem">Start</span>
                     <span class="text-muted" style="font-size:0.8rem">End</span>
-                    <span class="text-muted" style="font-size:0.8rem">Due Rule</span>
-                    <span class="text-muted" style="font-size:0.8rem">Mins Before</span>
+                    <span class="text-muted" style="font-size:0.8rem">Due Back Time</span>
                     <span></span>
                 </div>
                 <div id="edit-class-period-rows">${buildPeriodRowsHtml(classDuePolicy.periodRanges)}</div>
                 <button type="button" id="edit-class-add-period-btn" class="btn btn-secondary" style="margin-top:0.5rem">
                     <i class="ph ph-plus"></i> Add Period
                 </button>
-                <small class="text-muted" style="display:block;margin-top:0.4rem">Set each period to be due at period end or a number of minutes before period end.</small>
+                <small class="text-muted" style="display:block;margin-top:0.4rem">If a sign-out happens during a period range, it is due at that row's Due Back Time.</small>
             </div>
         </div>
         <div class="modal-footer">
@@ -4195,18 +4188,17 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
             </div>
             <div class="form-group">
                 <label>Class Periods</label>
-                <div style="display:grid;grid-template-columns:1fr 1fr 220px 110px 36px;gap:0.5rem;margin-bottom:0.25rem">
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr 36px;gap:0.5rem;margin-bottom:0.25rem">
                     <span class="text-muted" style="font-size:0.8rem">Start</span>
                     <span class="text-muted" style="font-size:0.8rem">End</span>
-                    <span class="text-muted" style="font-size:0.8rem">Due Rule</span>
-                    <span class="text-muted" style="font-size:0.8rem">Mins Before</span>
+                    <span class="text-muted" style="font-size:0.8rem">Due Back Time</span>
                     <span></span>
                 </div>
                 <div id="add-class-period-rows">${defaultRangesHtml}</div>
                 <button type="button" id="add-class-add-period-btn" class="btn btn-secondary" style="margin-top:0.5rem">
                     <i class="ph ph-plus"></i> Add Period
                 </button>
-                <small class="text-muted" style="display:block;margin-top:0.4rem">Set each period to be due at period end or a number of minutes before period end.</small>
+                <small class="text-muted" style="display:block;margin-top:0.4rem">If a sign-out happens during a period range, it is due at that row's Due Back Time.</small>
             </div>
         </div>
         <div class="modal-footer">
@@ -4817,15 +4809,88 @@ function openUserItemsModal(userId) {
     if (!user) return;
 
     const itemsOut = getItemsOutForUser(userId);
-    const projectCount = new Set(itemsOut.map(row => row.projectId)).size;
-    const itemCount = itemsOut.reduce((sum, row) => sum + row.quantity, 0);
+    const personalRows = itemsOut.filter(row => String(row.projectId || '').startsWith('PERS-'));
+    const projectRows = itemsOut.filter(row => !String(row.projectId || '').startsWith('PERS-'));
+    const projectCount = new Set(projectRows.map(row => row.projectId)).size;
+    const projectItemCount = projectRows.reduce((sum, row) => sum + row.quantity, 0);
+    const personalItemCount = personalRows.reduce((sum, row) => sum + row.quantity, 0);
+    const totalItemCount = projectItemCount + personalItemCount;
+
+    const renderItemsTable = (rows) => {
+        if (!rows.length) {
+            return '<p class="text-sm text-muted">No items out.</p>';
+        }
+
+        return `
+            <div style="overflow-x:auto;">
+                <table class="table" style="margin-top:0.5rem;">
+                    <thead>
+                        <tr>
+                            <th>Item</th>
+                            <th>SKU</th>
+                            <th>QTY</th>
+                            <th>Due</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${rows.map(row => `
+                            <tr>
+                                <td>${escapeHtml(row.itemName)}</td>
+                                <td class="text-muted font-mono" style="font-size:0.8rem;">${escapeHtml(row.sku || 'N/A')}</td>
+                                <td>${row.quantity}</td>
+                                <td>${row.dueDate ? escapeHtml(new Date(row.dueDate).toLocaleString()) : 'No due date'}</td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            </div>
+        `;
+    };
+
+    const projectGroups = [];
+    const projectGroupMap = new Map();
+    projectRows.forEach(row => {
+        const existing = projectGroupMap.get(row.projectId);
+        if (existing) {
+            existing.rows.push(row);
+            existing.itemCount += row.quantity;
+            return;
+        }
+
+        const group = {
+            projectId: row.projectId,
+            projectName: row.projectName,
+            itemCount: row.quantity,
+            rows: [row]
+        };
+        projectGroupMap.set(row.projectId, group);
+        projectGroups.push(group);
+    });
+
+    const projectSectionsHtml = projectGroups.length
+        ? projectGroups.map(group => `
+            <div class="glass-panel" style="padding:0.85rem;margin-top:0.85rem;">
+                <div class="font-bold" style="margin-bottom:0.35rem;">${escapeHtml(group.projectName)} (${group.itemCount} item${group.itemCount === 1 ? '' : 's'})</div>
+                ${renderItemsTable(group.rows)}
+            </div>
+        `).join('')
+        : '<p class="text-sm text-muted" style="margin-top:0.65rem;">No project items out.</p>';
+
     const itemsHtml = `
-        <div class="glass-panel" style="padding:1rem;display:flex;gap:0.75rem;align-items:center;justify-content:space-between;">
+        <div class="glass-panel" style="padding:1rem;display:flex;gap:0.75rem;align-items:center;justify-content:space-between;flex-wrap:wrap;">
             <div>
-                <div class="font-bold" style="font-size:1rem;">${projectCount} project${projectCount === 1 ? '' : 's'}, ${itemCount} item${itemCount === 1 ? '' : 's'}</div>
-                <div class="text-sm text-muted">Summary only (itemized list hidden by request).</div>
+                <div class="font-bold" style="font-size:1rem;">${projectCount} project${projectCount === 1 ? '' : 's'}, ${projectItemCount} project item${projectItemCount === 1 ? '' : 's'}</div>
+                <div class="text-sm text-muted">Personal items: ${personalItemCount} | Total items out: ${totalItemCount}</div>
             </div>
             <span class="badge">${user.role}</span>
+        </div>
+        <div class="glass-panel" style="padding:0.85rem;margin-top:0.85rem;">
+            <div class="font-bold">My Items (Personal)</div>
+            ${renderItemsTable(personalRows)}
+        </div>
+        <div style="margin-top:0.85rem;">
+            <div class="font-bold">Project Items</div>
+            ${projectSectionsHtml}
         </div>
     `;
 

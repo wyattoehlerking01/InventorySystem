@@ -418,6 +418,20 @@ async function loadInventoryItemVisibility() {
  * Load student classes from class-related tables
  */
 async function loadStudentClasses() {
+    const parseMinutes = (timeString) => {
+        const [hours, minutes] = String(timeString || '').split(':').map(Number);
+        if (Number.isNaN(hours) || Number.isNaN(minutes)) return null;
+        return (hours * 60) + minutes;
+    };
+
+    const isSchemaColumnError = (error) => {
+        const msg = String(error?.message || '').toLowerCase();
+        return /column .* does not exist/i.test(String(error?.message || ''))
+            || msg.includes('could not find the')
+            || msg.includes('schema cache')
+            || msg.includes('undefined_column');
+    };
+
     const [
         classesRes,
         studentsRes,
@@ -436,13 +450,25 @@ async function loadStudentClasses() {
         dbClient.from('class_permissions').select('class_id, can_create_projects, can_join_projects, can_sign_out')
     ]);
 
+    let duePeriodsData = duePeriodsRes.data || [];
+    let duePeriodsError = duePeriodsRes.error;
+    if (duePeriodsError && isSchemaColumnError(duePeriodsError)) {
+        const fallbackRes = await dbClient
+            .from('class_due_policy_periods')
+            .select('class_id, start_time, end_time, return_class_periods, due_mode, due_minutes_before_end');
+        if (!fallbackRes.error) {
+            duePeriodsData = fallbackRes.data || [];
+            duePeriodsError = null;
+        }
+    }
+
     const errors = [
         classesRes.error,
         studentsRes.error,
         visibleItemsRes.error,
         classTagsRes.error,
         duePolicyRes.error,
-        duePeriodsRes.error,
+        duePeriodsError,
         permissionsRes.error
     ].filter(Boolean);
 
@@ -480,7 +506,7 @@ async function loadStudentClasses() {
         };
     });
 
-    (duePeriodsRes.data || []).forEach(row => {
+    (duePeriodsData || []).forEach(row => {
         if (!duePolicyByClass[row.class_id]) {
             duePolicyByClass[row.class_id] = {
                 defaultSignoutMinutes: 80,
@@ -489,18 +515,28 @@ async function loadStudentClasses() {
             };
         }
 
-        const dueMode = row.due_mode === 'minutes_before_end'
-            ? 'minutes_before_end'
-            : 'at_period_end';
+        const start = String(row.start_time).slice(0, 5);
+        const end = String(row.end_time).slice(0, 5);
+        const startMinutes = parseMinutes(start);
+        const endMinutes = parseMinutes(end);
+
+        let resolvedDueAt = row.due_at_time ? String(row.due_at_time).slice(0, 5) : '';
+        if (!resolvedDueAt && startMinutes !== null && endMinutes !== null) {
+            if (row.due_mode === 'minutes_before_end') {
+                const minutesBefore = Math.max(0, parseInt(row.due_minutes_before_end, 10) || 0);
+                const target = Math.max(startMinutes, endMinutes - minutesBefore);
+                const hh = String(Math.floor(target / 60)).padStart(2, '0');
+                const mm = String(target % 60).padStart(2, '0');
+                resolvedDueAt = `${hh}:${mm}`;
+            } else {
+                resolvedDueAt = end;
+            }
+        }
 
         duePolicyByClass[row.class_id].periodRanges.push({
-            start: String(row.start_time).slice(0, 5),
-            end: String(row.end_time).slice(0, 5),
-            dueMode,
-            dueMinutesBeforeEnd: dueMode === 'minutes_before_end'
-                ? Math.max(0, parseInt(row.due_minutes_before_end, 10) || 0)
-                : 0,
-            dueAtTime: row.due_at_time ? String(row.due_at_time).slice(0, 5) : ''
+            start,
+            end,
+            dueAtTime: resolvedDueAt || end
         });
     });
 
@@ -527,7 +563,7 @@ async function loadStudentClasses() {
         duePolicy: duePolicyByClass[cls.id] || {
             defaultSignoutMinutes: 80,
             timezone: 'America/Edmonton',
-            periodRanges: [{ start: '08:00', end: '08:55', dueMode: 'at_period_end', dueMinutesBeforeEnd: 0 }]
+            periodRanges: [{ start: '08:00', end: '08:55', dueAtTime: '08:55' }]
         },
         defaultPermissions: permissionsByClass[cls.id] || {
             canCreateProjects: false,
@@ -543,10 +579,24 @@ async function loadStudentClasses() {
  * Upsert a student class and all child relations
  */
 async function saveStudentClassToSupabase(cls) {
+    const isSchemaColumnError = (error) => {
+        const msg = String(error?.message || '').toLowerCase();
+        return /column .* does not exist/i.test(String(error?.message || ''))
+            || msg.includes('could not find the')
+            || msg.includes('schema cache')
+            || msg.includes('undefined_column');
+    };
+
+    const parseMinutes = (timeString) => {
+        const [hours, minutes] = String(timeString || '').split(':').map(Number);
+        if (Number.isNaN(hours) || Number.isNaN(minutes)) return null;
+        return (hours * 60) + minutes;
+    };
+
     const duePolicy = cls.duePolicy || {
         defaultSignoutMinutes: 80,
         timezone: 'America/Edmonton',
-        periodRanges: [{ start: '08:00', end: '08:55', dueMode: 'at_period_end', dueMinutesBeforeEnd: 0 }]
+        periodRanges: [{ start: '08:00', end: '08:55', dueAtTime: '08:55' }]
     };
 
     const defaultPermissions = cls.defaultPermissions || {
@@ -584,14 +634,27 @@ async function saveStudentClassToSupabase(cls) {
 
     cls.id = classId;
 
-    const { error: dueError } = await dbClient.from('class_due_policy').upsert([
-        {
+    const duePayload = {
+        class_id: classId,
+        default_signout_minutes: duePolicy.defaultSignoutMinutes,
+        class_period_minutes: duePolicy.classPeriodMinutes ?? 50,
+        timezone: duePolicy.timezone || 'America/Edmonton'
+    };
+
+    let { error: dueError } = await dbClient.from('class_due_policy').upsert([
+        duePayload
+    ], { onConflict: 'class_id' });
+
+    if (dueError && isSchemaColumnError(dueError)) {
+        const fallbackDuePayload = {
             class_id: classId,
             default_signout_minutes: duePolicy.defaultSignoutMinutes,
-            class_period_minutes: duePolicy.classPeriodMinutes ?? 50,
             timezone: duePolicy.timezone || 'America/Edmonton'
-        }
-    ], { onConflict: 'class_id' });
+        };
+        ({ error: dueError } = await dbClient.from('class_due_policy').upsert([
+            fallbackDuePayload
+        ], { onConflict: 'class_id' }));
+    }
 
     if (dueError) {
         console.error('Error upserting class_due_policy:', dueError);
@@ -673,19 +736,55 @@ async function saveStudentClassToSupabase(cls) {
         return false;
     }
     if ((duePolicy.periodRanges || []).length > 0) {
-        const { error: insertPeriodsError } = await dbClient.from('class_due_policy_periods').insert(
-            duePolicy.periodRanges.map(period => ({
+        const periodRows = duePolicy.periodRanges.map(period => {
+            const dueAt = period.dueAtTime || period.end;
+            const endMinutes = parseMinutes(period.end);
+            const dueAtMinutes = parseMinutes(dueAt);
+            const minsBeforeEnd = (endMinutes !== null && dueAtMinutes !== null)
+                ? Math.max(0, endMinutes - dueAtMinutes)
+                : 0;
+
+            return {
                 class_id: classId,
                 start_time: period.start,
                 end_time: period.end,
                 return_class_periods: 1,
-                due_mode: period.dueMode === 'minutes_before_end' ? 'minutes_before_end' : 'at_period_end',
-                due_minutes_before_end: period.dueMode === 'minutes_before_end'
-                    ? Math.max(0, parseInt(period.dueMinutesBeforeEnd, 10) || 0)
-                    : 0,
-                due_at_time: null
-            }))
-        );
+                due_mode: 'minutes_before_end',
+                due_minutes_before_end: minsBeforeEnd,
+                due_at_time: dueAt
+            };
+        });
+
+        let { error: insertPeriodsError } = await dbClient
+            .from('class_due_policy_periods')
+            .insert(periodRows);
+
+        if (insertPeriodsError && isSchemaColumnError(insertPeriodsError)) {
+            const noDueAtRows = periodRows.map(row => ({
+                class_id: row.class_id,
+                start_time: row.start_time,
+                end_time: row.end_time,
+                return_class_periods: row.return_class_periods,
+                due_mode: row.due_mode,
+                due_minutes_before_end: row.due_minutes_before_end
+            }));
+            ({ error: insertPeriodsError } = await dbClient
+                .from('class_due_policy_periods')
+                .insert(noDueAtRows));
+        }
+
+        if (insertPeriodsError && isSchemaColumnError(insertPeriodsError)) {
+            const minimalRows = periodRows.map(row => ({
+                class_id: row.class_id,
+                start_time: row.start_time,
+                end_time: row.end_time,
+                return_class_periods: row.return_class_periods
+            }));
+            ({ error: insertPeriodsError } = await dbClient
+                .from('class_due_policy_periods')
+                .insert(minimalRows));
+        }
+
         if (insertPeriodsError) {
             console.error('Error inserting class_due_policy_periods:', insertPeriodsError);
             return false;

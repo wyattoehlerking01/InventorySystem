@@ -150,30 +150,34 @@
             </div>
 
             <nav class="sidebar-nav">
-                <button class="nav-btn active" data-target="dashboard">
-                    <i class="ph ph-squares-four"></i> Dashboard
-                </button>
-                <button class="nav-btn" data-target="inventory">
-                    <i class="ph ph-package"></i> Inventory
-                </button>
-                <button class="nav-btn" data-target="projects">
-                    <i class="ph ph-folder-open"></i> Projects
-                </button>
-                <button class="nav-btn" id="nav-orders" data-target="orders">
-                    <i class="ph ph-rows-plus-bottom"></i> Operations Hub
-                </button>
-                <button class="nav-btn restricted" id="nav-classes" data-target="classes">
-                    <i class="ph ph-users-four"></i> Classes
-                </button>
-                <button class="nav-btn restricted" id="nav-logs" data-target="logs">
-                    <i class="ph ph-list-dashes"></i> Activity Log
-                </button>
-                <button class="nav-btn restricted" id="nav-users" data-target="users">
-                    <i class="ph ph-users"></i> Users
-                </button>
-                <button class="nav-btn restricted hidden" id="nav-requests" data-target="requests">
-                    <i class="ph ph-envelope-open"></i> Requests
-                </button>
+                <div class="sidebar-nav-main">
+                    <button class="nav-btn active" data-target="dashboard">
+                        <i class="ph ph-squares-four"></i> Dashboard
+                    </button>
+                    <button class="nav-btn" data-target="inventory">
+                        <i class="ph ph-package"></i> Inventory
+                    </button>
+                    <button class="nav-btn" data-target="projects">
+                        <i class="ph ph-folder-open"></i> Projects
+                    </button>
+                    <button class="nav-btn restricted" id="nav-classes" data-target="classes">
+                        <i class="ph ph-users-four"></i> Classes
+                    </button>
+                    <button class="nav-btn restricted" id="nav-users" data-target="users">
+                        <i class="ph ph-users"></i> Users
+                    </button>
+                    <button class="nav-btn restricted hidden" id="nav-requests" data-target="requests">
+                        <i class="ph ph-envelope-open"></i> Requests
+                    </button>
+                </div>
+                <div class="sidebar-nav-bottom">
+                    <button class="nav-btn" id="nav-orders" data-target="orders">
+                        <i class="ph ph-rows-plus-bottom"></i> Operations Hub
+                    </button>
+                    <button class="nav-btn restricted" id="nav-logs" data-target="logs">
+                        <i class="ph ph-list-dashes"></i> Activity Log
+                    </button>
+                </div>
             </nav>
 
             <div class="sidebar-footer">
@@ -251,15 +255,15 @@
                             </button>
                         </div>
                         <div class="filters inventory-category-filters">
-                            <select id="inventory-category-filter" class="form-control" style="min-width:180px;">
-                                <option value="All">All Categories</option>
-                            </select>
-                            <select id="inventory-supplier-filter" class="form-control" style="min-width:180px;">
-                                <option value="All">All Suppliers</option>
-                            </select>
-                            <select id="inventory-brand-filter" class="form-control" style="min-width:180px;">
-                                <option value="All">All Brands</option>
-                            </select>
+                            <input type="text" id="inventory-category-filter" list="inventory-category-filter-options" class="form-control" style="min-width:180px;"
+                                placeholder="Filter by category...">
+                            <datalist id="inventory-category-filter-options"></datalist>
+                            <input type="text" id="inventory-supplier-filter" list="inventory-supplier-filter-options" class="form-control" style="min-width:180px;"
+                                placeholder="Filter by supplier...">
+                            <datalist id="inventory-supplier-filter-options"></datalist>
+                            <input type="text" id="inventory-brand-filter" list="inventory-brand-filter-options" class="form-control" style="min-width:180px;"
+                                placeholder="Filter by brand...">
+                            <datalist id="inventory-brand-filter-options"></datalist>
                         </div>
                         <div class="inventory-secondary-controls" style="display:flex;gap:1rem;">
                             <button class="btn btn-secondary" id="manage-categories-btn">
