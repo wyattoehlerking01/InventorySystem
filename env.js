@@ -4,6 +4,7 @@ window.APP_ENV = {
     APP_SUBTITLE: 'Inventory Management System',
     APP_VERSION: 'OehlerOS Version 1.0',
     KIOSK_ID: 'KIOSK-001',
+    ORGANIZATION_ID: '4339f9a2-dc08-4232-851a-cf993eba2e67',
     APP_UPDATE_ACTION: 'overlay',
     ALLOW_STUDENT_ORDER_VIEW: false,
     INFO_POPUP_HEADING: 'System Information',

@@ -7,10 +7,17 @@ let currentUser = null;
 
 const envConfig = window.APP_ENV || {};
 const kioskId = String(envConfig.KIOSK_ID ?? envConfig.kioskId ?? '').trim();
+const configuredOrganizationId = String(
+    envConfig.ORGANIZATION_ID
+    ?? envConfig.APP_ORGANIZATION_ID
+    ?? envConfig.organizationId
+    ?? ''
+).trim();
 let appVersion = String(envConfig.APP_VERSION ?? envConfig.APP_Version ?? 'VERSION').trim() || 'VERSION';
 const appName = String(envConfig.APP_NAME ?? 'LCHS').trim() || 'LCHS';
 const appSubtitle = String(envConfig.APP_SUBTITLE ?? 'Secure Inventory Management').trim() || 'Secure Inventory Management';
 window.RUNTIME_APP_VERSION = appVersion;
+let runtimeOrganizationId = configuredOrganizationId;
 
 let kioskVersionChannel = null;
 let appLicenseBlocked = false;
@@ -510,53 +517,112 @@ function bindAppInfoTriggers() {
     document.getElementById('app-version-login')?.addEventListener('click', openAppInfoMenu);
 }
 
-async function sha256Hex(input) {
-    if (!window.crypto?.subtle || typeof TextEncoder === 'undefined') return '';
-    const bytes = new TextEncoder().encode(String(input || ''));
-    const hashBuffer = await window.crypto.subtle.digest('SHA-256', bytes);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+function getLicenseFailureMessage(reason) {
+    if (reason === 'invalid_id') return 'Kiosk disabled: invalid organization ID.';
+    if (reason === 'invalid_license') return 'Kiosk disabled: invalid organization license.';
+    return 'Kiosk disabled: license verification failed.';
 }
 
-function getConfiguredLicenseKey() {
-    return String(envConfig.APP_LICENSE_KEY ?? envConfig.appLicenseKey ?? '').trim();
-}
+async function verifyOrganizationLicense(preferredOrganizationId = '') {
+    const organizationId = String(preferredOrganizationId || runtimeOrganizationId || '').trim();
+    if (organizationId) runtimeOrganizationId = organizationId;
 
-function normalizeLicenseHash(raw) {
-    return String(raw || '').trim().toLowerCase();
-}
-
-async function validateAppLicense(licenseHashFromDb) {
-    const key = getConfiguredLicenseKey();
-    const expectedHash = normalizeLicenseHash(licenseHashFromDb);
-
-    if (!key || !expectedHash) {
+    if (!organizationId) {
         appLicenseState = {
             checked: true,
             configured: false,
-            valid: true,
-            expectedHash,
+            valid: false,
+            expectedHash: '',
             providedHash: '',
-            message: 'License check is not fully configured yet. Add APP_LICENSE_KEY and kiosk_settings.license_hash to enforce validation.'
+            message: 'Organization ID is not configured.'
         };
-        appLicenseBlocked = false;
-        return true;
+        appLicenseBlocked = true;
+        return {
+            valid: false,
+            reason: 'invalid_id',
+            message: getLicenseFailureMessage('invalid_id')
+        };
     }
 
-    const providedHash = normalizeLicenseHash(await sha256Hex(key));
-    const valid = providedHash !== '' && providedHash === expectedHash;
-    appLicenseState = {
-        checked: true,
-        configured: true,
-        valid,
-        expectedHash,
-        providedHash,
-        message: valid
-            ? 'License key hash matches the database record.'
-            : 'License key hash mismatch. This kiosk is disabled until the key is corrected.'
-    };
-    appLicenseBlocked = !valid;
-    return valid;
+    const client = getSettingsSupabaseClient();
+    if (!client) {
+        appLicenseState = {
+            checked: true,
+            configured: true,
+            valid: false,
+            expectedHash: '',
+            providedHash: '',
+            message: 'Supabase client is unavailable for license verification.'
+        };
+        appLicenseBlocked = true;
+        return {
+            valid: false,
+            reason: 'verification_error',
+            message: getLicenseFailureMessage('verification_error')
+        };
+    }
+
+    try {
+        const { data, error } = await client.rpc('verify_kiosk_license', {
+            p_organization_id: organizationId
+        });
+
+        if (error) {
+            console.warn('verify_kiosk_license RPC failed:', error);
+            appLicenseState = {
+                checked: true,
+                configured: true,
+                valid: false,
+                expectedHash: '',
+                providedHash: '',
+                message: 'License verification RPC failed.'
+            };
+            appLicenseBlocked = true;
+            return {
+                valid: false,
+                reason: 'verification_error',
+                message: getLicenseFailureMessage('verification_error')
+            };
+        }
+
+        const row = Array.isArray(data) ? data[0] : data;
+        const reason = String(row?.reason || '').trim() || 'verification_error';
+        const valid = row?.allowed === true && reason === 'ok';
+
+        appLicenseState = {
+            checked: true,
+            configured: true,
+            valid,
+            expectedHash: '',
+            providedHash: '',
+            message: valid
+                ? `Organization license verified (${String(row?.organization_name || 'Unknown organization')}).`
+                : getLicenseFailureMessage(reason)
+        };
+        appLicenseBlocked = !valid;
+
+        return {
+            valid,
+            reason,
+            message: valid ? 'Organization license verified.' : getLicenseFailureMessage(reason)
+        };
+    } catch (error) {
+        console.warn('Unexpected verify_kiosk_license error:', error);
+        appLicenseState = {
+            checked: true,
+            configured: true,
+            valid: false,
+            expectedHash: '',
+            providedHash: '',
+            message: 'Unexpected license verification failure.'
+        };
+        appLicenseBlocked = true;
+        return {
+            valid: false,
+            reason: 'verification_error',
+            message: getLicenseFailureMessage('verification_error')
+        };
+    }
 }
 
 function applyBranding() {
@@ -596,7 +662,7 @@ async function fetchKioskSettings(targetKioskId = kioskId) {
     const fallbackVersion = String(envConfig.APP_VERSION ?? envConfig.APP_Version ?? 'VERSION').trim() || 'VERSION';
     const fallback = {
         app_version: fallbackVersion,
-        license_hash: '',
+        organization_id: runtimeOrganizationId,
         is_locked: false,
         lock_screen: 'systemLocked'
     };
@@ -620,7 +686,7 @@ async function fetchKioskSettings(targetKioskId = kioskId) {
 
         return {
             app_version: String(data?.app_version || '').trim() || fallbackVersion,
-            license_hash: String(data?.license_hash || data?.app_license_hash || '').trim(),
+            organization_id: String(data?.organization_id || runtimeOrganizationId || '').trim(),
             is_locked: !!(data?.is_locked ?? data?.kiosk_locked),
             lock_screen: String(data?.lock_screen || data?.kiosk_lock_screen || 'systemLocked')
         };
@@ -667,10 +733,10 @@ async function handleRemoteKioskSettingsChange(nextSettings = {}) {
     const wasBlocked = appLicenseBlocked;
     const normalized = String(nextSettings.app_version || '').trim();
 
-    const licenseStillValid = await validateAppLicense(nextSettings.license_hash);
-    if (!licenseStillValid) {
+    const verification = await verifyOrganizationLicense(nextSettings.organization_id);
+    if (!verification.valid) {
         await applyKioskLock(true, 'kioskUnavailable');
-        showToast('Kiosk disabled: invalid app license.', 'error');
+        showToast(verification.message, 'error');
         return;
     }
 
@@ -718,7 +784,7 @@ function startKioskVersionRealtimeListener(targetKioskId = kioskId) {
         }, async payload => {
             const next = {
                 app_version: payload?.new?.app_version,
-                license_hash: payload?.new?.license_hash || payload?.new?.app_license_hash,
+                organization_id: payload?.new?.organization_id,
                 is_locked: payload?.new?.is_locked ?? payload?.new?.kiosk_locked,
                 lock_screen: payload?.new?.lock_screen || payload?.new?.kiosk_lock_screen
             };
@@ -1141,14 +1207,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     const kioskSettings = await fetchKioskSettings(kioskId);
-    const licenseValid = await validateAppLicense(kioskSettings.license_hash);
+    const organizationId = String(kioskSettings.organization_id || runtimeOrganizationId || '').trim();
+    const verification = await verifyOrganizationLicense(organizationId);
     setRuntimeAppVersion(kioskSettings.app_version);
     await applyKioskLock(!!kioskSettings.is_locked, kioskSettings.lock_screen || 'systemLocked');
     startKioskVersionRealtimeListener(kioskId);
 
-    if (!licenseValid) {
+    if (!verification.valid) {
         await applyKioskLock(true, 'kioskUnavailable');
-        showToast('Kiosk disabled: invalid app license.', 'error');
+        showToast(verification.message, 'error');
         return;
     }
 
