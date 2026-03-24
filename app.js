@@ -34,16 +34,14 @@ let appLicenseState = {
 
 const defaultDuePolicy = {
     defaultSignoutMinutes: 80,
-    classPeriodMinutes: 50,
     timezone: 'America/Edmonton',
     periodRanges: [
-        { start: '08:00', end: '08:55', returnClassPeriods: 2 }
+        { start: '08:00', end: '08:55', dueMode: 'at_period_end', dueMinutesBeforeEnd: 0 }
     ]
 };
 
 let signoutPolicy = {
     defaultSignoutMinutes: defaultDuePolicy.defaultSignoutMinutes,
-    classPeriodMinutes: defaultDuePolicy.classPeriodMinutes,
     timezone: defaultDuePolicy.timezone,
     periodRanges: defaultDuePolicy.periodRanges.map(range => ({ ...range }))
 };
@@ -229,21 +227,26 @@ function normalizeDuePolicy(policy) {
     const fallbackRanges = defaultDuePolicy.periodRanges.map(range => ({ ...range }));
     const ranges = Array.isArray(policy?.periodRanges) ? policy.periodRanges : fallbackRanges;
     const normalizedRanges = ranges
-        .map(range => ({
-            start: range?.start || '',
-            end: range?.end || '',
-            returnClassPeriods: Math.max(1, parseInt(range?.returnClassPeriods, 10) || 1),
-            dueMode: ['class_periods', 'minutes_before_end', 'due_at_time'].includes(range?.dueMode)
-                ? range.dueMode
-                : 'class_periods',
-            dueMinutesBeforeEnd: Math.max(0, parseInt(range?.dueMinutesBeforeEnd, 10) || 0),
-            dueAtTime: range?.dueAtTime || ''
-        }))
+        .map(range => {
+            const rawMode = String(range?.dueMode || '').trim();
+            const dueMode = rawMode === 'minutes_before_end'
+                ? 'minutes_before_end'
+                : 'at_period_end';
+
+            return {
+                start: range?.start || '',
+                end: range?.end || '',
+                dueMode,
+                dueMinutesBeforeEnd: dueMode === 'minutes_before_end'
+                    ? Math.max(0, parseInt(range?.dueMinutesBeforeEnd, 10) || 0)
+                    : 0,
+                dueAtTime: ''
+            };
+        })
         .filter(range => parseTimeToMinutes(range.start) !== null && parseTimeToMinutes(range.end) !== null);
 
     return {
         defaultSignoutMinutes: Math.max(1, parseInt(policy?.defaultSignoutMinutes, 10) || defaultDuePolicy.defaultSignoutMinutes),
-        classPeriodMinutes: Math.max(1, parseInt(policy?.classPeriodMinutes, 10) || defaultDuePolicy.classPeriodMinutes),
         timezone: policy?.timezone || defaultDuePolicy.timezone,
         periodRanges: normalizedRanges.length > 0 ? normalizedRanges : fallbackRanges
     };
@@ -317,10 +320,13 @@ function resolveDueDateFromMode(signoutDate, duePolicy, matchingRange, mode, min
     const dueDate = new Date(signoutDate);
     const currentMinutes = getLocalTimeMinutes(signoutDate, duePolicy.timezone || defaultDuePolicy.timezone);
 
-    if (mode === 'minutes_before_end' && matchingRange) {
+    if ((mode === 'at_period_end' || mode === 'minutes_before_end') && matchingRange) {
         const endMinutes = parseTimeToMinutes(matchingRange.end);
         if (endMinutes !== null) {
-            const targetMinutes = Math.max(0, endMinutes - Math.max(0, parseInt(minutesBeforeEnd, 10) || 0));
+            const minutesBefore = mode === 'minutes_before_end'
+                ? Math.max(0, parseInt(minutesBeforeEnd, 10) || 0)
+                : 0;
+            const targetMinutes = Math.max(0, endMinutes - minutesBefore);
             const delta = Math.max(0, targetMinutes - currentMinutes);
             dueDate.setMinutes(dueDate.getMinutes() + delta);
             return dueDate;
@@ -357,7 +363,15 @@ function calculateDueDate(signoutDate = new Date(), user = currentUser, project 
         if (rangeModeDueDate) {
             dueDate = rangeModeDueDate;
         } else {
-            dueDate.setMinutes(dueDate.getMinutes() + (matchingRange.returnClassPeriods * duePolicy.classPeriodMinutes));
+            const fallbackRangeDueDate = resolveDueDateFromMode(
+                signoutDate,
+                duePolicy,
+                matchingRange,
+                'at_period_end',
+                0,
+                ''
+            );
+            dueDate = fallbackRangeDueDate || dueDate;
         }
     } else {
         dueDate.setMinutes(dueDate.getMinutes() + duePolicy.defaultSignoutMinutes);
@@ -404,18 +418,22 @@ function buildTimezoneOptionsHtml(selectedTz) {
     ).join('');
 }
 
-function buildPeriodRowHtml(start = '', end = '', returnClassPeriods = 1) {
+function buildPeriodRowHtml(start = '', end = '', dueMode = 'at_period_end', dueMinutesBeforeEnd = 15) {
     return `
-        <div class="period-row" style="display:grid;grid-template-columns:1fr 1fr 110px 36px;gap:0.5rem;align-items:center;margin-bottom:0.5rem">
+        <div class="period-row" style="display:grid;grid-template-columns:1fr 1fr 220px 110px 36px;gap:0.5rem;align-items:center;margin-bottom:0.5rem">
             <input type="time" class="form-control period-start" value="${start}" title="Period start time">
             <input type="time" class="form-control period-end" value="${end}" title="Period end time">
-            <input type="number" class="form-control period-return-periods" min="1" value="${returnClassPeriods}" title="Number of class periods before item is due">
+            <select class="form-control period-due-mode" title="How due time is calculated in this period">
+                <option value="at_period_end" ${dueMode === 'at_period_end' ? 'selected' : ''}>Due At Period End</option>
+                <option value="minutes_before_end" ${dueMode === 'minutes_before_end' ? 'selected' : ''}>Due Minutes Before End</option>
+            </select>
+            <input type="number" class="form-control period-due-minutes" min="0" value="${Math.max(0, parseInt(dueMinutesBeforeEnd, 10) || 0)}" title="Minutes before period end" ${dueMode === 'minutes_before_end' ? '' : 'disabled'}>
             <button type="button" class="btn btn-secondary remove-period-row-btn" style="padding:0.25rem 0.5rem" title="Remove period"><i class="ph ph-trash"></i></button>
         </div>`;
 }
 
 function buildPeriodRowsHtml(periodRanges) {
-    return periodRanges.map(r => buildPeriodRowHtml(r.start, r.end, r.returnClassPeriods)).join('');
+    return periodRanges.map(r => buildPeriodRowHtml(r.start, r.end, r.dueMode, r.dueMinutesBeforeEnd)).join('');
 }
 
 function collectPeriodRowsFromModal(containerId) {
@@ -424,29 +442,53 @@ function collectPeriodRowsFromModal(containerId) {
     rows.forEach(row => {
         const start = row.querySelector('.period-start').value;
         const end = row.querySelector('.period-end').value;
-        const returnClassPeriods = Math.max(1, parseInt(row.querySelector('.period-return-periods').value, 10) || 1);
+        const dueMode = row.querySelector('.period-due-mode')?.value === 'minutes_before_end'
+            ? 'minutes_before_end'
+            : 'at_period_end';
+        const dueMinutesBeforeEnd = Math.max(0, parseInt(row.querySelector('.period-due-minutes')?.value, 10) || 0);
         if (parseTimeToMinutes(start) !== null && parseTimeToMinutes(end) !== null) {
-            ranges.push({ start, end, returnClassPeriods });
+            ranges.push({ start, end, dueMode, dueMinutesBeforeEnd });
         }
     });
     return ranges;
+}
+
+function syncPeriodRowDueMinutesState(row) {
+    const dueModeEl = row?.querySelector('.period-due-mode');
+    const dueMinutesEl = row?.querySelector('.period-due-minutes');
+    if (!dueModeEl || !dueMinutesEl) return;
+
+    const useMinutesBeforeEnd = dueModeEl.value === 'minutes_before_end';
+    dueMinutesEl.disabled = !useMinutesBeforeEnd;
+    if (!useMinutesBeforeEnd) dueMinutesEl.value = '0';
 }
 
 function attachPeriodRowHandlers(containerId, addBtnId) {
     const container = document.getElementById(containerId);
     const addBtn = document.getElementById(addBtnId);
     if (container) {
+        container.querySelectorAll('.period-row').forEach(syncPeriodRowDueMinutesState);
+
         container.addEventListener('click', e => {
             const removeBtn = e.target.closest('.remove-period-row-btn');
             if (removeBtn) removeBtn.closest('.period-row').remove();
         });
+
+        container.addEventListener('change', e => {
+            if (!e.target.classList.contains('period-due-mode')) return;
+            const row = e.target.closest('.period-row');
+            if (row) syncPeriodRowDueMinutesState(row);
+        });
     }
+
     if (addBtn) {
         addBtn.addEventListener('click', () => {
             if (!container) return;
             const div = document.createElement('div');
-            div.innerHTML = buildPeriodRowHtml('', '', 1);
-            container.appendChild(div.firstElementChild);
+            div.innerHTML = buildPeriodRowHtml('', '', 'at_period_end', 0);
+            const row = div.firstElementChild;
+            container.appendChild(row);
+            syncPeriodRowDueMinutesState(row);
         });
     }
 }
@@ -1066,6 +1108,22 @@ function addToBasket(itemId) {
     renderBasket();
 }
 
+function setBasketItemQuantity(itemId, requestedQty) {
+    const basketEntry = inventoryBasket.find(b => b.id === itemId);
+    const item = inventoryItems.find(i => i.id === itemId);
+    if (!basketEntry || !item) return;
+
+    const clampedQty = Math.max(1, Math.min(item.stock, parseInt(requestedQty, 10) || 1));
+    basketEntry.qty = clampedQty;
+    renderBasket();
+}
+
+function adjustBasketItemQuantity(itemId, delta) {
+    const basketEntry = inventoryBasket.find(b => b.id === itemId);
+    if (!basketEntry) return;
+    setBasketItemQuantity(itemId, basketEntry.qty + delta);
+}
+
 function removeFromBasket(itemId) {
     inventoryBasket = inventoryBasket.filter(b => b.id !== itemId);
     renderBasket();
@@ -1093,7 +1151,12 @@ function renderBasket() {
             <div class="basket-item">
                 <div class="flex-1">
                     <div class="font-bold text-sm">${item.name}</div>
-                    <div class="text-xs text-muted">Quantity: ${item.qty}</div>
+                    <div class="text-xs text-muted" style="display:flex;align-items:center;gap:0.35rem;flex-wrap:wrap;">
+                        <span>Quantity:</span>
+                        <button class="icon-btn basket-qty-minus" data-id="${item.id}" title="Decrease quantity" style="width:24px;height:24px;min-width:24px;"><i class="ph ph-minus"></i></button>
+                        <input type="number" min="1" class="form-control basket-qty-input" data-id="${item.id}" value="${item.qty}" style="width:68px;padding:0.2rem 0.35rem;height:auto;">
+                        <button class="icon-btn basket-qty-plus" data-id="${item.id}" title="Increase quantity" style="width:24px;height:24px;min-width:24px;"><i class="ph ph-plus"></i></button>
+                    </div>
                 </div>
                 <button class="icon-btn text-danger" onclick="removeFromBasket('${item.id}')">
                     <i class="ph ph-minus-circle"></i>
@@ -1104,11 +1167,32 @@ function renderBasket() {
         const total = inventoryBasket.reduce((sum, item) => sum + item.qty, 0);
         totalQtyEl.textContent = total;
         checkoutBtn.disabled = false;
+
+        list.querySelectorAll('.basket-qty-minus').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const id = e.currentTarget.getAttribute('data-id');
+                adjustBasketItemQuantity(id, -1);
+            });
+        });
+
+        list.querySelectorAll('.basket-qty-plus').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const id = e.currentTarget.getAttribute('data-id');
+                adjustBasketItemQuantity(id, 1);
+            });
+        });
+
+        list.querySelectorAll('.basket-qty-input').forEach(input => {
+            input.addEventListener('change', (e) => {
+                const id = e.currentTarget.getAttribute('data-id');
+                setBasketItemQuantity(id, e.currentTarget.value);
+            });
+        });
     }
 
     // Populate projects
-    const myProjects = projects.filter(p => p.ownerId === currentUser.id || p.collaborators.includes(currentUser.id));
-    projSelect.innerHTML = '<option value="">Personal Sign-out</option>' +
+    const myProjects = projects.filter(p => (p.ownerId === currentUser.id || p.collaborators.includes(currentUser.id)) && !String(p.id || '').startsWith('PERS-'));
+    projSelect.innerHTML = '<option value="">My Items (Personal)</option>' +
         myProjects.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
 }
 
@@ -1190,7 +1274,7 @@ function openCheckoutReviewModal() {
 
     const destinationName = selectedProjectId
         ? (selectedProject ? selectedProject.name : 'Unknown Project')
-        : 'Personal Sign-out';
+        : 'My Items (Personal)';
 
     const projectedDueDate = new Date(calculateDueDate(new Date(), currentUser, selectedProject));
 
@@ -1253,13 +1337,15 @@ function getOrCreatePersonalProject(userId) {
     if (!personalProject) {
         personalProject = {
             id: personalId,
-            name: 'Personal Use',
+            name: 'My Items (Personal)',
             ownerId: userId,
             collaborators: [],
             itemsOut: [],
             status: 'Active'
         };
         projects.push(personalProject);
+    } else {
+        personalProject.name = 'My Items (Personal)';
     }
     return personalProject;
 }
@@ -1347,7 +1433,9 @@ async function checkoutBasket() {
                 itemId: item.id,
                 quantity: basketItem.qty,
                 signoutDate: signoutData.signoutDate,
-                dueDate: signoutData.dueDate
+                dueDate: signoutData.dueDate,
+                assignedToUserId: signoutData.assignedToUserId,
+                signedOutByUserId: signoutData.signedOutByUserId
             }).catch(err => {
                 console.error('Failed to save project item out to Supabase:', err);
                 return null;
@@ -2017,6 +2105,10 @@ async function switchPage(targetId, title) {
         return;
     }
 
+    if (isBasketOpen && targetId !== 'inventory') {
+        toggleBasket(false);
+    }
+
     _trackPageVisit(targetId);
     pageTitle.textContent = title;
     setActiveNavForTarget(targetId);
@@ -2078,7 +2170,7 @@ function loadDashboard() {
                 if (outItem.dueDate && new Date(outItem.dueDate) <= now) {
                     dueBackCount += outItem.quantity;
                 }
-                myItemsOut.push({ ...outItem, projectName: p.name });
+                myItemsOut.push({ ...outItem, projectName: p.name, projectId: p.id });
             });
         });
 
@@ -2131,7 +2223,7 @@ function loadDashboard() {
                         <button class="btn btn-secondary text-sm request-extension-btn" data-item-id="${io.itemId}" data-project="${io.projectName}" data-due="${io.dueDate}" style="padding:0.3rem 0.6rem;font-size:0.75rem;">
                             <i class="ph ph-clock-clockwise"></i> Extend
                         </button>
-                        <button class="btn btn-primary text-sm return-item-btn" data-project-item-out-id="${io.id}" data-item-id="${io.itemId}" data-project="${io.projectName}" style="padding:0.3rem 0.6rem;font-size:0.75rem;margin-left:0.5rem">
+                        <button class="btn btn-primary text-sm return-item-btn" data-project-item-out-id="${io.id || `${io.itemId}-${io.signoutDate}-${io.quantity}`}" data-project-id="${io.projectId}" data-item-id="${io.itemId}" data-project="${io.projectName}" style="padding:0.3rem 0.6rem;font-size:0.75rem;margin-left:0.5rem">
                             <i class="ph ph-arrow-u-down-left"></i> Return
                         </button>
                     </div>
@@ -2176,6 +2268,7 @@ function loadDashboard() {
         document.querySelectorAll('.return-item-btn').forEach(btn => {
             btn.addEventListener('click', async (e) => {
                 const projectItemOutId = e.currentTarget.getAttribute('data-project-item-out-id');
+                const projectId = e.currentTarget.getAttribute('data-project-id');
                 const itemId = e.currentTarget.getAttribute('data-item-id');
                 const projectName = e.currentTarget.getAttribute('data-project');
                 const item = inventoryItems.find(i => i.id === itemId);
@@ -2196,19 +2289,11 @@ function loadDashboard() {
                     }
                 }
 
-                const returned = await returnItemToSupabase(projectItemOutId);
+                const returned = await returnProjectItem(projectId, projectItemOutId, { skipConfirmPrompt: true });
                 if (!returned) {
                     showToast('Failed to return item. Please try again.', 'error');
                     return;
                 }
-
-                await Promise.all([
-                    refreshProjectsFromSupabase(),
-                    refreshInventoryFromSupabase()
-                ]);
-
-                showToast(`Successfully returned ${item ? item.name : ''}.`, 'success');
-                addLog(currentUser.id, 'Return Item', `Returned ${item ? item.name : itemId} from ${projectName}`);
                 renderDashboard();
             });
         });
@@ -2342,6 +2427,7 @@ function loadDashboard() {
                             ...io,
                             itemName: item ? item.name : 'Unknown',
                             sku: item ? item.sku : 'N/A',
+                            projectId: p.id,
                             projectName: p.name,
                             userName: user ? user.name : p.ownerId
                         });
@@ -2358,7 +2444,7 @@ function loadDashboard() {
                             <div>
                                 <strong style="display:block">${io.itemName} (x${io.quantity})</strong>
                                 <small class="text-muted block">SKU: ${io.sku}</small>
-                                <span class="text-muted block text-sm">${io.userName} — ${io.projectName === 'Personal Use' ? '<span class="text-accent">Personal</span>' : io.projectName}</span>
+                                <span class="text-muted block text-sm">${io.userName} — ${String(io.projectId || '').startsWith('PERS-') ? '<span class="text-accent">My Items (Personal)</span>' : io.projectName}</span>
                             </div>
                             <span class="${isOverdue ? 'text-danger' : 'text-warning'} font-bold text-sm" style="white-space:nowrap">
                                 ${isOverdue ? `Overdue (Due: ${dueLabel})` : `Due: ${dueLabel}`}
@@ -2449,6 +2535,142 @@ function determineStatus(stock, threshold, itemType = 'item') {
     return 'In Stock';
 }
 
+function getItemRecentUsers(item, limit = 5) {
+    if (!item) return [];
+    const itemId = item.id;
+    const allSignouts = [];
+    projects.forEach(project => {
+        (project.itemsOut || []).forEach(io => {
+            if (io.itemId !== itemId) return;
+            allSignouts.push({
+                assignedToUserId: io.assignedToUserId || null,
+                signedOutByUserId: io.signedOutByUserId || null,
+                signoutDate: io.signoutDate || null,
+                projectName: project.name || 'Unknown Project'
+            });
+        });
+    });
+
+    allSignouts.sort((a, b) => new Date(b.signoutDate || 0) - new Date(a.signoutDate || 0));
+
+    const itemTokens = [
+        String(item.name || '').toLowerCase(),
+        String(item.sku || '').toLowerCase(),
+        String(item.id || '').toLowerCase()
+    ].filter(Boolean);
+
+    const logCandidates = (activityLogs || [])
+        .filter(log => /sign.?out/i.test(String(log.action || '')))
+        .map(log => {
+            const details = String(log.details || '').toLowerCase();
+            const isMatch = itemTokens.some(token => token && details.includes(token));
+            if (!isMatch) return null;
+            return {
+                assignedToUserId: log.userId || log.user_id || null,
+                signedOutByUserId: log.userId || log.user_id || null,
+                signoutDate: log.timestamp || null,
+                projectName: 'Activity Log'
+            };
+        })
+        .filter(Boolean);
+
+    allSignouts.push(...logCandidates);
+    allSignouts.sort((a, b) => new Date(b.signoutDate || 0) - new Date(a.signoutDate || 0));
+
+    const recent = [];
+    const seen = new Set();
+    for (const entry of allSignouts) {
+        const uid = entry.assignedToUserId || entry.signedOutByUserId;
+        if (!uid || seen.has(uid)) continue;
+
+        const user = mockUsers.find(u => u.id === uid);
+        recent.push({
+            userId: uid,
+            userName: user?.name || uid,
+            projectName: entry.projectName,
+            signoutDate: entry.signoutDate
+        });
+        seen.add(uid);
+        if (recent.length >= limit) break;
+    }
+
+    return recent;
+}
+
+function buildExternalItemLink(url, label) {
+    const cleanUrl = String(url || '').trim();
+    if (!cleanUrl) return '<span class="text-muted">Not set</span>';
+    return `<a href="${escapeHtml(cleanUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`;
+}
+
+function openItemPreviewModal(itemId) {
+    const item = inventoryItems.find(i => i.id === itemId);
+    if (!item) return;
+
+    const location = item.location || item.storageLocation || 'Unassigned';
+    const imageLink = String(item.image_link || item.imageLink || '').trim();
+    const supplierLink = String(item.supplier_listing_link || item.supplierListingLink || '').trim();
+    const recentUsers = getItemRecentUsers(item, 6);
+
+    const recentUsersHtml = recentUsers.length > 0
+        ? `<ul class="activity-list mini">${recentUsers.map(entry => `
+            <li>
+                <strong>${escapeHtml(entry.userName)}</strong>
+                <span class="text-muted">${entry.projectName} • ${entry.signoutDate ? new Date(entry.signoutDate).toLocaleString() : 'Unknown time'}</span>
+            </li>
+        `).join('')}</ul>`
+        : '<p class="text-muted">No recent user history available yet.</p>';
+
+    const html = `
+        <div class="modal-header">
+            <h3>Item Preview: ${escapeHtml(item.name)}</h3>
+            <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
+        </div>
+        <div class="modal-body">
+            ${imageLink ? `
+                <div class="glass-panel" style="padding:0.75rem;margin-bottom:1rem;text-align:center;">
+                    <img src="${escapeHtml(imageLink)}" alt="${escapeHtml(item.name)}" style="max-width:100%;max-height:180px;object-fit:contain;border-radius:8px;" onerror="this.parentElement.innerHTML='<p class=&quot;text-muted&quot;>Image failed to load.</p>'">
+                </div>
+            ` : ''}
+            <div class="grid-2-col" style="gap:1rem;">
+                <div class="glass-panel" style="padding:0.85rem;">
+                    <div class="text-sm text-muted">SKU</div>
+                    <div class="font-mono" style="margin-top:0.2rem;">${escapeHtml(item.sku || 'N/A')}</div>
+                </div>
+                <div class="glass-panel" style="padding:0.85rem;">
+                    <div class="text-sm text-muted">Storage Location</div>
+                    <div style="margin-top:0.2rem;">${escapeHtml(location)}</div>
+                </div>
+                <div class="glass-panel" style="padding:0.85rem;">
+                    <div class="text-sm text-muted">Supplier</div>
+                    <div style="margin-top:0.2rem;">${escapeHtml(item.supplier || 'Unspecified')}</div>
+                </div>
+                <div class="glass-panel" style="padding:0.85rem;">
+                    <div class="text-sm text-muted">Supplier Product Link</div>
+                    <div style="margin-top:0.2rem;">${buildExternalItemLink(supplierLink, 'Open Listing')}</div>
+                </div>
+                <div class="glass-panel" style="padding:0.85rem;">
+                    <div class="text-sm text-muted">Image Link</div>
+                    <div style="margin-top:0.2rem;">${buildExternalItemLink(imageLink, 'Open Image')}</div>
+                </div>
+                <div class="glass-panel" style="padding:0.85rem;">
+                    <div class="text-sm text-muted">Stock</div>
+                    <div style="margin-top:0.2rem;">${escapeHtml(String(item.stock ?? 0))}</div>
+                </div>
+            </div>
+            <div class="form-group" style="margin-top:1rem;">
+                <label>Recent Item Users</label>
+                ${recentUsersHtml}
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+        </div>
+    `;
+
+    openModal(html);
+}
+
 function renderInventory(filterStr = 'All') {
     const tbody = document.getElementById('inventory-table-body');
     rebuildInventoryFilterOptions();
@@ -2509,7 +2731,12 @@ function renderInventory(filterStr = 'All') {
             <tr>
                 <td><input type="checkbox" class="item-select-cb" data-id="${item.id}"></td>
                 <td>
-                    <div class="font-bold">${item.name}${renderMissingMetadataIcon(item)}</div>
+                    <div class="font-bold">
+                        ${currentUser.role !== 'student'
+                            ? `<button class="item-preview-btn" data-id="${item.id}" title="View Item Preview" style="background:none;border:none;color:inherit;padding:0;text-align:left;font:inherit;cursor:pointer;">${item.name}</button>`
+                            : item.name}
+                        ${renderMissingMetadataIcon(item)}
+                    </div>
                     ${item.sku ? `<small class="text-xs text-muted">SKU: ${item.sku}</small>` : ''}
                     ${currentUser.role === 'student' && tagsHtml ? `<div class="visibility-tags-row">${tagsHtml}</div>` : ''}
                 </td>
@@ -2567,6 +2794,13 @@ function renderInventory(filterStr = 'All') {
         btn.addEventListener('click', (e) => {
             const id = e.currentTarget.getAttribute('data-id');
             openEditItemModal(id);
+        });
+    });
+
+    document.querySelectorAll('.item-preview-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const id = e.currentTarget.getAttribute('data-id');
+            openItemPreviewModal(id);
         });
     });
 
@@ -2850,7 +3084,9 @@ async function signOutItemToPersonalProjectForUser(item, quantity, userId) {
         itemId: item.id,
         quantity,
         signoutDate: signoutData.signoutDate,
-        dueDate: signoutData.dueDate
+        dueDate: signoutData.dueDate,
+        assignedToUserId: signoutData.assignedToUserId,
+        signedOutByUserId: signoutData.signedOutByUserId
     });
 
     if (savedSignout?.id) signoutData.id = savedSignout.id;
@@ -2907,6 +3143,51 @@ function buildScannedItemImageHtml(item) {
     return `<img src="${src}" alt="${item?.name || 'Item image'}" style="width:100%;max-height:220px;object-fit:contain;border-radius:10px;background:rgba(255,255,255,0.03);border:1px solid var(--glass-border);margin-bottom:0.9rem;">`;
 }
 
+function findInventoryItemByScanCode(scanCode) {
+    const normalized = String(scanCode || '').trim().toUpperCase();
+    if (!normalized) return null;
+
+    return inventoryItems.find(i => {
+        const idMatch = String(i.id || '').trim().toUpperCase() === normalized;
+        const skuMatch = String(i.sku || '').trim().toUpperCase() === normalized;
+        return idMatch || skuMatch;
+    }) || null;
+}
+
+async function flagUnauthorizedScan(item, scanCode) {
+    if (!currentUser || currentUser.role !== 'student') return;
+
+    await addSystemFlagToSupabase({
+        id: generateId('FLAG'),
+        flag_type: 'Unauthorized Scan',
+        item_id: item?.id || null,
+        project_id: null,
+        actor_user_id: currentUser.id,
+        assigned_user_id: null,
+        details: `${currentUser.name} scanned restricted item ${item?.name || scanCode} (${scanCode}).`,
+        status: 'Open',
+        timestamp: new Date().toISOString()
+    });
+    await refreshRequestsFromSupabase();
+}
+
+async function handleBasketModeScan(scanCode) {
+    const item = findInventoryItemByScanCode(scanCode);
+    if (!item) {
+        showToast('No inventory item found for that scan.', 'error');
+        return;
+    }
+
+    if (currentUser.role === 'student' && !canUserSeeItem(currentUser, item)) {
+        await flagUnauthorizedScan(item, scanCode);
+        showToast('That item is not visible to your class.', 'error');
+        return;
+    }
+
+    addToBasket(item.id);
+    if (!isBasketOpen) toggleBasket(true);
+}
+
 async function openScannedItemActionModal(match) {
     const { project, io, item } = match;
     const assignedToUserId = io.assignedToUserId || project.ownerId;
@@ -2931,8 +3212,8 @@ async function openScannedItemActionModal(match) {
         <div class="modal-footer" style="justify-content:space-between;">
             <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
             <div style="display:flex;gap:0.6rem;">
-                <button class="btn btn-secondary" id="scan-signin-btn"><i class="ph ph-arrow-counter-clockwise"></i> Sign In</button>
-                <button class="btn btn-primary" id="scan-signin-to-me-btn"><i class="ph ph-user-switch"></i> Sign In To Me</button>
+                <button class="btn" id="scan-signin-btn" style="background:rgba(16,185,129,0.22);color:#22c55e;border:1px solid rgba(34,197,94,0.35);"><i class="ph ph-arrow-counter-clockwise"></i> Sign In</button>
+                <button class="btn btn-secondary" id="scan-signin-to-me-btn" style="background:rgba(148,163,184,0.16);border-color:rgba(148,163,184,0.35);"><i class="ph ph-user-switch"></i> Sign In To Me</button>
             </div>
         </div>
     `;
@@ -3001,6 +3282,26 @@ async function openScannedItemActionModal(match) {
 async function handleInSessionBarcodeScan(rawCode) {
     const code = String(rawCode || '').trim().toUpperCase();
     if (!code || !currentUser) return;
+
+    const inventoryPageActive = document.getElementById('page-inventory')?.classList.contains('active');
+
+    const scannedItem = findInventoryItemByScanCode(code);
+    if (currentUser.role === 'student' && scannedItem && !canUserSeeItem(currentUser, scannedItem)) {
+        await flagUnauthorizedScan(scannedItem, code);
+        showToast('That item is not visible to your class.', 'error');
+        return;
+    }
+
+    if (code === 'START SCANNING' && inventoryPageActive) {
+        toggleBasket(true);
+        showToast('Basket scanner mode enabled. Scan item SKUs to add them.', 'success');
+        return;
+    }
+
+    if (isBasketOpen) {
+        await handleBasketModeScan(code);
+        return;
+    }
 
     const matches = findOpenSignoutRecordsByItemCode(code);
     if (matches.length === 0) {
@@ -3287,9 +3588,9 @@ function openSignOutModal(itemId) {
     }
 
     // Only show active projects where current user is owner or collaborator
-    const myProjects = projects.filter(p => p.ownerId === currentUser.id || p.collaborators.includes(currentUser.id));
+    const myProjects = projects.filter(p => (p.ownerId === currentUser.id || p.collaborators.includes(currentUser.id)) && !String(p.id || '').startsWith('PERS-'));
 
-    const personalOption = `<option value="personal">Personal (Individual)</option>`;
+    const personalOption = `<option value="personal">My Items (Personal)</option>`;
     const projectsOptions = personalOption + myProjects.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
 
     // Build assignee options based on first project (will update when project changes)
@@ -3368,6 +3669,7 @@ function openSignOutModal(itemId) {
             <div class="form-group">
                 <label>Quantity (Max: ${item.stock})</label>
                 <input type="number" id="so-qty" class="form-control" min="1" max="${item.stock}" value="1">
+                <small class="text-muted" style="display:block;margin-top:0.35rem;"><strong>QTY:</strong> <span id="so-qty-preview">1x</span> | <strong>Stock After:</strong> <span id="so-stock-preview">${Math.max(0, item.stock - 1)}</span></small>
             </div>
         </div>
         <div class="modal-footer">
@@ -3377,6 +3679,20 @@ function openSignOutModal(itemId) {
     `;
 
     openModal(html);
+
+    const soQtyInput = document.getElementById('so-qty');
+    const soQtyPreview = document.getElementById('so-qty-preview');
+    const soStockPreview = document.getElementById('so-stock-preview');
+    const refreshQtyPreview = () => {
+        if (!soQtyInput) return;
+        const maxQty = Math.max(1, parseInt(soQtyInput.max, 10) || item.stock || 1);
+        const normalizedQty = Math.max(1, Math.min(maxQty, parseInt(soQtyInput.value, 10) || 1));
+        soQtyInput.value = String(normalizedQty);
+        if (soQtyPreview) soQtyPreview.textContent = `${normalizedQty}x`;
+        if (soStockPreview) soStockPreview.textContent = String(Math.max(0, item.stock - normalizedQty));
+    };
+    soQtyInput?.addEventListener('input', refreshQtyPreview);
+    refreshQtyPreview();
 
     // Update assignee options when project changes (for teachers)
     if (currentUser.role !== 'student') {
@@ -3476,7 +3792,9 @@ function openSignOutModal(itemId) {
                 itemId: item.id,
                 quantity: qty,
                 signoutDate: signoutData.signoutDate,
-                dueDate: signoutData.dueDate
+                dueDate: signoutData.dueDate,
+                assignedToUserId: signoutData.assignedToUserId,
+                signedOutByUserId: signoutData.signedOutByUserId
             }).catch(err => {
                 console.error('Failed to save signout in Supabase:', err);
                 return null;
@@ -3488,7 +3806,7 @@ function openSignOutModal(itemId) {
 
             _trackItemSignout(item, qty);
             // Log activity
-            addLog(currentUser.id, 'Sign Out', `Signed out ${qty}x ${item.name} (SKU: ${item.sku}) for Project: ${project.name === 'Personal Use' ? 'Personal' : project.name}`);
+            addLog(currentUser.id, 'Sign Out', `Signed out ${qty}x ${item.name} (SKU: ${item.sku}) for Project: ${String(project.id || '').startsWith('PERS-') ? 'My Items (Personal)' : project.name}`);
 
             showToast(`Successfully signed out ${qty} items!`, 'success');
             closeModal();
@@ -3723,23 +4041,19 @@ function openEditClassModal(classId) {
                 <small class="text-muted">Used when a sign-out happens outside any class period — student gets this many minutes to return the item.</small>
             </div>
             <div class="form-group">
-                <label>Minutes Per Class Period</label>
-                <input type="number" id="edit-class-period-mins" class="form-control" min="1" value="${classDuePolicy.classPeriodMinutes}">
-                <small class="text-muted">Used with class periods below — due time = return periods × this value.</small>
-            </div>
-            <div class="form-group">
                 <label>Class Periods</label>
-                <div style="display:grid;grid-template-columns:1fr 1fr 110px 36px;gap:0.5rem;margin-bottom:0.25rem">
+                <div style="display:grid;grid-template-columns:1fr 1fr 220px 110px 36px;gap:0.5rem;margin-bottom:0.25rem">
                     <span class="text-muted" style="font-size:0.8rem">Start</span>
                     <span class="text-muted" style="font-size:0.8rem">End</span>
-                    <span class="text-muted" style="font-size:0.8rem">Return Periods</span>
+                    <span class="text-muted" style="font-size:0.8rem">Due Rule</span>
+                    <span class="text-muted" style="font-size:0.8rem">Mins Before</span>
                     <span></span>
                 </div>
                 <div id="edit-class-period-rows">${buildPeriodRowsHtml(classDuePolicy.periodRanges)}</div>
                 <button type="button" id="edit-class-add-period-btn" class="btn btn-secondary" style="margin-top:0.5rem">
                     <i class="ph ph-plus"></i> Add Period
                 </button>
-                <small class="text-muted" style="display:block;margin-top:0.4rem">When a sign-out falls within a period window, the return deadline = return periods × minutes per class period.</small>
+                <small class="text-muted" style="display:block;margin-top:0.4rem">Set each period to be due at period end or a number of minutes before period end.</small>
             </div>
         </div>
         <div class="modal-footer">
@@ -3766,7 +4080,6 @@ function openEditClassModal(classId) {
         const checkedStudents = Array.from(document.querySelectorAll('.edit-class-student-checkbox:checked')).map(cb => cb.value);
         const checkedTags = Array.from(document.querySelectorAll('.edit-class-tag-cb:checked')).map(cb => cb.value);
         const defaultDueMinutes = Math.max(1, parseInt(document.getElementById('edit-class-default-due').value, 10) || 80);
-        const classPeriodMinutes = Math.max(1, parseInt(document.getElementById('edit-class-period-mins').value, 10) || 50);
         const timezone = document.getElementById('edit-class-timezone').value;
         const parsedRanges = collectPeriodRowsFromModal('edit-class-period-rows');
         const selectedTeacherId = currentUser.role === 'developer'
@@ -3781,7 +4094,6 @@ function openEditClassModal(classId) {
             cls.allowedVisibilityTags = checkedTags;
             cls.duePolicy = normalizeDuePolicy({
                 defaultSignoutMinutes: defaultDueMinutes,
-                classPeriodMinutes: classPeriodMinutes,
                 timezone,
                 periodRanges: parsedRanges
             });
@@ -3882,23 +4194,19 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
                 <small class="text-muted">Used when a sign-out happens outside any class period — student gets this many minutes to return the item.</small>
             </div>
             <div class="form-group">
-                <label>Minutes Per Class Period</label>
-                <input type="number" id="add-class-period-mins" class="form-control" min="1" value="${defaultDuePolicy.classPeriodMinutes}">
-                <small class="text-muted">Used with class periods below — due time = return periods × this value.</small>
-            </div>
-            <div class="form-group">
                 <label>Class Periods</label>
-                <div style="display:grid;grid-template-columns:1fr 1fr 110px 36px;gap:0.5rem;margin-bottom:0.25rem">
+                <div style="display:grid;grid-template-columns:1fr 1fr 220px 110px 36px;gap:0.5rem;margin-bottom:0.25rem">
                     <span class="text-muted" style="font-size:0.8rem">Start</span>
                     <span class="text-muted" style="font-size:0.8rem">End</span>
-                    <span class="text-muted" style="font-size:0.8rem">Return Periods</span>
+                    <span class="text-muted" style="font-size:0.8rem">Due Rule</span>
+                    <span class="text-muted" style="font-size:0.8rem">Mins Before</span>
                     <span></span>
                 </div>
                 <div id="add-class-period-rows">${defaultRangesHtml}</div>
                 <button type="button" id="add-class-add-period-btn" class="btn btn-secondary" style="margin-top:0.5rem">
                     <i class="ph ph-plus"></i> Add Period
                 </button>
-                <small class="text-muted" style="display:block;margin-top:0.4rem">When a sign-out falls within a period window, the return deadline = return periods × minutes per class period.</small>
+                <small class="text-muted" style="display:block;margin-top:0.4rem">Set each period to be due at period end or a number of minutes before period end.</small>
             </div>
         </div>
         <div class="modal-footer">
@@ -3927,7 +4235,6 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
             const checkedStudents = Array.from(document.querySelectorAll('.student-checkbox:checked')).map(cb => cb.value);
             const checkedTags = Array.from(document.querySelectorAll('.add-class-tag-cb:checked')).map(cb => cb.value);
             const defaultDueMinutes = Math.max(1, parseInt(document.getElementById('add-class-default-due').value, 10) || 80);
-            const classPeriodMinutes = Math.max(1, parseInt(document.getElementById('add-class-period-mins').value, 10) || 50);
             const timezone = document.getElementById('add-class-timezone').value;
             const parsedRanges = collectPeriodRowsFromModal('add-class-period-rows');
             const selectedTeacherId = currentUser.role === 'developer'
@@ -3944,7 +4251,6 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
                     allowedVisibilityTags: checkedTags,
                     duePolicy: normalizeDuePolicy({
                         defaultSignoutMinutes: defaultDueMinutes,
-                        classPeriodMinutes: classPeriodMinutes,
                         timezone,
                         periodRanges: parsedRanges
                     }),

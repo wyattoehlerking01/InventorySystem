@@ -158,7 +158,12 @@ async function loadInventoryItems() {
         console.error('Error loading inventory items:', error);
         return;
     }
-    inventoryItems = data || [];
+    inventoryItems = (data || []).map(row => ({
+        ...row,
+        storageLocation: row.storageLocation ?? row.storage_location ?? row.location ?? null,
+        imageLink: row.imageLink ?? row.image_link ?? null,
+        supplierListingLink: row.supplierListingLink ?? row.supplier_listing_link ?? null
+    }));
     console.log(`Loaded ${inventoryItems.length} inventory items`);
 }
 
@@ -370,8 +375,8 @@ async function loadProjectItemsOut() {
                 quantity: io.quantity,
                 signoutDate: io.signout_date,
                 dueDate: io.due_date,
-                assignedToUserId: null,
-                signedOutByUserId: null
+                assignedToUserId: io.assigned_to_user_id ?? io.assignedToUserId ?? null,
+                signedOutByUserId: io.signed_out_by_user_id ?? io.signedOutByUserId ?? null
             });
         }
     });
@@ -470,7 +475,6 @@ async function loadStudentClasses() {
     (duePolicyRes.data || []).forEach(row => {
         duePolicyByClass[row.class_id] = {
             defaultSignoutMinutes: row.default_signout_minutes,
-            classPeriodMinutes: row.class_period_minutes,
             timezone: row.timezone,
             periodRanges: []
         };
@@ -480,18 +484,22 @@ async function loadStudentClasses() {
         if (!duePolicyByClass[row.class_id]) {
             duePolicyByClass[row.class_id] = {
                 defaultSignoutMinutes: 80,
-                classPeriodMinutes: 50,
                 timezone: 'America/Edmonton',
                 periodRanges: []
             };
         }
 
+        const dueMode = row.due_mode === 'minutes_before_end'
+            ? 'minutes_before_end'
+            : 'at_period_end';
+
         duePolicyByClass[row.class_id].periodRanges.push({
             start: String(row.start_time).slice(0, 5),
             end: String(row.end_time).slice(0, 5),
-            returnClassPeriods: row.return_class_periods,
-            dueMode: row.due_mode || 'class_periods',
-            dueMinutesBeforeEnd: row.due_minutes_before_end || 0,
+            dueMode,
+            dueMinutesBeforeEnd: dueMode === 'minutes_before_end'
+                ? Math.max(0, parseInt(row.due_minutes_before_end, 10) || 0)
+                : 0,
             dueAtTime: row.due_at_time ? String(row.due_at_time).slice(0, 5) : ''
         });
     });
@@ -518,9 +526,8 @@ async function loadStudentClasses() {
         allowedVisibilityTags: tagsByClass[cls.id] || [],
         duePolicy: duePolicyByClass[cls.id] || {
             defaultSignoutMinutes: 80,
-            classPeriodMinutes: 50,
             timezone: 'America/Edmonton',
-            periodRanges: [{ start: '08:00', end: '08:55', returnClassPeriods: 2 }]
+            periodRanges: [{ start: '08:00', end: '08:55', dueMode: 'at_period_end', dueMinutesBeforeEnd: 0 }]
         },
         defaultPermissions: permissionsByClass[cls.id] || {
             canCreateProjects: false,
@@ -538,9 +545,8 @@ async function loadStudentClasses() {
 async function saveStudentClassToSupabase(cls) {
     const duePolicy = cls.duePolicy || {
         defaultSignoutMinutes: 80,
-        classPeriodMinutes: 50,
         timezone: 'America/Edmonton',
-        periodRanges: [{ start: '08:00', end: '08:55', returnClassPeriods: 2 }]
+        periodRanges: [{ start: '08:00', end: '08:55', dueMode: 'at_period_end', dueMinutesBeforeEnd: 0 }]
     };
 
     const defaultPermissions = cls.defaultPermissions || {
@@ -582,7 +588,7 @@ async function saveStudentClassToSupabase(cls) {
         {
             class_id: classId,
             default_signout_minutes: duePolicy.defaultSignoutMinutes,
-            class_period_minutes: duePolicy.classPeriodMinutes,
+            class_period_minutes: duePolicy.classPeriodMinutes ?? 50,
             timezone: duePolicy.timezone || 'America/Edmonton'
         }
     ], { onConflict: 'class_id' });
@@ -672,7 +678,12 @@ async function saveStudentClassToSupabase(cls) {
                 class_id: classId,
                 start_time: period.start,
                 end_time: period.end,
-                return_class_periods: period.returnClassPeriods
+                return_class_periods: 1,
+                due_mode: period.dueMode === 'minutes_before_end' ? 'minutes_before_end' : 'at_period_end',
+                due_minutes_before_end: period.dueMode === 'minutes_before_end'
+                    ? Math.max(0, parseInt(period.dueMinutesBeforeEnd, 10) || 0)
+                    : 0,
+                due_at_time: null
             }))
         );
         if (insertPeriodsError) {
@@ -829,6 +840,14 @@ async function deleteUserFromSupabase(userId) {
  * Add inventory item to inventory_items table
  */
 async function addItemToSupabase(item) {
+    const isSchemaColumnError = (err) => {
+        const msg = String(err?.message || '').toLowerCase();
+        return /column .* does not exist/i.test(String(err?.message || ''))
+            || msg.includes('could not find the')
+            || msg.includes('schema cache')
+            || msg.includes('undefined_column');
+    };
+
     const payload = {
         id: item.id,
         name: item.name,
@@ -849,20 +868,45 @@ async function addItemToSupabase(item) {
 
     let { data, error } = await dbClient.from('inventory_items').insert([payload]).select();
 
-    if (error && /column .* does not exist/i.test(String(error.message || ''))) {
-        const fallbackPayload = {
-            id: item.id,
-            name: item.name,
-            category: item.category,
-            sku: item.sku,
-            stock: item.stock || 0,
-            threshold: item.threshold || 5,
-            status: item.status || 'Active',
-            part_number: item.part_number || null,
-            item_type: item.item_type || 'item',
-            visibility_level: item.visibility_level || 'standard'
-        };
-        ({ data, error } = await dbClient.from('inventory_items').insert([fallbackPayload]).select());
+    if (error && isSchemaColumnError(error)) {
+        const fallbackPayloads = [
+            {
+                ...payload,
+                supplier_listing_link: undefined
+            },
+            {
+                ...payload,
+                supplier_listing_link: undefined,
+                image_link: undefined
+            },
+            {
+                ...payload,
+                supplier_listing_link: undefined,
+                image_link: undefined,
+                supplier: undefined,
+                brand: undefined,
+                location: undefined
+            },
+            {
+                id: item.id,
+                name: item.name,
+                category: item.category,
+                sku: item.sku,
+                stock: item.stock || 0,
+                threshold: item.threshold || 5,
+                status: item.status || 'Active',
+                part_number: item.part_number || null,
+                item_type: item.item_type || 'item',
+                visibility_level: item.visibility_level || 'standard'
+            }
+        ];
+
+        for (const candidate of fallbackPayloads) {
+            const cleaned = Object.fromEntries(Object.entries(candidate).filter(([, value]) => value !== undefined));
+            ({ data, error } = await dbClient.from('inventory_items').insert([cleaned]).select());
+            if (!error) break;
+            if (!isSchemaColumnError(error)) break;
+        }
     }
     
     if (error) {
@@ -876,11 +920,19 @@ async function addItemToSupabase(item) {
  * Update inventory item in inventory_items table
  */
 async function updateItemInSupabase(itemId, updates) {
+    const isSchemaColumnError = (err) => {
+        const msg = String(err?.message || '').toLowerCase();
+        return /column .* does not exist/i.test(String(err?.message || ''))
+            || msg.includes('could not find the')
+            || msg.includes('schema cache')
+            || msg.includes('undefined_column');
+    };
+
     let { data, error } = await dbClient.from('inventory_items')
         .update(updates)
         .eq('id', itemId).select();
 
-    if (error && /column .* does not exist/i.test(String(error.message || ''))) {
+    if (error && isSchemaColumnError(error)) {
         const safeUpdates = { ...updates };
         delete safeUpdates.location;
         delete safeUpdates.storageLocation;
@@ -964,13 +1016,28 @@ async function updateProjectInSupabase(projectId, updates) {
  * Add project item out to project_items_out table
  */
 async function addProjectItemOutToSupabase(itemOut) {
-    const { data, error } = await dbClient.from('project_items_out').insert([{
+    const payload = {
         project_id: itemOut.projectId,
         item_id: itemOut.itemId,
         quantity: itemOut.quantity,
         signout_date: itemOut.signoutDate,
-        due_date: itemOut.dueDate
-    }]).select();
+        due_date: itemOut.dueDate,
+        assigned_to_user_id: itemOut.assignedToUserId || null,
+        signed_out_by_user_id: itemOut.signedOutByUserId || null
+    };
+
+    let { data, error } = await dbClient.from('project_items_out').insert([payload]).select();
+
+    if (error && /column .* does not exist/i.test(String(error.message || ''))) {
+        const fallbackPayload = {
+            project_id: itemOut.projectId,
+            item_id: itemOut.itemId,
+            quantity: itemOut.quantity,
+            signout_date: itemOut.signoutDate,
+            due_date: itemOut.dueDate
+        };
+        ({ data, error } = await dbClient.from('project_items_out').insert([fallbackPayload]).select());
+    }
     
     if (error) {
         console.error('Error adding project item out:', error);
