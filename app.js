@@ -16,6 +16,8 @@ const configuredOrganizationId = String(
 let appVersion = String(envConfig.APP_VERSION ?? envConfig.APP_Version ?? 'VERSION').trim() || 'VERSION';
 const appName = String(envConfig.APP_NAME ?? 'LCHS').trim() || 'LCHS';
 const appSubtitle = String(envConfig.APP_SUBTITLE ?? 'Secure Inventory Management').trim() || 'Secure Inventory Management';
+const appLogoUrl = String(envConfig.APP_LOGO_URL ?? envConfig.APP_IMAGE_URL ?? '').trim();
+const appSidebarLogoUrl = String(envConfig.APP_SIDEBAR_LOGO_URL ?? appLogoUrl).trim();
 window.RUNTIME_APP_VERSION = appVersion;
 let runtimeOrganizationId = configuredOrganizationId;
 
@@ -89,7 +91,7 @@ let inventorySearchTerm = '';
 let inventoryCategoryFilter = 'All';
 let inventorySupplierFilter = 'All';
 let inventoryBrandFilter = 'All';
-let ordersTabMode = 'orders';
+let ordersTabMode = 'all';
 
 // Modals & Toasts
 const modalContainer = document.getElementById('modal-container');
@@ -553,6 +555,19 @@ function escapeHtml(value) {
         .replace(/'/g, '&#39;');
 }
 
+function normalizeSkuToken(value) {
+    return String(value || '').trim().toUpperCase().replace(/[^A-Z0-9-]/g, '');
+}
+
+function isSkuInUse(sku, excludeItemId = null) {
+    const target = normalizeSkuToken(sku);
+    if (!target) return false;
+    return inventoryItems.some(item => {
+        if (excludeItemId && item.id === excludeItemId) return false;
+        return normalizeSkuToken(item.sku) === target;
+    });
+}
+
 function openAppInfoMenu() {
     const popupHeading = String(envConfig.INFO_POPUP_HEADING || 'System Information').trim();
     const licenseStatusLabel = !appLicenseState.checked
@@ -775,6 +790,40 @@ function applyBranding() {
 
     const loginSubtitleEl = document.getElementById('app-login-subtitle');
     if (loginSubtitleEl) loginSubtitleEl.textContent = appSubtitle;
+
+    applyBrandImage('app-login-logo-image', 'app-login-name', appLogoUrl, `${appName} logo`);
+    applyBrandImage('app-sidebar-logo-image', 'app-sidebar-name', appSidebarLogoUrl, `${appName} logo`);
+}
+
+function isValidBrandImageUrl(url) {
+    if (!url) return false;
+    return /^https?:\/\//i.test(url)
+        || /^data:image\//i.test(url)
+        || url.startsWith('/')
+        || url.startsWith('./')
+        || url.startsWith('../');
+}
+
+function applyBrandImage(imageId, textId, imageUrl, altText) {
+    const imageEl = document.getElementById(imageId);
+    const textEl = document.getElementById(textId);
+    if (!imageEl || !textEl) return;
+
+    if (!isValidBrandImageUrl(imageUrl)) {
+        imageEl.classList.add('hidden');
+        textEl.classList.remove('hidden');
+        return;
+    }
+
+    imageEl.src = imageUrl;
+    imageEl.alt = altText || appName;
+    imageEl.classList.remove('hidden');
+    textEl.classList.add('hidden');
+
+    imageEl.onerror = () => {
+        imageEl.classList.add('hidden');
+        textEl.classList.remove('hidden');
+    };
 }
 
 function setRuntimeAppVersion(version) {
@@ -1959,7 +2008,7 @@ async function refreshPageDataFromSupabase(targetId) {
 async function switchPage(targetId, title) {
     if (targetId === 'requests') {
         targetId = 'orders';
-        title = 'Orders & Requests';
+        title = 'Operations Hub';
         ordersTabMode = 'requests';
     }
 
@@ -3011,6 +3060,17 @@ async function returnProjectItem(projectId, signoutId, options = {}) {
 
     if (io.id) {
         const returned = await returnItemToSupabase(io.id);
+        if (!returned) {
+            showToast('Failed to return item in Supabase.', 'error');
+            return false;
+        }
+    } else {
+        const returned = await returnItemByCompositeToSupabase({
+            projectId: project.id,
+            itemId: io.itemId,
+            signoutDate: io.signoutDate,
+            quantity: io.quantity
+        });
         if (!returned) {
             showToast('Failed to return item in Supabase.', 'error');
             return false;
@@ -4481,20 +4541,35 @@ function openUserItemsModal(userId) {
 
 document.getElementById('add-user-btn')?.addEventListener('click', () => openUserModal());
 
-document.getElementById('users-bulk-action-select')?.addEventListener('change', (e) => {
-    const action = e.target.value;
-    if (!action) return;
+document.getElementById('users-bulk-actions-btn')?.addEventListener('click', () => {
+    document.getElementById('users-bulk-actions-menu')?.classList.toggle('hidden');
+});
 
-    if (action === 'import') document.getElementById('bulk-users-btn')?.click();
-    if (action === 'delete') document.getElementById('bulk-delete-users-btn')?.click();
-    if (action === 'suspend') document.getElementById('bulk-suspend-users-btn')?.click();
+document.getElementById('bulk-action-import')?.addEventListener('click', () => {
+    document.getElementById('users-bulk-actions-menu')?.classList.add('hidden');
+    document.getElementById('bulk-users-btn')?.click();
+});
 
-    e.target.value = '';
+document.getElementById('bulk-action-delete')?.addEventListener('click', () => {
+    document.getElementById('users-bulk-actions-menu')?.classList.add('hidden');
+    document.getElementById('bulk-delete-users-btn')?.click();
+});
+
+document.getElementById('bulk-action-suspend')?.addEventListener('click', () => {
+    document.getElementById('users-bulk-actions-menu')?.classList.add('hidden');
+    document.getElementById('bulk-suspend-users-btn')?.click();
+});
+
+document.addEventListener('click', (e) => {
+    const wrap = document.getElementById('users-bulk-actions-wrap');
+    const menu = document.getElementById('users-bulk-actions-menu');
+    if (!wrap || !menu) return;
+    if (!wrap.contains(e.target)) menu.classList.add('hidden');
 });
 
 document.getElementById('view-requests-btn')?.addEventListener('click', () => {
     ordersTabMode = 'requests';
-    switchPage('orders', 'Orders & Requests').catch(err => {
+    switchPage('orders', 'Operations Hub').catch(err => {
         console.error('Failed to open Orders/Requests view:', err);
         showToast('Unable to open requests tab.', 'error');
     });
@@ -4953,6 +5028,11 @@ function openAddItemModal() {
                 ${categories.length === 0 ? '<small class="text-muted">No categories found yet. This item will be saved as Uncategorized.</small>' : ''}
             </div>
             <div class="form-group">
+                <label>Barcode Prefix (optional, 2 letters)</label>
+                <input type="text" id="add-sku-prefix" class="form-control" maxlength="2" placeholder="e.g. EL">
+                <small class="text-muted">If blank, category initials are used when auto-generating SKU/barcode.</small>
+            </div>
+            <div class="form-group">
                 <label>SKU / Barcode</label>
                 <input type="text" id="add-sku" class="form-control" placeholder="Leave blank to auto-generate">
             </div>
@@ -5032,7 +5112,8 @@ function openAddItemModal() {
         withButtonPending(submitBtn, 'Adding...', async () => {
         const name = document.getElementById('add-name').value.trim();
         const category = (document.getElementById('add-category').value || 'Uncategorized').trim();
-        const manualSku = document.getElementById('add-sku').value.trim().toUpperCase();
+        const manualSku = normalizeSkuToken(document.getElementById('add-sku').value);
+        const skuPrefixRaw = normalizeSkuToken(document.getElementById('add-sku-prefix')?.value || '');
         const partNumber = document.getElementById('add-part-number')?.value.trim() || '';
         const storageLocation = document.getElementById('add-storage-location')?.value.trim() || '';
         const brand = document.getElementById('add-brand')?.value.trim() || '';
@@ -5050,12 +5131,21 @@ function openAddItemModal() {
             return;
         }
 
-        const autoSku = `${name.substring(0, 3).toUpperCase()}-${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`;
+        const derivedCategoryPrefix = normalizeSkuToken(category).slice(0, 2);
+        const prefix = (skuPrefixRaw || derivedCategoryPrefix || normalizeSkuToken(name).slice(0, 2) || 'IT').slice(0, 2);
+        const autoSku = `${prefix}-${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`;
+        const finalSku = manualSku || autoSku;
+
+        if (isSkuInUse(finalSku)) {
+            showToast('SKU/barcode already exists. Please use a unique value.', 'error');
+            return;
+        }
+
         const newItem = {
             id: generateId('ITM'),
             name,
             category,
-            sku: manualSku || autoSku,
+            sku: finalSku,
             stock,
             threshold,
             part_number: partNumber || null,
@@ -5083,6 +5173,7 @@ function openAddItemModal() {
         }
 
         await refreshInventoryFromSupabase();
+        addLog(currentUser.id, 'Barcode Created', `Barcode ${newItem.sku} assigned to ${name}.`);
         addLog(currentUser.id, 'Add Item', `Added new inventory item: ${name} (${stock} units)`);
         showToast(`${name} added to inventory.`, 'success');
         closeModal();
@@ -5566,15 +5657,15 @@ function openOrderRequestModal({ initialName = '' } = {}) {
         <div class="modal-body">
             <p class="text-secondary mb-4">Use this when an item does not exist in inventory or stock is unavailable.</p>
             <div class="form-group">
-                <label>Part Name</label>
+                <label>Part Name (optional)</label>
                 <input type="text" id="order-part-name" class="form-control" placeholder="e.g. Soldering Iron" value="${String(initialName || '').replace(/"/g, '&quot;')}">
             </div>
             <div class="form-group">
-                <label>Quantity Needed</label>
+                <label>Quantity Needed (optional)</label>
                 <input type="number" id="order-quantity-needed" class="form-control" min="1" value="1">
             </div>
             <div class="form-group">
-                <label>Vendor / Supplier</label>
+                <label>Vendor / Supplier (optional)</label>
                 <select id="order-vendor" class="form-control">
                     ${vendorOptionsHtml}
                 </select>
@@ -5604,7 +5695,7 @@ function openOrderRequestModal({ initialName = '' } = {}) {
                 <select id="order-priority-level" class="form-control">${priorityOptionsHtml}</select>
             </div>
             <div class="form-group">
-                <label>What is this part for?</label>
+                <label>What is this part for? (optional)</label>
                 <textarea id="order-part-purpose" class="form-control" rows="4" placeholder="Describe usage and context."></textarea>
             </div>
             ${enabled.optionalImpact ? `
@@ -5685,14 +5776,12 @@ function openOrderRequestModal({ initialName = '' } = {}) {
         const vendorOther = document.getElementById('order-vendor-other')?.value.trim() || '';
         const partPurpose = document.getElementById('order-part-purpose')?.value.trim();
 
-        if (!partName || !partPurpose || !vendorSelection) {
-            showToast('Part name, quantity, vendor, and purpose are required.', 'error');
-            return;
-        }
+        const fallbackPartName = partName || 'Unspecified Item';
+        const fallbackPartPurpose = partPurpose || 'No purpose provided.';
 
         const vendorFinal = vendorSelection.toLowerCase() === 'other'
             ? (vendorOther || 'Other')
-            : vendorSelection;
+            : (vendorSelection || 'Unspecified');
 
         const estimatedPricePerUnit = parseOptionalCurrency(document.getElementById('order-estimated-price')?.value || '');
         let estimatedTotalCost = parseOptionalCurrency(document.getElementById('order-estimated-total')?.value || '');
@@ -5703,14 +5792,14 @@ function openOrderRequestModal({ initialName = '' } = {}) {
 
         const formData = {
             schemaVersion: 1,
-            partName,
+            partName: fallbackPartName,
             quantityNeeded,
             vendorSupplier: vendorFinal,
             partNumberSku: document.getElementById('order-part-number')?.value.trim() || '',
             estimatedPricePerUnit,
             estimatedTotalCost,
             priorityLevel: document.getElementById('order-priority-level')?.value || 'Medium',
-            partPurpose,
+            partPurpose: fallbackPartPurpose,
             noOrderImpact: document.getElementById('order-no-order-impact')?.value.trim() || '',
             hasAlternatives: document.getElementById('order-has-alternatives')?.value || '',
             alternativesExplanation: document.getElementById('order-alternatives-details')?.value.trim() || '',
@@ -5727,10 +5816,10 @@ function openOrderRequestModal({ initialName = '' } = {}) {
             id: generateId('ORD'),
             requestedByUserId: currentUser.id,
             requestedByName: currentUser.name,
-            itemName: partName,
+            itemName: fallbackPartName,
             category: formData.budgetCategory || 'Uncategorized',
             quantity: quantityNeeded,
-            justification: buildOrderJustificationWithFormData(partPurpose, formData),
+            justification: buildOrderJustificationWithFormData(fallbackPartPurpose, formData),
             status: 'Pending',
             timestamp: new Date().toISOString()
         };
@@ -5748,7 +5837,7 @@ function openOrderRequestModal({ initialName = '' } = {}) {
         });
 
         await refreshRequestsFromSupabase();
-        addLog(currentUser.id, 'Order Request', `Requested order: ${quantityNeeded}x ${partName} (${formData.priorityLevel})`);
+        addLog(currentUser.id, 'Order Request', `Requested order: ${quantityNeeded}x ${fallbackPartName} (${formData.priorityLevel})`);
         showToast('Order request submitted.', 'success');
         closeModal();
 
@@ -5782,7 +5871,9 @@ function renderOrders() {
     });
 
     if (ordersHeaderRow) {
-        if (ordersTabMode === 'orders') {
+        if (ordersTabMode === 'all') {
+            ordersHeaderRow.innerHTML = '<th>Date</th><th>Kind</th><th>From</th><th>Summary</th><th>Status</th><th>Actions</th><th></th><th></th>';
+        } else if (ordersTabMode === 'orders') {
             ordersHeaderRow.innerHTML = '<th>Date</th><th>Requested By</th><th>Part Name</th><th>Qty</th><th>Priority</th><th>Est. Total</th><th>Status</th><th>Actions</th>';
         } else if (ordersTabMode === 'requests') {
             ordersHeaderRow.innerHTML = '<th>Date</th><th>Type</th><th>From</th><th>Details</th><th>Status</th><th>Actions</th><th></th><th></th>';
@@ -5831,6 +5922,77 @@ function renderOrders() {
 
     if (currentUser.role === 'student' && !ordersStudentViewEnabled) {
         tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted">Orders view is currently disabled for students.</td></tr>';
+        return;
+    }
+
+    if (ordersTabMode === 'all') {
+        const opsRows = [];
+
+        orderRequests.forEach(r => {
+            if (currentUser.role === 'student' && r.requestedByUserId !== currentUser.id) return;
+            opsRows.push({
+                kind: 'Order',
+                timestamp: r.timestamp,
+                from: r.requestedByName || r.requestedByUserId,
+                summary: `${r.itemName} (x${r.quantity || 1})`,
+                status: r.status || 'Pending'
+            });
+        });
+
+        helpRequests.forEach(r => {
+            opsRows.push({
+                kind: 'Request',
+                timestamp: r.timestamp,
+                from: r.name,
+                summary: r.description,
+                status: r.status || 'Pending'
+            });
+        });
+
+        extensionRequests.forEach(r => {
+            opsRows.push({
+                kind: 'Request',
+                timestamp: r.timestamp,
+                from: r.userName,
+                summary: `${r.itemName} extension (${new Date(r.currentDue).toLocaleDateString()} -> ${new Date(r.requestedDue).toLocaleDateString()})`,
+                status: r.status || 'Pending'
+            });
+        });
+
+        (systemFlags || []).filter(flag => flag.status !== 'Archived').forEach(flag => {
+            opsRows.push({
+                kind: 'Flag',
+                timestamp: flag.created_at || flag.timestamp,
+                from: flag.actor_user_id || 'System',
+                summary: flag.details || flag.flag_type || 'System flag',
+                status: flag.status || 'Open'
+            });
+        });
+
+        opsRows.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+        tbody.innerHTML = opsRows.map(row => {
+            const statusStyle = row.status === 'Approved' || row.status === 'Ordered' || row.status === 'Resolved'
+                ? 'background:rgba(16,185,129,0.2);color:var(--success)'
+                : row.status === 'Denied'
+                    ? 'background:rgba(239,68,68,0.2);color:var(--danger)'
+                    : row.status === 'Archived'
+                        ? 'background:rgba(107,114,128,0.2);color:var(--text-secondary)'
+                        : 'background:rgba(245,158,11,0.2);color:var(--warning)';
+            return `
+                <tr>
+                    <td><small class="text-muted">${new Date(row.timestamp).toLocaleDateString()}</small></td>
+                    <td>${row.kind}</td>
+                    <td>${row.from || '-'}</td>
+                    <td>${row.summary || '-'}</td>
+                    <td><span class="badge" style="${statusStyle}">${row.status}</span></td>
+                    <td>-</td>
+                    <td></td>
+                    <td></td>
+                </tr>
+            `;
+        }).join('') || '<tr><td colspan="8" class="text-center text-muted">No operations found.</td></tr>';
+
         return;
     }
 
@@ -6324,7 +6486,7 @@ function openEditItemModal(itemId) {
     document.getElementById('confirm-edit-item').addEventListener('click', async () => {
         const name = document.getElementById('edit-item-name').value.trim();
         const category = document.getElementById('edit-item-category').value;
-        const sku = document.getElementById('edit-item-sku').value.trim();
+        const sku = normalizeSkuToken(document.getElementById('edit-item-sku').value);
         const location = document.getElementById('edit-item-location').value.trim();
         const brand = document.getElementById('edit-item-brand').value.trim();
         const supplier = document.getElementById('edit-item-supplier').value.trim();
@@ -6335,6 +6497,16 @@ function openEditItemModal(itemId) {
         const selectedTags = Array.from(document.querySelectorAll('.edit-item-tag-cb:checked')).map(cb => cb.value);
 
         if (name) {
+            if (!sku) {
+                showToast('SKU/barcode cannot be blank.', 'error');
+                return;
+            }
+
+            if (isSkuInUse(sku, itemId)) {
+                showToast('SKU/barcode already exists. Please use a unique value.', 'error');
+                return;
+            }
+
             const updated = await updateItemInSupabase(itemId, {
                 name,
                 category,
@@ -6360,6 +6532,7 @@ function openEditItemModal(itemId) {
 
             await refreshInventoryFromSupabase();
 
+            addLog(currentUser.id, 'Barcode Updated', `Barcode ${sku} confirmed for ${name} (${itemId}).`);
             addLog(currentUser.id, 'Edit Item', `Updated item: ${name} (${itemId})`);
             showToast(`${name} updated.`, 'success');
             closeModal();

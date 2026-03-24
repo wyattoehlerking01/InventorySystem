@@ -70,6 +70,7 @@
     <div id="login-view" class="view active h-screen flex-center">
         <div class="login-card glass-panel flex-col flex-center">
             <div class="login-logo mb-4">
+                <img id="app-login-logo-image" class="brand-logo-image hidden" alt="App logo">
                 <h1 id="app-login-name">LCHS</h1>
             </div>
             <p class="subtitle" id="app-login-subtitle">Secure Inventory Management</p>
@@ -129,6 +130,7 @@
         <aside class="sidebar glass-panel">
             <div class="sidebar-header">
                 <div class="logo">
+                    <img id="app-sidebar-logo-image" class="brand-logo-image hidden" alt="App logo">
                     <h2 id="app-sidebar-name">LCHS</h2>
                 </div>
             </div>
@@ -158,7 +160,7 @@
                     <i class="ph ph-folder-open"></i> Projects
                 </button>
                 <button class="nav-btn" id="nav-orders" data-target="orders">
-                    <i class="ph ph-shopping-bag-open"></i> Orders
+                    <i class="ph ph-rows-plus-bottom"></i> Operations Hub
                 </button>
                 <button class="nav-btn restricted" id="nav-classes" data-target="classes">
                     <i class="ph ph-users-four"></i> Classes
@@ -317,9 +319,10 @@
                 <!-- Orders Page -->
                 <div id="page-orders" class="page hidden">
                     <div class="action-bar">
-                        <h3>Orders, Requests, and Flags</h3>
+                        <h3>Operations Hub</h3>
                         <div class="flex" style="gap:0.75rem;align-items:center;">
-                            <button class="btn btn-secondary orders-mode-btn active" data-mode="orders">Orders</button>
+                            <button class="btn btn-secondary orders-mode-btn active" data-mode="all">All Activity</button>
+                            <button class="btn btn-secondary orders-mode-btn" data-mode="orders">Orders</button>
                             <button class="btn btn-secondary orders-mode-btn" data-mode="requests">Requests</button>
                             <button class="btn btn-secondary orders-mode-btn" data-mode="flags">System Flags</button>
                             <select id="orders-status-filter" class="form-control" style="min-width:190px;">
@@ -431,12 +434,22 @@
                                     <i class="ph ph-squares-four"></i>
                                 </button>
                             </div>
-                            <select id="users-bulk-action-select" class="form-control" style="min-width:190px;">
-                                <option value="">Bulk Actions</option>
-                                <option value="import">Bulk Import Users</option>
-                                <option value="delete">Bulk Delete Selected</option>
-                                <option value="suspend">Bulk Suspend/Activate Selected</option>
-                            </select>
+                            <div class="bulk-actions-menu-wrap" id="users-bulk-actions-wrap">
+                                <button class="btn btn-secondary" id="users-bulk-actions-btn" type="button">
+                                    <i class="ph ph-list-checks"></i> Bulk Actions
+                                </button>
+                                <div class="bulk-actions-menu hidden" id="users-bulk-actions-menu">
+                                    <button class="btn btn-secondary bulk-action-item" id="bulk-action-import" type="button">
+                                        <i class="ph ph-users-three"></i> Bulk Import Users
+                                    </button>
+                                    <button class="btn btn-danger bulk-action-item" id="bulk-action-delete" type="button">
+                                        <i class="ph ph-trash"></i> Bulk Delete Selected
+                                    </button>
+                                    <button class="btn btn-secondary bulk-action-item" id="bulk-action-suspend" type="button">
+                                        <i class="ph ph-user-minus"></i> Bulk Suspend/Activate
+                                    </button>
+                                </div>
+                            </div>
                             <button class="btn btn-secondary" id="bulk-users-btn" style="display:none;">
                                 <i class="ph ph-users-three"></i> Bulk Import
                             </button>

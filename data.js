@@ -995,6 +995,29 @@ async function returnItemToSupabase(projectItemOutId) {
 }
 
 /**
+ * Return item by composite fields when legacy in-memory rows do not have id.
+ */
+async function returnItemByCompositeToSupabase({ projectId, itemId, signoutDate, quantity }) {
+    let query = dbClient
+        .from('project_items_out')
+        .delete()
+        .eq('project_id', projectId)
+        .eq('item_id', itemId)
+        .eq('quantity', quantity);
+
+    if (signoutDate) {
+        query = query.eq('signout_date', signoutDate);
+    }
+
+    const { error } = await query;
+    if (error) {
+        console.error('Error returning item by composite key:', error);
+        return false;
+    }
+    return true;
+}
+
+/**
  * Update due date for an existing project item out row
  */
 async function updateProjectItemOutDueDateInSupabase(projectItemOutId, dueDate) {

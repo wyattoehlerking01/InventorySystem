@@ -2,6 +2,8 @@
 window.APP_ENV = {
     APP_NAME: 'LCHS Electro-Tech',
     APP_SUBTITLE: 'Inventory Management System',
+    APP_LOGO_URL: '',
+    APP_SIDEBAR_LOGO_URL: '',
     APP_VERSION: 'OehlerOS Version 1.0',
     KIOSK_ID: 'KIOSK-001',
     ORGANIZATION_ID: '4339f9a2-dc08-4232-851a-cf993eba2e67',

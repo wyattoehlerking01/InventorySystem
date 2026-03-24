@@ -36,6 +36,22 @@ Development Goals
 
 The long-term goal is to create a secure, flexible, and locally controlled inventory management platform capable of running efficiently on lightweight hardware while maintaining professional-level functionality.
 
+Branding Images (Optional)
+
+You can configure logo images in env.js:
+
+- APP_LOGO_URL: used on the login screen (and sidebar if APP_SIDEBAR_LOGO_URL is empty)
+- APP_SIDEBAR_LOGO_URL: optional dedicated sidebar logo image
+
+Supported URL formats:
+
+- https:// links
+- http:// links
+- Relative paths (for example /assets/logo.png)
+- data:image/* URLs
+
+If the URL is blank or fails to load, the app falls back to text branding.
+
 Contributions
 
 At this stage, the project is in early development. Feedback, testing results, and improvement suggestions are welcome.
