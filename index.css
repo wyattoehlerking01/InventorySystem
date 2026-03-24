@@ -388,7 +388,9 @@ h6 {
     max-height: 48px;
     aspect-ratio: 1 / 1;
     flex-shrink: 0;
-    border-radius: 50%;
+    border-radius: 50% !important;
+    overflow: hidden;
+    line-height: 1;
     background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
     display: flex;
     align-items: center;
@@ -408,8 +410,17 @@ h6 {
     align-items: center;
     justify-content: center;
     background: var(--glass-border);
-    border-radius: 50%;
+    border-radius: 50% !important;
+    overflow: hidden;
+    line-height: 1;
     flex-shrink: 0;
+}
+
+.avatar i,
+.avatar svg,
+.avatar-sm i,
+.avatar-sm svg {
+    display: block;
 }
 
 .user-info h3 {
@@ -790,7 +801,39 @@ h6 {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    flex-wrap: wrap;
+    gap: 0.75rem;
     margin-bottom: 1.5rem;
+}
+
+.inventory-action-bar {
+    align-items: flex-start;
+}
+
+.inventory-primary-controls,
+.inventory-secondary-controls,
+.inventory-category-filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    min-width: 0;
+}
+
+.inventory-primary-controls {
+    flex: 1 1 320px;
+}
+
+.inventory-search-input {
+    flex: 1 1 300px;
+}
+
+.inventory-secondary-controls {
+    flex: 2 1 420px;
+    justify-content: flex-end;
+}
+
+.inventory-category-filters {
+    flex: 1 1 260px;
 }
 
 .filters {
@@ -935,6 +978,22 @@ h6 {
     color: var(--text-secondary);
 }
 
+.status-project-completed {
+    background: rgba(59, 130, 246, 0.2);
+    color: #60a5fa;
+}
+
+.status-project-archived {
+    background: rgba(245, 158, 11, 0.2);
+    color: #f59e0b;
+}
+
+.orders-mode-btn.active {
+    background: var(--accent-primary);
+    color: #fff;
+    border-color: var(--accent-primary);
+}
+
 /* =========================================
    PROJECTS CARDS
    ========================================= */
@@ -1032,13 +1091,18 @@ h6 {
 }
 
 .modal {
-    width: 100%;
+    width: min(500px, calc(100vw - 2rem));
     max-width: 500px;
     padding: 2rem;
     animation: modalScale var(--transition-normal);
     max-height: min(92vh, 820px);
     display: flex;
     flex-direction: column;
+}
+
+.order-request-modal {
+    width: min(760px, calc(100vw - 2rem));
+    max-width: 760px;
 }
 
 @keyframes modalScale {
@@ -1561,6 +1625,48 @@ kbd {
 }
 
 @media (max-width: 768px) {
+    .action-bar {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .inventory-primary-controls,
+    .inventory-secondary-controls,
+    .inventory-category-filters {
+        width: 100%;
+        justify-content: flex-start;
+    }
+
+    .inventory-search-input {
+        min-width: 0 !important;
+        width: 100%;
+    }
+
+    .inventory-secondary-controls .btn,
+    .inventory-primary-controls .btn {
+        justify-content: center;
+    }
+
+    .inventory-category-filters {
+        overflow-x: auto;
+        padding-bottom: 0.25rem;
+    }
+
+    .modal {
+        width: calc(100vw - 1rem);
+        padding: 1.1rem;
+        max-height: 94vh;
+    }
+
+    .modal-footer {
+        gap: 0.6rem;
+        flex-wrap: wrap;
+    }
+
+    .order-request-modal {
+        width: calc(100vw - 1rem);
+    }
+
     .kiosk-preview-topbar,
     .kiosk-preview-footer {
         justify-content: center;

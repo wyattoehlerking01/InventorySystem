@@ -87,6 +87,9 @@ let ordersStudentViewEnabled = localStorage.getItem(ordersStudentViewStorageKey)
 
 let inventorySearchTerm = '';
 let inventoryCategoryFilter = 'All';
+let inventorySupplierFilter = 'All';
+let inventoryBrandFilter = 'All';
+let ordersTabMode = 'orders';
 
 // Modals & Toasts
 const modalContainer = document.getElementById('modal-container');
@@ -227,7 +230,12 @@ function normalizeDuePolicy(policy) {
         .map(range => ({
             start: range?.start || '',
             end: range?.end || '',
-            returnClassPeriods: Math.max(1, parseInt(range?.returnClassPeriods, 10) || 1)
+            returnClassPeriods: Math.max(1, parseInt(range?.returnClassPeriods, 10) || 1),
+            dueMode: ['class_periods', 'minutes_before_end', 'due_at_time'].includes(range?.dueMode)
+                ? range.dueMode
+                : 'class_periods',
+            dueMinutesBeforeEnd: Math.max(0, parseInt(range?.dueMinutesBeforeEnd, 10) || 0),
+            dueAtTime: range?.dueAtTime || ''
         }))
         .filter(range => parseTimeToMinutes(range.start) !== null && parseTimeToMinutes(range.end) !== null);
 
@@ -239,10 +247,40 @@ function normalizeDuePolicy(policy) {
     };
 }
 
-function getEffectiveDuePolicyForUser(user) {
-    if (user?.role === 'student') {
-        const cls = getStudentClassForUser(user.id);
-        if (cls?.duePolicy) return normalizeDuePolicy(cls.duePolicy);
+function getClassPermissionScore(cls) {
+    const perms = cls?.defaultPermissions || {};
+    let score = 0;
+    if (perms.canSignOut) score += 4;
+    if (perms.canCreateProjects) score += 2;
+    if (perms.canJoinProjects) score += 1;
+    return score;
+}
+
+function getEffectiveClassForDuePolicy(user, project = null) {
+    if (user?.role !== 'student') return null;
+
+    const userClasses = getStudentClassesForUser(user.id);
+    if (userClasses.length === 0) return null;
+
+    const projectClassId = String(project?.class_id || project?.classId || '').trim();
+    if (projectClassId) {
+        const matchedProjectClass = userClasses.find(cls => String(cls.id) === projectClassId);
+        if (matchedProjectClass) return matchedProjectClass;
+    }
+
+    const sortedByPermission = [...userClasses].sort((a, b) => {
+        const scoreDiff = getClassPermissionScore(b) - getClassPermissionScore(a);
+        if (scoreDiff !== 0) return scoreDiff;
+        return String(a.id).localeCompare(String(b.id));
+    });
+
+    return sortedByPermission[0] || null;
+}
+
+function getEffectiveDuePolicyForUser(user, project = null) {
+    const effectiveClass = getEffectiveClassForDuePolicy(user, project);
+    if (effectiveClass?.duePolicy) {
+        return normalizeDuePolicy(effectiveClass.duePolicy);
     }
     return normalizeDuePolicy(signoutPolicy);
 }
@@ -273,15 +311,72 @@ function getMatchingPolicyRange(date, policy) {
     }) || null;
 }
 
-function calculateDueDate(signoutDate = new Date(), user = currentUser) {
-    const duePolicy = getEffectiveDuePolicyForUser(user);
+function resolveDueDateFromMode(signoutDate, duePolicy, matchingRange, mode, minutesBeforeEnd, dueAtTime) {
     const dueDate = new Date(signoutDate);
+    const currentMinutes = getLocalTimeMinutes(signoutDate, duePolicy.timezone || defaultDuePolicy.timezone);
+
+    if (mode === 'minutes_before_end' && matchingRange) {
+        const endMinutes = parseTimeToMinutes(matchingRange.end);
+        if (endMinutes !== null) {
+            const targetMinutes = Math.max(0, endMinutes - Math.max(0, parseInt(minutesBeforeEnd, 10) || 0));
+            const delta = Math.max(0, targetMinutes - currentMinutes);
+            dueDate.setMinutes(dueDate.getMinutes() + delta);
+            return dueDate;
+        }
+    }
+
+    if (mode === 'due_at_time') {
+        const dueMinutes = parseTimeToMinutes(dueAtTime);
+        if (dueMinutes !== null) {
+            const delta = Math.max(0, dueMinutes - currentMinutes);
+            dueDate.setMinutes(dueDate.getMinutes() + delta);
+            return dueDate;
+        }
+    }
+
+    return null;
+}
+
+function calculateDueDate(signoutDate = new Date(), user = currentUser, project = null) {
+    const duePolicy = getEffectiveDuePolicyForUser(user, project);
+    let dueDate = new Date(signoutDate);
 
     const matchingRange = getMatchingPolicyRange(signoutDate, duePolicy);
     if (matchingRange) {
-        dueDate.setMinutes(dueDate.getMinutes() + (matchingRange.returnClassPeriods * duePolicy.classPeriodMinutes));
+        const rangeModeDueDate = resolveDueDateFromMode(
+            signoutDate,
+            duePolicy,
+            matchingRange,
+            matchingRange.dueMode,
+            matchingRange.dueMinutesBeforeEnd,
+            matchingRange.dueAtTime
+        );
+
+        if (rangeModeDueDate) {
+            dueDate = rangeModeDueDate;
+        } else {
+            dueDate.setMinutes(dueDate.getMinutes() + (matchingRange.returnClassPeriods * duePolicy.classPeriodMinutes));
+        }
     } else {
         dueDate.setMinutes(dueDate.getMinutes() + duePolicy.defaultSignoutMinutes);
+    }
+
+    const projectDueBehavior = String(project?.due_behavior || project?.dueBehavior || 'class_default');
+    if (projectDueBehavior !== 'class_default') {
+        const projectOverrideDueDate = resolveDueDateFromMode(
+            signoutDate,
+            duePolicy,
+            matchingRange,
+            projectDueBehavior,
+            project?.due_minutes_before_end ?? project?.dueMinutesBeforeEnd,
+            project?.due_fixed_time ?? project?.dueFixedTime
+        );
+
+        if (projectDueBehavior === 'due_immediately') {
+            dueDate = new Date(signoutDate);
+        } else if (projectOverrideDueDate) {
+            dueDate = projectOverrideDueDate;
+        }
     }
 
     return dueDate.toISOString();
@@ -378,9 +473,11 @@ function getStudentClassesForUser(userId) {
  *                     their classes (or their own stored perms) grants it.
  *                     E.g. Class A allows sign-out, Class B doesn't →
  *                     the student CAN sign out.
- *  • Due policy     → First enrolled class wins (lowest index in the array).
- *                     Admins should ensure classes that share students have
- *                     compatible due policies, or use per-student overrides.
+ *  • Due policy     → Highest-permission class wins.
+ *                     Permission score priority:
+ *                     canSignOut (4) + canCreateProjects (2) + canJoinProjects (1).
+ *                     If a project has class_id and the student belongs to it,
+ *                     that class due policy is used directly.
  */
 function getMergedPermissionsForStudent(user) {
     const classes = getStudentClassesForUser(user.id);
@@ -403,7 +500,7 @@ function getVisibleItemCountForClass(cls) {
     const allowed = new Set(cls?.allowedVisibilityTags || []);
     return inventoryItems.filter(item => {
         const itemTags = item.visibilityTags || [];
-        if (itemTags.length === 0) return true;
+        if (itemTags.length === 0) return false;
         return itemTags.some(tag => allowed.has(tag));
     }).length;
 }
@@ -416,15 +513,21 @@ function canUserSeeItem(user, item) {
     if (classes.length === 0) return false;
 
     // Tag-only visibility model:
-    // - Untagged items are visible to students in any class.
+    // - Untagged items are hidden from students.
     // - Tagged items are visible if ANY class allows ANY matching tag.
     const itemTags = item.visibilityTags || [];
-    if (itemTags.length === 0) return true;
+    if (itemTags.length === 0) return false;
 
     return classes.some(cls => {
         const allowed = cls.allowedVisibilityTags || [];
         return itemTags.some(tag => allowed.includes(tag));
     });
+}
+
+function getProjectStatusBadgeClass(status) {
+    if (status === 'Completed') return 'status-project-completed';
+    if (status === 'Archived') return 'status-project-archived';
+    return 'status-instock';
 }
 
 function applyVersionBadges() {
@@ -517,9 +620,36 @@ function bindAppInfoTriggers() {
     document.getElementById('app-version-login')?.addEventListener('click', openAppInfoMenu);
 }
 
-function getLicenseFailureMessage(reason) {
+function normalizeLicenseStatus(status) {
+    return String(status || '').trim().toLowerCase();
+}
+
+function getLicenseUnavailableDescription(licenseStatus) {
+    const normalized = normalizeLicenseStatus(licenseStatus);
+    if (normalized === 'suspended' || normalized === 'supspended') {
+        return 'Kiosk Unavailable. License Suspended';
+    }
+    if (normalized === 'expired') {
+        return 'License expired, please renew your license';
+    }
+    if (normalized === 'offline') {
+        return 'Kiosk is offline. Routine maintenence may be underway, check your internet connection';
+    }
+    if (normalized === 'admin') {
+        return 'This kiosk has been disabled by a system administrator';
+    }
+    if (normalized === 'disabled') {
+        return 'This Kiosk is disabled';
+    }
+    if (normalized === 'terminated') {
+        return 'Your license is unavailable or has been terminated.';
+    }
+    return 'This kiosk is temporarily unavailable. Please check back shortly.';
+}
+
+function getLicenseFailureMessage(reason, licenseStatus = '') {
     if (reason === 'invalid_id') return 'Kiosk disabled: invalid organization ID.';
-    if (reason === 'invalid_license') return 'Kiosk disabled: invalid organization license.';
+    if (reason === 'invalid_license') return getLicenseUnavailableDescription(licenseStatus);
     return 'Kiosk disabled: license verification failed.';
 }
 
@@ -540,6 +670,7 @@ async function verifyOrganizationLicense(preferredOrganizationId = '') {
         return {
             valid: false,
             reason: 'invalid_id',
+            resolvedLicenseStatus: '',
             message: getLicenseFailureMessage('invalid_id')
         };
     }
@@ -558,6 +689,7 @@ async function verifyOrganizationLicense(preferredOrganizationId = '') {
         return {
             valid: false,
             reason: 'verification_error',
+            resolvedLicenseStatus: '',
             message: getLicenseFailureMessage('verification_error')
         };
     }
@@ -581,12 +713,14 @@ async function verifyOrganizationLicense(preferredOrganizationId = '') {
             return {
                 valid: false,
                 reason: 'verification_error',
+                resolvedLicenseStatus: '',
                 message: getLicenseFailureMessage('verification_error')
             };
         }
 
         const row = Array.isArray(data) ? data[0] : data;
         const reason = String(row?.reason || '').trim() || 'verification_error';
+        const resolvedLicenseStatus = String(row?.resolved_license_status || '').trim();
         const valid = row?.allowed === true && reason === 'ok';
 
         appLicenseState = {
@@ -604,7 +738,8 @@ async function verifyOrganizationLicense(preferredOrganizationId = '') {
         return {
             valid,
             reason,
-            message: valid ? 'Organization license verified.' : getLicenseFailureMessage(reason)
+            resolvedLicenseStatus,
+            message: valid ? 'Organization license verified.' : getLicenseFailureMessage(reason, resolvedLicenseStatus)
         };
     } catch (error) {
         console.warn('Unexpected verify_kiosk_license error:', error);
@@ -620,6 +755,7 @@ async function verifyOrganizationLicense(preferredOrganizationId = '') {
         return {
             valid: false,
             reason: 'verification_error',
+            resolvedLicenseStatus: '',
             message: getLicenseFailureMessage('verification_error')
         };
     }
@@ -735,7 +871,10 @@ async function handleRemoteKioskSettingsChange(nextSettings = {}) {
 
     const verification = await verifyOrganizationLicense(nextSettings.organization_id);
     if (!verification.valid) {
-        await applyKioskLock(true, 'kioskUnavailable');
+        const unavailableDescription = verification.reason === 'invalid_license'
+            ? getLicenseUnavailableDescription(verification.resolvedLicenseStatus)
+            : '';
+        await applyKioskLock(true, 'kioskUnavailable', { customDescription: unavailableDescription });
         showToast(verification.message, 'error');
         return;
     }
@@ -1004,7 +1143,7 @@ function openCheckoutReviewModal() {
         ? (selectedProject ? selectedProject.name : 'Unknown Project')
         : 'Personal Sign-out';
 
-    const projectedDueDate = new Date(calculateDueDate(new Date(), currentUser));
+    const projectedDueDate = new Date(calculateDueDate(new Date(), currentUser, selectedProject));
 
     const rows = inventoryBasket.map(entry => {
         const item = inventoryItems.find(i => i.id === entry.id);
@@ -1146,7 +1285,7 @@ async function checkoutBasket() {
                 itemId: item.id,
                 quantity: basketItem.qty,
                 signoutDate: new Date().toISOString(),
-                dueDate: calculateDueDate(new Date(), currentUser),
+                dueDate: calculateDueDate(new Date(), currentUser, project),
                 assignedToUserId: project.ownerId,
                 signedOutByUserId: currentUser.id
             };
@@ -1154,7 +1293,7 @@ async function checkoutBasket() {
             project.itemsOut.push(signoutData);
             
             // Save project item out to Supabase
-            await addProjectItemOutToSupabase({
+            const savedSignout = await addProjectItemOutToSupabase({
                 projectId: project.id,
                 itemId: item.id,
                 quantity: basketItem.qty,
@@ -1162,7 +1301,12 @@ async function checkoutBasket() {
                 dueDate: signoutData.dueDate
             }).catch(err => {
                 console.error('Failed to save project item out to Supabase:', err);
+                return null;
             });
+
+            if (savedSignout?.id) {
+                signoutData.id = savedSignout.id;
+            }
 
             if (project.id.startsWith('PERS-')) {
                 addLog(currentUser.id, 'Personal Sign-out', `Bulk signed out ${basketItem.qty}x ${item.name} to self`);
@@ -1214,7 +1358,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     startKioskVersionRealtimeListener(kioskId);
 
     if (!verification.valid) {
-        await applyKioskLock(true, 'kioskUnavailable');
+        const unavailableDescription = verification.reason === 'invalid_license'
+            ? getLicenseUnavailableDescription(verification.resolvedLicenseStatus)
+            : '';
+        await applyKioskLock(true, 'kioskUnavailable', { customDescription: unavailableDescription });
         showToast(verification.message, 'error');
         return;
     }
@@ -1315,6 +1462,11 @@ submitHelpBtn?.addEventListener('click', async () => {
 async function handleBarcodeLogin(rawId) {
     const id = String(rawId || '').trim().toUpperCase();
     barcodeInput.value = '';
+
+    if (currentUser) {
+        await handleInSessionBarcodeScan(id);
+        return;
+    }
 
     if (!id) {
         showToast('Enter or scan a user ID or Item Barcode.', 'error');
@@ -1470,6 +1622,56 @@ document.addEventListener('keydown', async (e) => {
     }
 });
 
+let inSessionScanBuffer = '';
+let inSessionScanTimer = null;
+
+document.addEventListener('keydown', async (e) => {
+    if (!currentUser) return;
+    if (modalContainer && !modalContainer.classList.contains('hidden')) return;
+
+    const active = document.activeElement;
+    if (active && (
+        active.tagName === 'INPUT' ||
+        active.tagName === 'TEXTAREA' ||
+        active.tagName === 'SELECT' ||
+        active.isContentEditable
+    )) {
+        return;
+    }
+
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+    if (e.key === 'Enter' || e.key === 'NumpadEnter') {
+        const code = inSessionScanBuffer.trim();
+        inSessionScanBuffer = '';
+        if (inSessionScanTimer) {
+            clearTimeout(inSessionScanTimer);
+            inSessionScanTimer = null;
+        }
+        if (code) {
+            e.preventDefault();
+            await handleInSessionBarcodeScan(code);
+        }
+        return;
+    }
+
+    if (e.key === 'Backspace') {
+        if (inSessionScanBuffer.length > 0) {
+            e.preventDefault();
+            inSessionScanBuffer = inSessionScanBuffer.slice(0, -1);
+        }
+        return;
+    }
+
+    if (e.key.length === 1) {
+        inSessionScanBuffer += e.key;
+        if (inSessionScanTimer) clearTimeout(inSessionScanTimer);
+        inSessionScanTimer = setTimeout(() => {
+            inSessionScanBuffer = '';
+        }, 300);
+    }
+});
+
 // Enforce focus on barcode input when clicking anywhere on the login view (except buttons)
 document.getElementById('login-view')?.addEventListener('click', (e) => {
     if (modalContainer && !modalContainer.classList.contains('hidden')) return;
@@ -1560,7 +1762,7 @@ function login(user) {
         navLogs.classList.remove('hidden');
         navUsers.classList.remove('hidden');
         navClasses.classList.remove('hidden');
-        navRequests?.classList.remove('hidden');
+        navRequests?.classList.add('hidden');
         applyOrdersNavVisibility();
         document.getElementById('manage-categories-btn')?.classList.remove('hidden');
         document.getElementById('manage-visibility-tags-btn')?.classList.remove('hidden');
@@ -1620,6 +1822,8 @@ function logout(message = 'Logged out successfully') {
     setTimeout(() => {
         mainView.classList.add('hidden');
         loginView.classList.remove('hidden');
+        // Keep nav selection aligned with the default landing page.
+        setActiveNavForTarget('dashboard');
         // Show OehlerOS version badge on login screen
         const versionOverlay = document.querySelector('.app-version-overlay');
         if (versionOverlay) versionOverlay.style.display = '';
@@ -1648,6 +1852,7 @@ function returnToLoginView(options = {}) {
         mainView.classList.add('hidden');
         loginHelpView.classList.add('hidden');
         loginView.classList.remove('hidden');
+        setActiveNavForTarget('dashboard');
         // Show OehlerOS version badge on login screen
         const versionOverlay = document.querySelector('.app-version-overlay');
         if (versionOverlay) versionOverlay.style.display = '';
@@ -1666,20 +1871,27 @@ logoutBtn.addEventListener('click', () => logout());
 /* =======================================
    ROUTING
    ======================================= */
+function setActiveNavForTarget(targetId) {
+    navBtns.forEach(btn => {
+        const isActive = btn.getAttribute('data-target') === targetId;
+        btn.classList.toggle('active', isActive);
+    });
+}
+
 navBtns.forEach(btn => {
     btn.addEventListener('click', async () => {
         const target = btn.getAttribute('data-target');
         const title = btn.textContent.trim();
-
-        // UI Selection
-        navBtns.forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-
         await switchPage(target, title);
     });
 });
 
 async function refreshPageDataFromSupabase(targetId) {
+    if (targetId === 'requests') {
+        await refreshPageDataFromSupabase('orders');
+        return;
+    }
+
     if (targetId === 'dashboard') {
         await loadAllData();
         return;
@@ -1745,6 +1957,12 @@ async function refreshPageDataFromSupabase(targetId) {
 }
 
 async function switchPage(targetId, title) {
+    if (targetId === 'requests') {
+        targetId = 'orders';
+        title = 'Orders & Requests';
+        ordersTabMode = 'requests';
+    }
+
     if (targetId === 'orders' && !canCurrentUserViewOrders()) {
         showToast('Orders view is disabled for students.', 'error');
         return;
@@ -1752,6 +1970,7 @@ async function switchPage(targetId, title) {
 
     _trackPageVisit(targetId);
     pageTitle.textContent = title;
+    setActiveNavForTarget(targetId);
 
     try {
         await refreshPageDataFromSupabase(targetId);
@@ -1780,7 +1999,6 @@ async function switchPage(targetId, title) {
     if (targetId === 'logs') renderLogs();
     if (targetId === 'users') renderUsers();
     if (targetId === 'classes') renderClasses();
-    if (targetId === 'requests') renderRequests();
     if (targetId === 'orders') renderOrders();
 }
 
@@ -2184,19 +2402,31 @@ function determineStatus(stock, threshold, itemType = 'item') {
 
 function renderInventory(filterStr = 'All') {
     const tbody = document.getElementById('inventory-table-body');
+    rebuildInventoryFilterOptions();
 
-    inventoryCategoryFilter = filterStr;
+    const categorySelect = document.getElementById('inventory-category-filter');
+    const supplierSelect = document.getElementById('inventory-supplier-filter');
+    const brandSelect = document.getElementById('inventory-brand-filter');
+
+    inventoryCategoryFilter = categorySelect?.value || filterStr;
+    inventorySupplierFilter = supplierSelect?.value || 'All';
+    inventoryBrandFilter = brandSelect?.value || 'All';
     inventorySearchTerm = String(document.getElementById('inventory-search')?.value || '').trim().toLowerCase();
 
     let filtered = currentUser.role === 'student'
         ? inventoryItems.filter(item => canUserSeeItem(currentUser, item))
         : inventoryItems;
 
-    if (filterStr !== 'All') {
-        filtered = inventoryItems.filter(i => i.category === filterStr);
-        if (currentUser.role === 'student') {
-            filtered = filtered.filter(item => canUserSeeItem(currentUser, item));
-        }
+    if (inventoryCategoryFilter !== 'All') {
+        filtered = filtered.filter(i => i.category === inventoryCategoryFilter);
+    }
+
+    if (inventorySupplierFilter !== 'All') {
+        filtered = filtered.filter(i => String(i.supplier || 'Unspecified') === inventorySupplierFilter);
+    }
+
+    if (inventoryBrandFilter !== 'All') {
+        filtered = filtered.filter(i => String(i.brand || 'Unspecified') === inventoryBrandFilter);
     }
 
     if (inventorySearchTerm) {
@@ -2206,6 +2436,8 @@ function renderInventory(filterStr = 'All') {
                 item.id,
                 item.sku,
                 item.category,
+                item.supplier,
+                item.brand,
                 item.location,
                 item.storageLocation,
                 item.bin,
@@ -2220,8 +2452,6 @@ function renderInventory(filterStr = 'All') {
     tbody.innerHTML = filtered.map(item => {
         const currentStatus = determineStatus(item.stock, item.threshold, item.item_type);
         const statusClass = currentStatus === 'In Stock' ? 'status-instock' : (currentStatus === 'Low Stock' || currentStatus === 'Out of Stock') ? 'status-lowstock' : 'status-na';
-        const canSignOut = currentUser.perms?.canSignOut !== false;
-
         const tagsHtml = (item.visibilityTags || []).map(tag =>
             `<span class="visibility-tag">${tag}</span>`
         ).join('');
@@ -2232,7 +2462,7 @@ function renderInventory(filterStr = 'All') {
                 <td>
                     <div class="font-bold">${item.name}${renderMissingMetadataIcon(item)}</div>
                     ${item.sku ? `<small class="text-xs text-muted">SKU: ${item.sku}</small>` : ''}
-                    ${tagsHtml ? `<div class="visibility-tags-row">${tagsHtml}</div>` : ''}
+                    ${currentUser.role === 'student' && tagsHtml ? `<div class="visibility-tags-row">${tagsHtml}</div>` : ''}
                 </td>
                 <td>${item.category}</td>
                 <td class="text-muted font-mono" style="font-size:0.8rem">${item.sku}</td>
@@ -2317,13 +2547,41 @@ function renderInventory(filterStr = 'All') {
     });
 }
 
-const filterBtns = document.querySelectorAll('.filter-btn');
-filterBtns.forEach(btn => {
-    btn.addEventListener('click', () => {
-        filterBtns.forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        renderInventory(btn.textContent.trim());
-    });
+function rebuildInventoryFilterOptions() {
+    const categorySelect = document.getElementById('inventory-category-filter');
+    const supplierSelect = document.getElementById('inventory-supplier-filter');
+    const brandSelect = document.getElementById('inventory-brand-filter');
+    if (!categorySelect || !supplierSelect || !brandSelect) return;
+
+    const uniqueCategories = [...new Set(inventoryItems.map(i => String(i.category || 'Uncategorized')))].sort((a, b) => a.localeCompare(b));
+    const uniqueSuppliers = [...new Set(inventoryItems.map(i => String(i.supplier || 'Unspecified')))].sort((a, b) => a.localeCompare(b));
+    const uniqueBrands = [...new Set(inventoryItems.map(i => String(i.brand || 'Unspecified')))].sort((a, b) => a.localeCompare(b));
+
+    categorySelect.innerHTML = '<option value="All">All Categories</option>' +
+        uniqueCategories.map(c => `<option value="${c}">${c}</option>`).join('');
+    supplierSelect.innerHTML = '<option value="All">All Suppliers</option>' +
+        uniqueSuppliers.map(s => `<option value="${s}">${s}</option>`).join('');
+    brandSelect.innerHTML = '<option value="All">All Brands</option>' +
+        uniqueBrands.map(b => `<option value="${b}">${b}</option>`).join('');
+
+    categorySelect.value = inventoryCategoryFilter || 'All';
+    supplierSelect.value = inventorySupplierFilter || 'All';
+    brandSelect.value = inventoryBrandFilter || 'All';
+}
+
+document.getElementById('inventory-category-filter')?.addEventListener('change', () => {
+    inventoryCategoryFilter = document.getElementById('inventory-category-filter').value;
+    renderInventory(inventoryCategoryFilter);
+});
+
+document.getElementById('inventory-supplier-filter')?.addEventListener('change', () => {
+    inventorySupplierFilter = document.getElementById('inventory-supplier-filter').value;
+    renderInventory(inventoryCategoryFilter);
+});
+
+document.getElementById('inventory-brand-filter')?.addEventListener('change', () => {
+    inventoryBrandFilter = document.getElementById('inventory-brand-filter').value;
+    renderInventory(inventoryCategoryFilter);
 });
 
 document.getElementById('inventory-search')?.addEventListener('input', () => {
@@ -2357,19 +2615,19 @@ function canCurrentUserManageProject(project) {
     return project.ownerId === currentUser.id;
 }
 
-function getProjectStudentCandidates() {
-    return mockUsers.filter(u => u.role === 'student');
+function getProjectOwnerCandidates() {
+    return mockUsers.filter(u => ['student', 'teacher', 'developer'].includes(u.role) && u.status !== 'Suspended');
 }
 
 function buildProjectCollaboratorOptions({ selectedOwnerId = '', selectedCollaborators = [] } = {}) {
     const selectedSet = new Set(selectedCollaborators || []);
-    return getProjectStudentCandidates()
-        .filter(student => student.id !== selectedOwnerId)
-        .map(student => `
+    return getProjectOwnerCandidates()
+        .filter(user => user.id !== selectedOwnerId)
+        .map(user => `
             <div style="margin-bottom:0.5rem">
                 <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">
-                    <input type="checkbox" value="${student.id}" class="proj-student-checkbox" ${selectedSet.has(student.id) ? 'checked' : ''}>
-                    ${student.name} (${student.id})
+                    <input type="checkbox" value="${user.id}" class="proj-student-checkbox" ${selectedSet.has(user.id) ? 'checked' : ''}>
+                    ${user.name} (${user.id})
                 </label>
             </div>
         `)
@@ -2494,22 +2752,238 @@ function findSignoutIndex(project, signoutId) {
     return project.itemsOut.findIndex(io => (io.id || `${io.itemId}-${io.signoutDate}-${io.quantity}`) === signoutId);
 }
 
-async function returnProjectItem(projectId, signoutId) {
+function doesUserBelongToProject(userId, project) {
+    if (!userId || !project) return false;
+    if (project.ownerId === userId) return true;
+    return (project.collaborators || []).includes(userId);
+}
+
+function shouldFlagReturnOnBehalf({ project, actorUserId, assignedUserId }) {
+    if (!project || !actorUserId || !assignedUserId) return false;
+    if (actorUserId === assignedUserId) return false;
+
+    const isPersonalProject = String(project.id || '').startsWith('PERS-');
+    if (isPersonalProject) return true;
+
+    const actorBelongs = doesUserBelongToProject(actorUserId, project);
+    const assignedBelongs = doesUserBelongToProject(assignedUserId, project);
+    if (actorBelongs && assignedBelongs) return false;
+
+    return true;
+}
+
+async function signOutItemToPersonalProjectForUser(item, quantity, userId) {
+    const targetUser = mockUsers.find(u => u.id === userId);
+    if (!targetUser) return false;
+
+    const personalProject = getOrCreatePersonalProject(userId);
+    const ensured = await ensureProjectExistsInSupabase(personalProject);
+    if (!ensured) return false;
+
+    const nextStock = item.stock - quantity;
+    const stockUpdated = await updateItemInSupabase(item.id, { stock: nextStock });
+    if (!stockUpdated) return false;
+
+    const signoutData = {
+        id: generateId('OUT'),
+        itemId: item.id,
+        quantity,
+        signoutDate: new Date().toISOString(),
+        dueDate: calculateDueDate(new Date(), targetUser, personalProject),
+        assignedToUserId: userId,
+        signedOutByUserId: currentUser?.id || userId
+    };
+
+    personalProject.itemsOut.push(signoutData);
+
+    const savedSignout = await addProjectItemOutToSupabase({
+        projectId: personalProject.id,
+        itemId: item.id,
+        quantity,
+        signoutDate: signoutData.signoutDate,
+        dueDate: signoutData.dueDate
+    });
+
+    if (savedSignout?.id) signoutData.id = savedSignout.id;
+
+    _trackItemSignout(item, quantity);
+    return true;
+}
+
+function findOpenSignoutRecordsByItemCode(scanCode) {
+    const normalized = String(scanCode || '').trim().toUpperCase();
+    if (!normalized) return [];
+
+    const item = inventoryItems.find(i => {
+        const idMatch = String(i.id || '').trim().toUpperCase() === normalized;
+        const skuMatch = String(i.sku || '').trim().toUpperCase() === normalized;
+        return idMatch || skuMatch;
+    });
+
+    if (!item) return [];
+
+    const matches = [];
+    projects.forEach(project => {
+        project.itemsOut.forEach(io => {
+            if (io.itemId !== item.id) return;
+            matches.push({ project, io, item });
+        });
+    });
+
+    return matches;
+}
+
+function getPreferredScannedSignout(matches) {
+    if (!Array.isArray(matches) || matches.length === 0) return null;
+
+    const scored = matches.map(match => {
+        const assignedToUserId = match.io.assignedToUserId || match.project.ownerId;
+        const score =
+            (assignedToUserId === currentUser?.id ? 100 : 0) +
+            (doesUserBelongToProject(currentUser?.id, match.project) ? 50 : 0) +
+            (String(match.project.id || '').startsWith('PERS-') ? 5 : 0);
+        return { ...match, score };
+    });
+
+    scored.sort((a, b) => b.score - a.score);
+    return scored[0];
+}
+
+function buildScannedItemImageHtml(item) {
+    const src = String(item?.image_link || item?.imageLink || '').trim();
+    if (!src) {
+        return '<div style="height:160px;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,0.04);border:1px solid var(--glass-border);border-radius:10px;margin-bottom:0.9rem;"><i class="ph ph-image" style="font-size:2rem;color:var(--text-muted)"></i></div>';
+    }
+
+    return `<img src="${src}" alt="${item?.name || 'Item image'}" style="width:100%;max-height:220px;object-fit:contain;border-radius:10px;background:rgba(255,255,255,0.03);border:1px solid var(--glass-border);margin-bottom:0.9rem;">`;
+}
+
+async function openScannedItemActionModal(match) {
+    const { project, io, item } = match;
+    const assignedToUserId = io.assignedToUserId || project.ownerId;
+    const assignedToUser = mockUsers.find(u => u.id === assignedToUserId);
+    const assignedName = assignedToUser ? assignedToUser.name : assignedToUserId;
+    const signoutId = io.id || `${io.itemId}-${io.signoutDate}-${io.quantity}`;
+    const projectLabel = String(project.id || '').startsWith('PERS-') ? 'Personal' : project.name;
+
+    const html = `
+        <div class="modal-header">
+            <h3>Scanned Item</h3>
+            <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
+        </div>
+        <div class="modal-body">
+            ${buildScannedItemImageHtml(item)}
+            <div class="font-bold" style="font-size:1.05rem;">${item.name}</div>
+            <div class="text-muted text-sm" style="margin-top:0.2rem;">SKU: ${item.sku || 'N/A'}</div>
+            <div class="text-muted text-sm" style="margin-top:0.2rem;">Storage: ${item.location || item.storageLocation || 'Not set'}</div>
+            <div class="text-muted text-sm" style="margin-top:0.2rem;">Project: ${projectLabel}</div>
+            <div class="text-muted text-sm" style="margin-top:0.2rem;">Signed Out To: ${assignedName}</div>
+        </div>
+        <div class="modal-footer" style="justify-content:space-between;">
+            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            <div style="display:flex;gap:0.6rem;">
+                <button class="btn btn-secondary" id="scan-signin-btn"><i class="ph ph-arrow-counter-clockwise"></i> Sign In</button>
+                <button class="btn btn-primary" id="scan-signin-to-me-btn"><i class="ph ph-user-switch"></i> Sign In To Me</button>
+            </div>
+        </div>
+    `;
+
+    openModal(html);
+
+    document.getElementById('scan-signin-btn')?.addEventListener('click', async () => {
+        await returnProjectItem(project.id, signoutId, { skipConfirmPrompt: true });
+        closeModal();
+    });
+
+    document.getElementById('scan-signin-to-me-btn')?.addEventListener('click', async () => {
+        const quantity = io.quantity;
+
+        const returned = await returnProjectItem(project.id, signoutId, {
+            skipConfirmPrompt: true,
+            suppressFlag: true
+        });
+
+        if (!returned) return;
+
+        await refreshInventoryFromSupabase();
+        const refreshedItem = inventoryItems.find(i => i.id === item.id);
+        if (!refreshedItem) {
+            showToast('Unable to reload item after sign-in.', 'error');
+            return;
+        }
+
+        const reassigned = await signOutItemToPersonalProjectForUser(refreshedItem, quantity, currentUser.id);
+        if (!reassigned) {
+            showToast('Signed in, but failed to reassign item to your personal project.', 'error');
+            return;
+        }
+
+        const shouldFlag = shouldFlagReturnOnBehalf({
+            project,
+            actorUserId: currentUser.id,
+            assignedUserId: assignedToUserId
+        });
+
+        if (shouldFlag) {
+            await addSystemFlagToSupabase({
+                id: generateId('FLAG'),
+                flag_type: 'Reassigned On Scan',
+                item_id: item.id,
+                project_id: project.id,
+                actor_user_id: currentUser.id,
+                assigned_user_id: assignedToUserId,
+                details: `${currentUser.name} reassigned ${item.name} from ${assignedName} after scanner sign-in.`,
+                status: 'Open',
+                timestamp: new Date().toISOString()
+            });
+            await refreshRequestsFromSupabase();
+        }
+
+        await Promise.all([refreshProjectsFromSupabase(), refreshInventoryFromSupabase()]);
+        renderProjects();
+        renderInventory();
+        loadDashboard();
+        addLog(currentUser.id, 'Scan Reassign', `Reassigned ${item.name} to personal project after scanner return.`);
+        showToast('Item reassigned to your personal project.', 'success');
+        closeModal();
+    });
+}
+
+async function handleInSessionBarcodeScan(rawCode) {
+    const code = String(rawCode || '').trim().toUpperCase();
+    if (!code || !currentUser) return;
+
+    const matches = findOpenSignoutRecordsByItemCode(code);
+    if (matches.length === 0) {
+        showToast('No signed-out item found for that scan.', 'error');
+        return;
+    }
+
+    const preferred = getPreferredScannedSignout(matches);
+    if (!preferred) {
+        showToast('No active sign-out record found for that item.', 'error');
+        return;
+    }
+
+    await openScannedItemActionModal(preferred);
+}
+
+async function returnProjectItem(projectId, signoutId, options = {}) {
     const project = projects.find(p => p.id === projectId);
-    if (!project) return;
+    if (!project) return false;
 
     const ioIndex = findSignoutIndex(project, signoutId);
-    if (ioIndex < 0) return;
+    if (ioIndex < 0) return false;
 
     const io = project.itemsOut[ioIndex];
     const item = inventoryItems.find(i => i.id === io.itemId);
     const assignedToUserId = io.assignedToUserId || project.ownerId;
     const assignedToUser = mockUsers.find(u => u.id === assignedToUserId);
 
-    if (currentUser.role === 'student' && currentUser.id !== assignedToUserId) {
+    if (!options.skipConfirmPrompt && currentUser.role === 'student' && currentUser.id !== assignedToUserId) {
         const assignedName = assignedToUser ? assignedToUser.name : assignedToUserId;
         const confirmOnBehalf = confirm(`This item is assigned to ${assignedName}. Sign it back in on their behalf?`);
-        if (!confirmOnBehalf) return;
+        if (!confirmOnBehalf) return false;
     }
 
     if (currentUser?.role === 'student') {
@@ -2522,7 +2996,7 @@ async function returnProjectItem(projectId, signoutId) {
 
         if (!unlocked) {
             showToast('Door unlock denied. Return canceled.', 'error');
-            return;
+            return false;
         }
     }
 
@@ -2531,7 +3005,7 @@ async function returnProjectItem(projectId, signoutId) {
         const stockUpdated = await updateItemInSupabase(item.id, { stock: nextStock });
         if (!stockUpdated) {
             showToast('Failed to update item stock in Supabase.', 'error');
-            return;
+            return false;
         }
     }
 
@@ -2539,7 +3013,7 @@ async function returnProjectItem(projectId, signoutId) {
         const returned = await returnItemToSupabase(io.id);
         if (!returned) {
             showToast('Failed to return item in Supabase.', 'error');
-            return;
+            return false;
         }
     }
 
@@ -2552,6 +3026,27 @@ async function returnProjectItem(projectId, signoutId) {
         const assignedName = assignedToUser ? assignedToUser.name : assignedToUserId;
         addLog(currentUser.id, 'Return On Behalf', `Returned ${io.quantity}x ${item ? item.name : io.itemId} for ${assignedName} in ${project.name}`);
         showToast(`Returned on behalf of ${assignedName}.`, 'warning');
+
+        const shouldFlag = !options.suppressFlag && shouldFlagReturnOnBehalf({
+            project,
+            actorUserId: currentUser.id,
+            assignedUserId: assignedToUserId
+        });
+
+        if (shouldFlag) {
+            await addSystemFlagToSupabase({
+                id: generateId('FLAG'),
+                flag_type: 'Improper Return',
+                item_id: io.itemId,
+                project_id: project.id,
+                actor_user_id: currentUser.id,
+                assigned_user_id: assignedToUserId,
+                details: `${currentUser.name} signed in ${item ? item.name : io.itemId} on behalf of ${assignedName}.`,
+                status: 'Open',
+                timestamp: new Date().toISOString()
+            });
+            await refreshRequestsFromSupabase();
+        }
     } else {
         addLog(currentUser.id, 'Return Item', `Returned ${io.quantity}x ${item ? item.name : io.itemId} in ${project.name}`);
         showToast('Item signed back in.', 'success');
@@ -2560,6 +3055,8 @@ async function returnProjectItem(projectId, signoutId) {
     renderProjects();
     renderInventory();
     loadDashboard();
+
+    return true;
 }
 
 function renderProjects() {
@@ -2613,7 +3110,7 @@ function renderProjects() {
         html += `
             <div class="project-card glass-panel flex-col" style="border-left:4px solid var(--accent);">
                 <div class="project-header">
-                    <h4 style="color:var(--accent);"><i class="ph ph-backpack"></i> My Items (Personal Project)</h4>
+                    <h4 style="color:var(--accent);"><i class="ph ph-backpack"></i> My Items</h4>
                 </div>
                 <div style="display:flex; flex-direction:column; gap:0.5rem;">
                     ${personalItemsHtml}
@@ -2667,7 +3164,7 @@ function renderProjects() {
                     <div>
                         <h4>${proj.name}</h4>
                     </div>
-                    <span class="status-badge status-instock">${proj.status}</span>
+                    <span class="status-badge ${getProjectStatusBadgeClass(proj.status)}">${proj.status}</span>
                 </div>
                 <p class="text-muted text-sm mb-2">Owner: ${owner ? owner.name : 'Unknown'}</p>
                 <p class="project-desc mb-4">${proj.description}</p>
@@ -2798,7 +3295,7 @@ function openSignOutModal(itemId) {
                     <small><strong>Description:</strong> ${formatItemExtraInfo(item).description}</small>
                 </div>
                 <div style="margin-top:0.45rem">
-                    <small><strong>Due Date (preview):</strong> ${new Date(calculateDueDate(new Date(), currentUser)).toLocaleString()}</small>
+                    <small><strong>Due Date (preview):</strong> <span id="so-due-preview">${new Date(calculateDueDate(new Date(), currentUser)).toLocaleString()}</span></small>
                 </div>
             </div>
             <div class="form-group">
@@ -2829,6 +3326,20 @@ function openSignOutModal(itemId) {
             if (assigneeSelect) {
                 assigneeSelect.innerHTML = getAssigneeOptions(projId);
             }
+            const previewEl = document.getElementById('so-due-preview');
+            const selectedProject = projId === 'personal'
+                ? getOrCreatePersonalProject(currentUser.id)
+                : projects.find(p => p.id === projId);
+            if (previewEl) previewEl.textContent = new Date(calculateDueDate(new Date(), currentUser, selectedProject)).toLocaleString();
+        });
+    } else {
+        document.getElementById('so-project')?.addEventListener('change', (e) => {
+            const projId = e.target.value;
+            const previewEl = document.getElementById('so-due-preview');
+            const selectedProject = projId === 'personal'
+                ? getOrCreatePersonalProject(currentUser.id)
+                : projects.find(p => p.id === projId);
+            if (previewEl) previewEl.textContent = new Date(calculateDueDate(new Date(), currentUser, selectedProject)).toLocaleString();
         });
     }
 
@@ -2894,13 +3405,13 @@ function openSignOutModal(itemId) {
                 itemId: item.id,
                 quantity: qty,
                 signoutDate: new Date().toISOString(),
-                dueDate: calculateDueDate(new Date(), currentUser),
+                dueDate: calculateDueDate(new Date(), currentUser, project),
                 assignedToUserId: finalAssignedToUserId,
                 signedOutByUserId: currentUser.id
             };
             project.itemsOut.push(signoutData);
 
-            await addProjectItemOutToSupabase({
+            const savedSignout = await addProjectItemOutToSupabase({
                 projectId: project.id,
                 itemId: item.id,
                 quantity: qty,
@@ -2908,7 +3419,12 @@ function openSignOutModal(itemId) {
                 dueDate: signoutData.dueDate
             }).catch(err => {
                 console.error('Failed to save signout in Supabase:', err);
+                return null;
             });
+
+            if (savedSignout?.id) {
+                signoutData.id = savedSignout.id;
+            }
 
             _trackItemSignout(item, qty);
             // Log activity
@@ -2958,7 +3474,7 @@ function renderClasses() {
         const allowedTags = cls.allowedVisibilityTags || [];
         const tagsDisplay = allowedTags.length > 0
             ? allowedTags.map(t => `<span class="visibility-tag">${t}</span>`).join('')
-            : '<span class="text-muted text-sm">None (all untagged items visible)</span>';
+            : '<span class="text-muted text-sm">None selected</span>';
 
         return `
             <div class="project-card glass-panel" style="position:relative">
@@ -3100,7 +3616,7 @@ function openEditClassModal(classId) {
                     <option value="">Unassigned</option>
                     ${teacherCandidates.map(t => `<option value="${t.id}" ${cls.teacherId === t.id ? 'selected' : ''}>${t.name} (${t.id})</option>`).join('')}
                 </select>
-                <small class="text-muted">Developer override: assign or change the teacher for this class.</small>
+                <small class="text-muted">Teacher assignment: assign or change the teacher for this class.</small>
             </div>
         `
         : '';
@@ -3129,7 +3645,7 @@ function openEditClassModal(classId) {
             </div>
             <div class="form-group">
                 <label>Allowed Visibility Tags</label>
-                <small class="text-muted" style="display:block;margin-bottom:0.5rem">Visibility is tag-based only. Students see items with ANY checked tag. Items with no tags are always visible.</small>
+                <small class="text-muted" style="display:block;margin-bottom:0.5rem">Visibility is tag-based only. Students see items with ANY checked tag. Untagged items are hidden from students.</small>
                 <div class="glass-panel" style="padding:0.75rem">
                     ${tagOptions || '<p class="text-muted text-sm">No visibility tags defined.</p>'}
                 </div>
@@ -3228,7 +3744,7 @@ function openEditClassModal(classId) {
 
 document.getElementById('create-class-btn')?.addEventListener('click', () => {
     if (!currentUser || !['teacher', 'developer'].includes(currentUser.role)) {
-        showToast('Only teachers and developers can create classes.', 'error');
+        showToast('Only teachers can create classes.', 'error');
         return;
     }
 
@@ -3259,7 +3775,7 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
                     <option value="">Unassigned</option>
                     ${teacherCandidates.map(t => `<option value="${t.id}" ${t.id === currentUser.id ? 'selected' : ''}>${t.name} (${t.id})</option>`).join('')}
                 </select>
-                <small class="text-muted">Developer override: choose which teacher this class belongs to.</small>
+                <small class="text-muted">Teacher assignment: choose which teacher this class belongs to.</small>
             </div>
         `
         : '';
@@ -3288,7 +3804,7 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
             </div>
             <div class="form-group">
                 <label>Allowed Visibility Tags</label>
-                <small class="text-muted" style="display:block;margin-bottom:0.5rem">Visibility is tag-based only. Students see items with ANY checked tag. Items with no tags are always visible.</small>
+                <small class="text-muted" style="display:block;margin-bottom:0.5rem">Visibility is tag-based only. Students see items with ANY checked tag. Untagged items are hidden from students.</small>
                 <div class="glass-panel" style="padding:0.75rem">
                     ${newClassTagOptions || '<p class="text-muted text-sm">No visibility tags defined.</p>'}
                 </div>
@@ -3402,6 +3918,7 @@ document.getElementById('create-class-btn')?.addEventListener('click', () => {
 function renderLogs() {
     const tbody = document.getElementById('logs-table-body');
     const actionFilter = document.getElementById('logs-action-filter');
+    const actorFilter = document.getElementById('logs-actor-filter');
     if (currentUser.role === 'student') return; // Double check protection
 
     if (actionFilter) {
@@ -3423,10 +3940,27 @@ function renderLogs() {
         }
     }
 
+    if (actorFilter && !actorFilter.dataset.bound) {
+        actorFilter.addEventListener('change', () => renderLogs());
+        actorFilter.dataset.bound = '1';
+    }
+
     const selectedAction = actionFilter?.value || 'all';
-    const filteredLogs = selectedAction === 'all'
+    const selectedActor = actorFilter?.value || 'all';
+
+    let filteredLogs = selectedAction === 'all'
         ? activityLogs
         : activityLogs.filter(log => log.action === selectedAction);
+
+    if (selectedActor !== 'all') {
+        filteredLogs = filteredLogs.filter(log => {
+            const idToMatch = log.userId || log.user_id;
+            const logUser = mockUsers.find(u => u.id === idToMatch);
+            if (!logUser) return false;
+            if (selectedActor === 'student') return logUser.role === 'student';
+            return logUser.role === 'teacher' || logUser.role === 'developer';
+        });
+    }
 
     tbody.innerHTML = filteredLogs.map(log => {
         const idToMatch = log.userId || log.user_id;
@@ -3534,7 +4068,7 @@ function renderUsers() {
             }
 
             if (isSuspensionBypassedUser(user) || user.role === 'developer') {
-                showToast('Developers cannot be suspended.', 'error');
+                showToast('Teachers cannot be suspended.', 'error');
                 return;
             }
 
@@ -3579,7 +4113,7 @@ function renderUsers() {
             if (!user) return;
 
             if (currentUser.role === 'teacher' && user.role === 'developer') {
-                showToast('Teachers cannot delete developers.', 'error');
+                showToast('Teachers cannot delete restricted accounts.', 'error');
                 return;
             }
 
@@ -3642,7 +4176,7 @@ function openUserModal(editId = null) {
 
     const html = `
         <div class="modal-header">
-            <h3>${isEdit ? 'Edit User' : 'Add New User'}</h3>
+            <h3>${isEdit ? 'Edit User' : 'Add New User'}${!isEdit ? ' <small style="font-size:0.8rem;color:var(--text-muted);font-weight:400;">Need many users? <button type="button" class="btn btn-secondary btn-sm" id="open-bulk-from-add-user" style="padding:0.1rem 0.45rem;margin-left:0.35rem;vertical-align:middle;">Add In Bulk</button></small>' : ''}</h3>
             <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
         </div>
         <div class="modal-body">
@@ -3693,13 +4227,18 @@ function openUserModal(editId = null) {
         <div class="modal-footer">
             <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
             ${(currentUser.role === 'teacher' && isEdit && userToEdit.role === 'developer') ?
-            `<span class="text-danger text-sm" style="margin-right:1rem">Developer role locked</span>` :
+            `<span class="text-danger text-sm" style="margin-right:1rem">Teacher role locked</span>` :
             `<button class="btn btn-primary" id="confirm-user-btn">${isEdit ? 'Save Changes' : 'Add User'}</button>`
         }
         </div>
     `;
 
     openModal(html);
+
+    document.getElementById('open-bulk-from-add-user')?.addEventListener('click', () => {
+        closeModal();
+        document.getElementById('bulk-users-btn')?.click();
+    });
 
     document.getElementById('user-role-input').addEventListener('change', (e) => {
         const permsContainer = document.getElementById('perms-container');
@@ -3735,18 +4274,18 @@ function openUserModal(editId = null) {
 
         // Developer role restrictions
         if (role === 'developer' && currentUser.role === 'teacher') {
-            showToast('Only developers can create other developers.', 'error');
+            showToast('Only teachers can create other teachers.', 'error');
             return;
         }
 
         if (role === 'developer' && currentUser.role !== 'developer') {
-            showToast('Only developers can assign the developer role.', 'error');
+            showToast('Only teachers can assign the teacher role.', 'error');
             return;
         }
 
         // Prevent teachers from becoming developers
         if (!isEdit && role === 'developer' && currentUser.role === 'teacher') {
-            showToast('Teachers cannot become developers.', 'error');
+            showToast('Teachers cannot change to a restricted role.', 'error');
             return;
         }
 
@@ -3754,14 +4293,14 @@ function openUserModal(editId = null) {
         if (!isEdit && role === 'developer') {
             const existingDev = mockUsers.find(u => u.role === 'developer');
             if (existingDev) {
-                showToast('Only one developer can exist in the system.', 'error');
+                showToast('Only one teacher can exist in the system.', 'error');
                 return;
             }
         }
 
         // Prevent changing a teacher to developer
         if (isEdit && userToEdit.role !== 'developer' && role === 'developer' && currentUser.role === 'teacher') {
-            showToast('Teachers cannot make others developers.', 'error');
+            showToast('Teachers cannot change others to restricted roles.', 'error');
             return;
         }
 
@@ -3788,7 +4327,7 @@ function openUserModal(editId = null) {
 
             if (barcodeChanged) {
                 if (!canEditBarcode) {
-                    showToast('Only teachers and developers can edit user barcodes.', 'error');
+                    showToast('Only teachers can edit user barcodes.', 'error');
                     return;
                 }
 
@@ -3912,25 +4451,17 @@ function openUserItemsModal(userId) {
     if (!user) return;
 
     const itemsOut = getItemsOutForUser(userId);
-    const itemsHtml = itemsOut.length === 0
-        ? '<p class="text-muted">No items are currently signed out to this user.</p>'
-        : `<ul class="stock-list">${itemsOut.map(row => {
-            const dueDate = row.dueDate ? new Date(row.dueDate) : null;
-            const dueLabel = dueDate ? dueDate.toLocaleDateString() : 'No due date';
-            const isOverdue = dueDate ? dueDate < new Date() : false;
-            return `
-                <li class="stock-item" style="gap:0.75rem;align-items:flex-start;">
-                    <div>
-                        <strong>${row.itemName} (x${row.quantity})</strong>
-                        <small class="text-muted block">SKU: ${row.sku}</small>
-                        <small class="text-muted block">Project: ${row.projectName}</small>
-                    </div>
-                    <span class="${isOverdue ? 'text-danger' : 'text-warning'} font-bold text-sm" style="white-space:nowrap">
-                        ${isOverdue ? `Overdue (${dueLabel})` : `Due: ${dueLabel}`}
-                    </span>
-                </li>
-            `;
-        }).join('')}</ul>`;
+    const projectCount = new Set(itemsOut.map(row => row.projectId)).size;
+    const itemCount = itemsOut.reduce((sum, row) => sum + row.quantity, 0);
+    const itemsHtml = `
+        <div class="glass-panel" style="padding:1rem;display:flex;gap:0.75rem;align-items:center;justify-content:space-between;">
+            <div>
+                <div class="font-bold" style="font-size:1rem;">${projectCount} project${projectCount === 1 ? '' : 's'}, ${itemCount} item${itemCount === 1 ? '' : 's'}</div>
+                <div class="text-sm text-muted">Summary only (itemized list hidden by request).</div>
+            </div>
+            <span class="badge">${user.role}</span>
+        </div>
+    `;
 
     const html = `
         <div class="modal-header">
@@ -3950,50 +4481,22 @@ function openUserItemsModal(userId) {
 
 document.getElementById('add-user-btn')?.addEventListener('click', () => openUserModal());
 
+document.getElementById('users-bulk-action-select')?.addEventListener('change', (e) => {
+    const action = e.target.value;
+    if (!action) return;
+
+    if (action === 'import') document.getElementById('bulk-users-btn')?.click();
+    if (action === 'delete') document.getElementById('bulk-delete-users-btn')?.click();
+    if (action === 'suspend') document.getElementById('bulk-suspend-users-btn')?.click();
+
+    e.target.value = '';
+});
+
 document.getElementById('view-requests-btn')?.addEventListener('click', () => {
-    const rows = helpRequests.map(r => `
-        <tr>
-            <td><small class="text-muted">${new Date(r.timestamp).toLocaleDateString()}</small></td>
-            <td><strong>${r.name}</strong><br><small class="text-muted">${r.email}</small></td>
-            <td>${r.description}</td>
-            <td><span class="badge" style="background:${r.status === 'Resolved' ? 'rgba(16,185,129,0.2);color:var(--success)' : 'rgba(255,255,255,0.1)'}">${r.status}</span></td>
-            <td>
-                ${r.status === 'Pending' ? `<button class="btn btn-secondary text-sm resolve-req-btn" data-id="${r.id}">Resolve</button>` : ''}
-            </td>
-        </tr>
-    `).join('') || `<tr><td colspan="5" class="text-center text-muted">No pending requests.</td></tr>`;
-
-    const html = `
-        <div class="modal-header">
-            <h3>Login & Credential Requests</h3>
-            <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
-        </div>
-        <div class="modal-body" style="max-height: 400px; overflow-y: auto;">
-             <table class="data-table">
-                <thead><tr><th>Date</th><th>User</th><th>Request</th><th>Status</th><th>Actions</th></tr></thead>
-                <tbody id="help-req-tbody">${rows}</tbody>
-            </table>
-        </div>
-    `;
-
-    openModal(html);
-
-    document.querySelectorAll('.resolve-req-btn').forEach(btn => {
-        btn.addEventListener('click', async (e) => {
-            const reqId = e.target.getAttribute('data-id');
-            const req = helpRequests.find(r => r.id === reqId);
-            if (req) {
-                const updated = await updateHelpRequestInSupabase(req.id, 'Resolved');
-                if (!updated) {
-                    showToast('Failed to resolve request in Supabase.', 'error');
-                    return;
-                }
-                await refreshRequestsFromSupabase();
-                showToast('Request marked as resolved.', 'success');
-                closeModal();
-                document.getElementById('view-requests-btn').click(); // refresh modal
-            }
-        });
+    ordersTabMode = 'requests';
+    switchPage('orders', 'Orders & Requests').catch(err => {
+        console.error('Failed to open Orders/Requests view:', err);
+        showToast('Unable to open requests tab.', 'error');
     });
 });
 
@@ -4132,7 +4635,7 @@ document.getElementById('bulk-users-btn')?.addEventListener('click', () => {
             <div class="form-group">
                 <textarea id="bulk-users-data" class="form-control" rows="6" placeholder="STU-001,Alice Smith,student,Biology,10\nTCH-002,Bob Jones,teacher,,"></textarea>
             </div>
-            <p class="text-sm text-muted">Roles must be 'student', 'teacher', or 'developer'. Existing IDs are skipped. Course/Grade applies to students only.</p>
+            <p class="text-sm text-muted">Roles must be 'student' or 'teacher'. Existing IDs are skipped. Course/Grade applies to students only.</p>
         </div>
         <div class="modal-footer">
             <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
@@ -4288,11 +4791,11 @@ document.getElementById('bulk-delete-users-btn')?.addEventListener('click', asyn
     const selectedIds = selectedCbs.map(cb => cb.getAttribute('data-id'));
     const targetUsers = mockUsers.filter(u => selectedIds.includes(u.id));
     
-    // Teachers cannot delete developers
+    // Teachers cannot delete restricted accounts
     if (currentUser.role === 'teacher') {
         const developerCount = targetUsers.filter(u => u.role === 'developer').length;
         if (developerCount > 0) {
-            showToast(`Teachers cannot delete developers. ${developerCount} developer(s) excluded from deletion.`, 'error');
+            showToast(`Teachers cannot delete restricted accounts. ${developerCount} account(s) excluded from deletion.`, 'error');
             return;
         }
     }
@@ -4373,7 +4876,7 @@ document.getElementById('bulk-suspend-users-btn')?.addEventListener('click', asy
    MODAL & NOTIFICATION HELPERS
    ======================================= */
 function openModal(contentHtml) {
-    dynamicModal.classList.remove('debug-modal', 'class-modal');
+    dynamicModal.classList.remove('debug-modal', 'class-modal', 'order-request-modal');
     dynamicModal.innerHTML = contentHtml;
     modalContainer.classList.remove('hidden');
 }
@@ -4381,7 +4884,7 @@ function openModal(contentHtml) {
 function closeModal() {
     modalContainer.classList.add('hidden');
     dynamicModal.innerHTML = '';
-    dynamicModal.classList.remove('debug-modal', 'class-modal');
+    dynamicModal.classList.remove('debug-modal', 'class-modal', 'order-request-modal');
 }
 
 function showToast(message, type = 'success') {
@@ -4457,6 +4960,30 @@ function openAddItemModal() {
                 <label>Part Number (Optional)</label>
                 <input type="text" id="add-part-number" class="form-control" placeholder="e.g. SRM-42-001">
             </div>
+            <div class="grid-2-col" style="gap:1rem">
+                <div class="form-group">
+                    <label>Storage Location</label>
+                    <input type="text" id="add-storage-location" class="form-control" placeholder="e.g. Cabinet A3">
+                </div>
+                <div class="form-group">
+                    <label>Brand</label>
+                    <input type="text" id="add-brand" class="form-control" placeholder="e.g. Bosch">
+                </div>
+            </div>
+            <div class="grid-2-col" style="gap:1rem">
+                <div class="form-group">
+                    <label>Supplier</label>
+                    <input type="text" id="add-supplier" class="form-control" placeholder="e.g. DigiKey">
+                </div>
+                <div class="form-group">
+                    <label>Image Link</label>
+                    <input type="url" id="add-image-link" class="form-control" placeholder="https://...">
+                </div>
+            </div>
+            <div class="form-group">
+                <label>Supplier Product Listing Link</label>
+                <input type="url" id="add-supplier-link" class="form-control" placeholder="https://...">
+            </div>
             <div class="form-group">
                 <label>Item Type</label>
                 <select id="add-item-type" class="form-control">
@@ -4486,7 +5013,7 @@ function openAddItemModal() {
             </div>
             <div class="form-group">
                 <label>Visibility Tags</label>
-                <small class="text-muted" style="display:block;margin-bottom:0.5rem">Leave all unchecked to make the item visible to all classes.</small>
+                <small class="text-muted" style="display:block;margin-bottom:0.5rem">Add at least one tag for student visibility. Untagged items are hidden from students.</small>
                 <div class="glass-panel" style="padding:0.75rem">
                     ${tagCheckboxes || '<p class="text-muted text-sm">No visibility tags defined.</p>'}
                 </div>
@@ -4507,6 +5034,11 @@ function openAddItemModal() {
         const category = (document.getElementById('add-category').value || 'Uncategorized').trim();
         const manualSku = document.getElementById('add-sku').value.trim().toUpperCase();
         const partNumber = document.getElementById('add-part-number')?.value.trim() || '';
+        const storageLocation = document.getElementById('add-storage-location')?.value.trim() || '';
+        const brand = document.getElementById('add-brand')?.value.trim() || '';
+        const supplier = document.getElementById('add-supplier')?.value.trim() || '';
+        const imageLink = document.getElementById('add-image-link')?.value.trim() || '';
+        const supplierLink = document.getElementById('add-supplier-link')?.value.trim() || '';
         const itemType = document.getElementById('add-item-type')?.value || 'item';
         const visibilityLevel = document.getElementById('add-visibility-level')?.value || 'standard';
         const stock = Math.max(0, parseInt(document.getElementById('add-stock').value, 10) || 0);
@@ -4527,6 +5059,12 @@ function openAddItemModal() {
             stock,
             threshold,
             part_number: partNumber || null,
+            location: storageLocation || null,
+            storageLocation: storageLocation || null,
+            brand: brand || null,
+            supplier: supplier || null,
+            image_link: imageLink || null,
+            supplier_listing_link: supplierLink || null,
             item_type: itemType,
             visibility_level: visibilityLevel,
             visibilityTags: selectedTags
@@ -4560,12 +5098,12 @@ function openEditProjectModal(projectId) {
     if (!project) return;
 
     if (!canCurrentUserManageProject(project)) {
-        showToast('Only project owners, teachers, or developers can edit this project.', 'error');
+        showToast('Only project owners or teachers can edit this project.', 'error');
         return;
     }
 
     const canAssignOwner = currentUser.role !== 'student';
-    const ownerCandidates = getProjectStudentCandidates();
+    const ownerCandidates = getProjectOwnerCandidates();
     const ownerOptions = ownerCandidates.map(student =>
         `<option value="${student.id}" ${student.id === project.ownerId ? 'selected' : ''}>${student.name} (${student.id})</option>`
     ).join('');
@@ -4601,12 +5139,12 @@ function openEditProjectModal(projectId) {
             <div class="form-group">
                 <label>Project Owner</label>
                 <select id="edit-proj-owner" class="form-control">
-                    ${ownerOptions || '<option value="">No students found</option>'}
+                    ${ownerOptions || '<option value="">No eligible users found</option>'}
                 </select>
-                <small class="text-muted">Teachers and developers can assign ownership to a student.</small>
+                <small class="text-muted">Teachers and developers can assign ownership to eligible users.</small>
             </div>` : ''}
             <div class="form-group">
-                <label>Student Collaborators</label>
+                <label>Collaborators</label>
                 <div id="edit-proj-collaborators-wrap" class="glass-panel" style="padding:1rem; max-height:180px; overflow-y:auto">
                     ${collaboratorOptions || '<p class="text-sm text-muted">No eligible student collaborators.</p>'}
                 </div>
@@ -4676,7 +5214,7 @@ function openEditProjectModal(projectId) {
 // Create Project Flow
 document.getElementById('create-project-btn')?.addEventListener('click', () => {
     const canAssignOwner = currentUser.role !== 'student';
-    const ownerCandidates = getProjectStudentCandidates();
+    const ownerCandidates = getProjectOwnerCandidates();
     const defaultOwnerId = canAssignOwner
         ? (ownerCandidates[0]?.id || '')
         : currentUser.id;
@@ -4705,12 +5243,12 @@ document.getElementById('create-project-btn')?.addEventListener('click', () => {
             <div class="form-group">
                 <label>Project Owner</label>
                 <select id="add-proj-owner" class="form-control">
-                    ${ownerOptions || '<option value="">No students found</option>'}
+                    ${ownerOptions || '<option value="">No eligible users found</option>'}
                 </select>
-                <small class="text-muted">Teachers and developers can create projects directly for students.</small>
+                <small class="text-muted">Teachers and developers can create projects for eligible users.</small>
             </div>` : ''}
             <div class="form-group">
-                <label>Add Student Collaborators (Optional)</label>
+                <label>Add Collaborators (Optional)</label>
                 <div id="add-proj-collaborators-wrap" class="glass-panel" style="padding:1rem; max-height:150px; overflow-y:auto">
                     ${collaboratorOptions || '<p class="text-sm text-muted">No available student collaborators.</p>'}
                 </div>
@@ -4784,8 +5322,241 @@ document.getElementById('create-project-btn')?.addEventListener('click', () => {
 /* =======================================
    ORDERS LOGIC
    ======================================= */
+const ORDER_FORM_CONFIG_STORAGE_KEY = 'orderFormConfigV1';
+const ORDER_REPORT_QUEUE_STORAGE_KEY = 'orderReportQueueV1';
+const ORDER_FORM_JSON_MARKER = 'ORDER_FORM_JSON::';
+
+const DEFAULT_ORDER_FORM_CONFIG = {
+    vendorOptions: ['Amazon', 'DigiKey', 'Mouser', 'McMaster-Carr', 'AliExpress', 'Other'],
+    budgetCategories: ['General', 'Classroom', 'Competition', 'Maintenance', 'Emergency'],
+    enabledFields: {
+        partNumberSku: true,
+        estimatedPricePerUnit: true,
+        estimatedTotalCost: true,
+        optionalImpact: true,
+        alternatives: true,
+        budgetCategory: true,
+        reorder: true,
+        notes: true
+    }
+};
+
+const ORDER_PRIORITY_OPTIONS = [
+    { value: 'Low', label: 'Low (nice to have)' },
+    { value: 'Medium', label: 'Medium (needed soon)' },
+    { value: 'High', label: 'High (blocking progress)' },
+    { value: 'Urgent', label: 'Urgent (robot cannot function without it)' }
+];
+
+function loadOrderFormConfig() {
+    try {
+        const raw = localStorage.getItem(ORDER_FORM_CONFIG_STORAGE_KEY);
+        if (!raw) return {
+            ...DEFAULT_ORDER_FORM_CONFIG,
+            enabledFields: { ...DEFAULT_ORDER_FORM_CONFIG.enabledFields }
+        };
+
+        const parsed = JSON.parse(raw);
+        return {
+            vendorOptions: Array.isArray(parsed?.vendorOptions) && parsed.vendorOptions.length > 0
+                ? parsed.vendorOptions
+                : [...DEFAULT_ORDER_FORM_CONFIG.vendorOptions],
+            budgetCategories: Array.isArray(parsed?.budgetCategories) && parsed.budgetCategories.length > 0
+                ? parsed.budgetCategories
+                : [...DEFAULT_ORDER_FORM_CONFIG.budgetCategories],
+            enabledFields: {
+                ...DEFAULT_ORDER_FORM_CONFIG.enabledFields,
+                ...(parsed?.enabledFields || {})
+            }
+        };
+    } catch {
+        return {
+            ...DEFAULT_ORDER_FORM_CONFIG,
+            enabledFields: { ...DEFAULT_ORDER_FORM_CONFIG.enabledFields }
+        };
+    }
+}
+
+let orderFormConfig = loadOrderFormConfig();
+
+function saveOrderFormConfig(config) {
+    const vendorOptions = Array.isArray(config?.vendorOptions) && config.vendorOptions.length > 0
+        ? config.vendorOptions
+        : [...DEFAULT_ORDER_FORM_CONFIG.vendorOptions];
+
+    if (!vendorOptions.some(option => String(option || '').toLowerCase() === 'other')) {
+        vendorOptions.push('Other');
+    }
+
+    orderFormConfig = {
+        vendorOptions,
+        budgetCategories: Array.isArray(config?.budgetCategories) && config.budgetCategories.length > 0
+            ? config.budgetCategories
+            : [...DEFAULT_ORDER_FORM_CONFIG.budgetCategories],
+        enabledFields: {
+            ...DEFAULT_ORDER_FORM_CONFIG.enabledFields,
+            ...(config?.enabledFields || {})
+        }
+    };
+
+    localStorage.setItem(ORDER_FORM_CONFIG_STORAGE_KEY, JSON.stringify(orderFormConfig));
+}
+
+function buildOrderJustificationWithFormData(partPurpose, formData) {
+    return `${String(partPurpose || '').trim()}\n\n${ORDER_FORM_JSON_MARKER}${JSON.stringify(formData || {})}`;
+}
+
+function parseOrderJustification(justification) {
+    const raw = String(justification || '');
+    const markerIndex = raw.indexOf(ORDER_FORM_JSON_MARKER);
+
+    if (markerIndex === -1) {
+        return {
+            partPurpose: raw,
+            formData: null
+        };
+    }
+
+    const body = raw.slice(0, markerIndex).trim();
+    const jsonRaw = raw.slice(markerIndex + ORDER_FORM_JSON_MARKER.length).trim();
+
+    try {
+        return {
+            partPurpose: body,
+            formData: jsonRaw ? JSON.parse(jsonRaw) : null
+        };
+    } catch {
+        return {
+            partPurpose: body || raw,
+            formData: null
+        };
+    }
+}
+
+function queueOrderReportEvent(eventType, orderRequest, extra = {}) {
+    const queueEntry = {
+        id: generateId('ORQ'),
+        eventType,
+        timestamp: new Date().toISOString(),
+        orderId: orderRequest?.id || null,
+        orderStatus: orderRequest?.status || null,
+        requestedByUserId: orderRequest?.requestedByUserId || null,
+        requestedByName: orderRequest?.requestedByName || null,
+        itemName: orderRequest?.itemName || null,
+        quantity: orderRequest?.quantity || null,
+        metadata: extra
+    };
+
+    let queue = [];
+    try {
+        queue = JSON.parse(localStorage.getItem(ORDER_REPORT_QUEUE_STORAGE_KEY) || '[]');
+        if (!Array.isArray(queue)) queue = [];
+    } catch {
+        queue = [];
+    }
+
+    queue.unshift(queueEntry);
+    localStorage.setItem(ORDER_REPORT_QUEUE_STORAGE_KEY, JSON.stringify(queue.slice(0, 500)));
+}
+
+function parseOptionalCurrency(value) {
+    const parsed = parseFloat(value);
+    if (Number.isNaN(parsed) || parsed < 0) return null;
+    return Math.round(parsed * 100) / 100;
+}
+
+function openOrderFormSettingsModal() {
+    if (!currentUser || currentUser.role === 'student') {
+        showToast('Only staff can configure order form fields.', 'error');
+        return;
+    }
+
+    const enabled = orderFormConfig.enabledFields || {};
+    const vendorLines = (orderFormConfig.vendorOptions || []).join('\n');
+    const budgetLines = (orderFormConfig.budgetCategories || []).join('\n');
+
+    const html = `
+        <div class="modal-header">
+            <h3>Customize Order Form</h3>
+            <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
+        </div>
+        <div class="modal-body">
+            <p class="text-secondary mb-4">Enable/disable optional fields and manage dropdown options for requests.</p>
+            <div class="glass-panel" style="padding:0.9rem;margin-bottom:0.8rem;">
+                <h4 style="margin-bottom:0.5rem;">Optional Fields</h4>
+                <label style="display:block;margin-bottom:0.35rem;"><input type="checkbox" id="order-field-part-number" ${enabled.partNumberSku ? 'checked' : ''}> Part Number / SKU</label>
+                <label style="display:block;margin-bottom:0.35rem;"><input type="checkbox" id="order-field-price" ${enabled.estimatedPricePerUnit ? 'checked' : ''}> Estimated Price (per unit)</label>
+                <label style="display:block;margin-bottom:0.35rem;"><input type="checkbox" id="order-field-total" ${enabled.estimatedTotalCost ? 'checked' : ''}> Estimated Total Cost</label>
+                <label style="display:block;margin-bottom:0.35rem;"><input type="checkbox" id="order-field-impact" ${enabled.optionalImpact ? 'checked' : ''}> What happens if we do not order it?</label>
+                <label style="display:block;margin-bottom:0.35rem;"><input type="checkbox" id="order-field-alternatives" ${enabled.alternatives ? 'checked' : ''}> Alternatives available?</label>
+                <label style="display:block;margin-bottom:0.35rem;"><input type="checkbox" id="order-field-budget" ${enabled.budgetCategory ? 'checked' : ''}> Budget Category</label>
+                <label style="display:block;margin-bottom:0.35rem;"><input type="checkbox" id="order-field-reorder" ${enabled.reorder ? 'checked' : ''}> Re-order question</label>
+                <label style="display:block;"><input type="checkbox" id="order-field-notes" ${enabled.notes ? 'checked' : ''}> Notes / Special Instructions</label>
+            </div>
+            <div class="form-group">
+                <label>Vendor / Supplier Options (one per line)</label>
+                <textarea id="order-vendor-options" class="form-control" rows="6">${escapeHtml(vendorLines)}</textarea>
+            </div>
+            <div class="form-group">
+                <label>Budget Categories (one per line)</label>
+                <textarea id="order-budget-options" class="form-control" rows="6">${escapeHtml(budgetLines)}</textarea>
+            </div>
+            <p class="text-muted" style="font-size:0.85rem;">Future email/transaction reports are staged by queuing local report events for each submission and status update.</p>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            <button class="btn btn-primary" id="save-order-form-settings-btn">Save Settings</button>
+        </div>
+    `;
+
+    openModal(html);
+
+    document.getElementById('save-order-form-settings-btn')?.addEventListener('click', () => {
+        const parseOptionLines = (value) => String(value || '')
+            .split('\n')
+            .map(line => line.trim())
+            .filter(Boolean);
+
+        const nextConfig = {
+            vendorOptions: parseOptionLines(document.getElementById('order-vendor-options')?.value),
+            budgetCategories: parseOptionLines(document.getElementById('order-budget-options')?.value),
+            enabledFields: {
+                partNumberSku: !!document.getElementById('order-field-part-number')?.checked,
+                estimatedPricePerUnit: !!document.getElementById('order-field-price')?.checked,
+                estimatedTotalCost: !!document.getElementById('order-field-total')?.checked,
+                optionalImpact: !!document.getElementById('order-field-impact')?.checked,
+                alternatives: !!document.getElementById('order-field-alternatives')?.checked,
+                budgetCategory: !!document.getElementById('order-field-budget')?.checked,
+                reorder: !!document.getElementById('order-field-reorder')?.checked,
+                notes: !!document.getElementById('order-field-notes')?.checked
+            }
+        };
+
+        saveOrderFormConfig(nextConfig);
+        addLog(currentUser.id, 'Orders Settings', 'Updated order form fields and dropdown configuration.');
+        showToast('Order form configuration updated.', 'success');
+        closeModal();
+    });
+}
+
 function openOrderRequestModal({ initialName = '' } = {}) {
     if (!currentUser) return;
+
+    const enabled = orderFormConfig.enabledFields || {};
+    const vendorOptions = orderFormConfig.vendorOptions || DEFAULT_ORDER_FORM_CONFIG.vendorOptions;
+    const budgetCategories = orderFormConfig.budgetCategories || DEFAULT_ORDER_FORM_CONFIG.budgetCategories;
+
+    const vendorOptionsHtml = vendorOptions.map(option =>
+        `<option value="${escapeHtml(option)}">${escapeHtml(option)}</option>`
+    ).join('');
+
+    const priorityOptionsHtml = ORDER_PRIORITY_OPTIONS.map(option =>
+        `<option value="${option.value}">${option.label}</option>`
+    ).join('');
+
+    const budgetOptionsHtml = budgetCategories.map(option =>
+        `<option value="${escapeHtml(option)}">${escapeHtml(option)}</option>`
+    ).join('');
 
     const html = `
         <div class="modal-header">
@@ -4795,21 +5566,86 @@ function openOrderRequestModal({ initialName = '' } = {}) {
         <div class="modal-body">
             <p class="text-secondary mb-4">Use this when an item does not exist in inventory or stock is unavailable.</p>
             <div class="form-group">
-                <label>Item Name</label>
-                <input type="text" id="order-item-name" class="form-control" placeholder="e.g. Soldering Iron" value="${String(initialName || '').replace(/"/g, '&quot;')}">
+                <label>Part Name</label>
+                <input type="text" id="order-part-name" class="form-control" placeholder="e.g. Soldering Iron" value="${String(initialName || '').replace(/"/g, '&quot;')}">
             </div>
             <div class="form-group">
-                <label>Category</label>
-                <input type="text" id="order-item-category" class="form-control" placeholder="e.g. Electronics">
+                <label>Quantity Needed</label>
+                <input type="number" id="order-quantity-needed" class="form-control" min="1" value="1">
             </div>
             <div class="form-group">
-                <label>Quantity</label>
-                <input type="number" id="order-item-qty" class="form-control" min="1" value="1">
+                <label>Vendor / Supplier</label>
+                <select id="order-vendor" class="form-control">
+                    ${vendorOptionsHtml}
+                </select>
+            </div>
+            <div class="form-group hidden" id="order-vendor-other-wrap">
+                <label>Vendor / Supplier (Other)</label>
+                <input type="text" id="order-vendor-other" class="form-control" placeholder="Enter vendor name">
+            </div>
+            ${enabled.partNumberSku ? `
+            <div class="form-group">
+                <label>Part Number / SKU (optional)</label>
+                <input type="text" id="order-part-number" class="form-control" maxlength="100" placeholder="Short answer">
+            </div>` : ''}
+            ${enabled.estimatedPricePerUnit ? `
+            <div class="form-group">
+                <label>Estimated Price (per unit)</label>
+                <input type="number" id="order-estimated-price" class="form-control" min="0" step="0.01" placeholder="0.00">
+            </div>` : ''}
+            ${enabled.estimatedTotalCost ? `
+            <div class="form-group">
+                <label>Estimated Total Cost</label>
+                <input type="number" id="order-estimated-total" class="form-control" min="0" step="0.01" placeholder="0.00">
+                <small class="text-muted">If left blank and unit price is provided, total is auto-calculated.</small>
+            </div>` : ''}
+            <div class="form-group">
+                <label>Priority Level</label>
+                <select id="order-priority-level" class="form-control">${priorityOptionsHtml}</select>
             </div>
             <div class="form-group">
-                <label>Why is this needed?</label>
-                <textarea id="order-item-justification" class="form-control" rows="4" placeholder="Class/project need, urgency, usage details..."></textarea>
+                <label>What is this part for?</label>
+                <textarea id="order-part-purpose" class="form-control" rows="4" placeholder="Describe usage and context."></textarea>
             </div>
+            ${enabled.optionalImpact ? `
+            <div class="form-group">
+                <label>What happens if we do not order it? (optional)</label>
+                <textarea id="order-no-order-impact" class="form-control" rows="3" placeholder="Optional"></textarea>
+            </div>` : ''}
+            ${enabled.alternatives ? `
+            <div class="form-group">
+                <label>Are alternatives already available? (optional)</label>
+                <select id="order-has-alternatives" class="form-control">
+                    <option value="">Select</option>
+                    <option value="No">No</option>
+                    <option value="Yes">Yes</option>
+                </select>
+            </div>
+            <div class="form-group hidden" id="order-alternatives-details-wrap">
+                <label>Alternatives details</label>
+                <textarea id="order-alternatives-details" class="form-control" rows="3" placeholder="Explain available alternatives"></textarea>
+            </div>` : ''}
+            ${enabled.budgetCategory ? `
+            <div class="form-group">
+                <label>Budget Category</label>
+                <select id="order-budget-category" class="form-control">
+                    <option value="">Uncategorized</option>
+                    ${budgetOptionsHtml}
+                </select>
+            </div>` : ''}
+            ${enabled.reorder ? `
+            <div class="form-group">
+                <label>Is this a re-order?</label>
+                <select id="order-is-reorder" class="form-control">
+                    <option value="No">No</option>
+                    <option value="Yes">Yes</option>
+                </select>
+            </div>` : ''}
+            ${enabled.notes ? `
+            <div class="form-group">
+                <label>Notes / Special Instructions</label>
+                <textarea id="order-special-notes" class="form-control" rows="3" placeholder="Optional"></textarea>
+            </div>` : ''}
         </div>
         <div class="modal-footer">
             <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
@@ -4818,26 +5654,83 @@ function openOrderRequestModal({ initialName = '' } = {}) {
     `;
 
     openModal(html);
+    dynamicModal.classList.add('order-request-modal');
+
+    const vendorSelect = document.getElementById('order-vendor');
+    const vendorOtherWrap = document.getElementById('order-vendor-other-wrap');
+    const alternativesSelect = document.getElementById('order-has-alternatives');
+    const alternativesDetailsWrap = document.getElementById('order-alternatives-details-wrap');
+
+    const updateVendorOtherVisibility = () => {
+        if (!vendorOtherWrap || !vendorSelect) return;
+        const isOther = String(vendorSelect.value || '').trim().toLowerCase() === 'other';
+        vendorOtherWrap.classList.toggle('hidden', !isOther);
+    };
+
+    const updateAlternativesVisibility = () => {
+        if (!alternativesDetailsWrap || !alternativesSelect) return;
+        const isYes = String(alternativesSelect.value || '') === 'Yes';
+        alternativesDetailsWrap.classList.toggle('hidden', !isYes);
+    };
+
+    vendorSelect?.addEventListener('change', updateVendorOtherVisibility);
+    alternativesSelect?.addEventListener('change', updateAlternativesVisibility);
+    updateVendorOtherVisibility();
+    updateAlternativesVisibility();
 
     document.getElementById('submit-order-request-btn')?.addEventListener('click', async () => {
-        const itemName = document.getElementById('order-item-name')?.value.trim();
-        const category = document.getElementById('order-item-category')?.value.trim() || 'Uncategorized';
-        const quantity = Math.max(1, parseInt(document.getElementById('order-item-qty')?.value, 10) || 1);
-        const justification = document.getElementById('order-item-justification')?.value.trim();
+        const partName = document.getElementById('order-part-name')?.value.trim();
+        const quantityNeeded = Math.max(1, parseInt(document.getElementById('order-quantity-needed')?.value, 10) || 1);
+        const vendorSelection = document.getElementById('order-vendor')?.value.trim() || '';
+        const vendorOther = document.getElementById('order-vendor-other')?.value.trim() || '';
+        const partPurpose = document.getElementById('order-part-purpose')?.value.trim();
 
-        if (!itemName || !justification) {
-            showToast('Item name and justification are required.', 'error');
+        if (!partName || !partPurpose || !vendorSelection) {
+            showToast('Part name, quantity, vendor, and purpose are required.', 'error');
             return;
         }
+
+        const vendorFinal = vendorSelection.toLowerCase() === 'other'
+            ? (vendorOther || 'Other')
+            : vendorSelection;
+
+        const estimatedPricePerUnit = parseOptionalCurrency(document.getElementById('order-estimated-price')?.value || '');
+        let estimatedTotalCost = parseOptionalCurrency(document.getElementById('order-estimated-total')?.value || '');
+
+        if (estimatedTotalCost === null && estimatedPricePerUnit !== null) {
+            estimatedTotalCost = Math.round((estimatedPricePerUnit * quantityNeeded) * 100) / 100;
+        }
+
+        const formData = {
+            schemaVersion: 1,
+            partName,
+            quantityNeeded,
+            vendorSupplier: vendorFinal,
+            partNumberSku: document.getElementById('order-part-number')?.value.trim() || '',
+            estimatedPricePerUnit,
+            estimatedTotalCost,
+            priorityLevel: document.getElementById('order-priority-level')?.value || 'Medium',
+            partPurpose,
+            noOrderImpact: document.getElementById('order-no-order-impact')?.value.trim() || '',
+            hasAlternatives: document.getElementById('order-has-alternatives')?.value || '',
+            alternativesExplanation: document.getElementById('order-alternatives-details')?.value.trim() || '',
+            budgetCategory: document.getElementById('order-budget-category')?.value || '',
+            isReorder: document.getElementById('order-is-reorder')?.value || 'No',
+            notes: document.getElementById('order-special-notes')?.value.trim() || '',
+            reporting: {
+                emailStatus: 'queued-not-configured',
+                transactionReportStatus: 'queued-not-configured'
+            }
+        };
 
         const request = {
             id: generateId('ORD'),
             requestedByUserId: currentUser.id,
             requestedByName: currentUser.name,
-            itemName,
-            category,
-            quantity,
-            justification,
+            itemName: partName,
+            category: formData.budgetCategory || 'Uncategorized',
+            quantity: quantityNeeded,
+            justification: buildOrderJustificationWithFormData(partPurpose, formData),
             status: 'Pending',
             timestamp: new Date().toISOString()
         };
@@ -4848,8 +5741,14 @@ function openOrderRequestModal({ initialName = '' } = {}) {
             return;
         }
 
+        queueOrderReportEvent('order_submitted', request, {
+            priorityLevel: formData.priorityLevel,
+            estimatedTotalCost: formData.estimatedTotalCost,
+            vendorSupplier: formData.vendorSupplier
+        });
+
         await refreshRequestsFromSupabase();
-        addLog(currentUser.id, 'Order Request', `Requested order: ${quantity}x ${itemName} (${category})`);
+        addLog(currentUser.id, 'Order Request', `Requested order: ${quantityNeeded}x ${partName} (${formData.priorityLevel})`);
         showToast('Order request submitted.', 'success');
         closeModal();
 
@@ -4865,11 +5764,39 @@ function renderOrders() {
     const toggleWrap = document.getElementById('orders-student-toggle-wrap');
     const toggle = document.getElementById('orders-student-visible-toggle');
     const newOrderBtn = document.getElementById('new-order-request-btn');
+    const configureFormBtn = document.getElementById('configure-order-form-btn');
+    const ordersModeButtons = document.querySelectorAll('.orders-mode-btn');
+    const ordersHeaderRow = document.querySelector('#page-orders .data-table thead tr');
 
     if (!tbody || !currentUser) return;
 
+    ordersModeButtons.forEach(btn => {
+        btn.classList.toggle('active', btn.getAttribute('data-mode') === ordersTabMode);
+        if (!btn.dataset.bound) {
+            btn.addEventListener('click', () => {
+                ordersTabMode = btn.getAttribute('data-mode') || 'orders';
+                renderOrders();
+            });
+            btn.dataset.bound = '1';
+        }
+    });
+
+    if (ordersHeaderRow) {
+        if (ordersTabMode === 'orders') {
+            ordersHeaderRow.innerHTML = '<th>Date</th><th>Requested By</th><th>Part Name</th><th>Qty</th><th>Priority</th><th>Est. Total</th><th>Status</th><th>Actions</th>';
+        } else if (ordersTabMode === 'requests') {
+            ordersHeaderRow.innerHTML = '<th>Date</th><th>Type</th><th>From</th><th>Details</th><th>Status</th><th>Actions</th><th></th><th></th>';
+        } else {
+            ordersHeaderRow.innerHTML = '<th>Date</th><th>Flag Type</th><th>Actor</th><th>Details</th><th>Status</th><th>Actions</th><th></th><th></th>';
+        }
+    }
+
+    if (filter) {
+        filter.style.display = ordersTabMode === 'orders' ? '' : 'none';
+    }
+
     if (toggleWrap) {
-        toggleWrap.style.display = currentUser.role === 'student' ? 'none' : '';
+        toggleWrap.style.display = (currentUser.role === 'student' || ordersTabMode !== 'orders') ? 'none' : '';
     }
 
     if (toggle) {
@@ -4890,8 +5817,189 @@ function renderOrders() {
         newOrderBtn.dataset.bound = '1';
     }
 
+    if (newOrderBtn) {
+        newOrderBtn.style.display = ordersTabMode === 'orders' ? '' : 'none';
+    }
+
+    if (configureFormBtn) {
+        configureFormBtn.classList.toggle('hidden', currentUser.role === 'student' || ordersTabMode !== 'orders');
+        if (!configureFormBtn.dataset.bound) {
+            configureFormBtn.addEventListener('click', () => openOrderFormSettingsModal());
+            configureFormBtn.dataset.bound = '1';
+        }
+    }
+
     if (currentUser.role === 'student' && !ordersStudentViewEnabled) {
         tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted">Orders view is currently disabled for students.</td></tr>';
+        return;
+    }
+
+    if (ordersTabMode === 'requests') {
+        const allRequests = [];
+
+        helpRequests.forEach(r => {
+            allRequests.push({
+                id: r.id,
+                type: 'Credential',
+                from: r.name,
+                details: r.description,
+                status: r.status,
+                timestamp: r.timestamp,
+                sourceArray: 'help',
+                sourceObj: r
+            });
+        });
+
+        extensionRequests.forEach(r => {
+            allRequests.push({
+                id: r.id,
+                type: 'Extension',
+                from: r.userName,
+                details: `${r.itemName} in ${r.projectName} - Due: ${new Date(r.currentDue).toLocaleDateString()} -> ${new Date(r.requestedDue).toLocaleDateString()}`,
+                status: r.status,
+                timestamp: r.timestamp,
+                sourceArray: 'extension',
+                sourceObj: r
+            });
+        });
+
+        allRequests.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+        tbody.innerHTML = allRequests.map(r => {
+            const statusStyle = r.status === 'Approved' ? 'background:rgba(16,185,129,0.2);color:var(--success)' :
+                r.status === 'Denied' ? 'background:rgba(239,68,68,0.2);color:var(--danger)' :
+                    r.status === 'Resolved' ? 'background:rgba(16,185,129,0.2);color:var(--success)' :
+                        'background:rgba(255,255,255,0.1)';
+
+            return `
+            <tr>
+                <td><small class="text-muted">${new Date(r.timestamp).toLocaleDateString()}</small></td>
+                <td><span class="badge" style="background: rgba(139,92,246,0.15); color: var(--accent-primary)">${r.type}</span></td>
+                <td><strong>${r.from}</strong></td>
+                <td>${r.details}</td>
+                <td><span class="badge" style="${statusStyle}">${r.status}</span></td>
+                <td>
+                    ${r.status === 'Pending' && currentUser.role !== 'student' ? `
+                        ${r.sourceArray === 'extension' ? `
+                            <button class="btn btn-secondary text-sm approve-req-btn" data-id="${r.id}" style="padding:0.3rem 0.6rem;font-size:0.75rem;margin-right:0.25rem;">Approve</button>
+                            <button class="btn btn-danger text-sm deny-req-btn" data-id="${r.id}" style="padding:0.3rem 0.6rem;font-size:0.75rem;">Deny</button>
+                        ` : `
+                            <button class="btn btn-secondary text-sm resolve-req-btn2" data-id="${r.id}" style="padding:0.3rem 0.6rem;font-size:0.75rem;">Resolve</button>
+                        `}
+                    ` : '-'}
+                </td>
+                <td></td>
+                <td></td>
+            </tr>`;
+        }).join('') || '<tr><td colspan="8" class="text-center text-muted">No requests found.</td></tr>';
+
+        document.querySelectorAll('.resolve-req-btn2').forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                const reqId = e.currentTarget.getAttribute('data-id');
+                const req = helpRequests.find(r => r.id === reqId);
+                if (!req) return;
+                const updated = await updateHelpRequestInSupabase(req.id, 'Resolved');
+                if (!updated) {
+                    showToast('Failed to resolve help request in Supabase.', 'error');
+                    return;
+                }
+                await refreshRequestsFromSupabase();
+                showToast('Help request resolved.', 'success');
+                addLog(currentUser.id, 'Resolve Request', `Resolved credential request from ${req.name}`);
+                renderOrders();
+            });
+        });
+
+        document.querySelectorAll('.approve-req-btn').forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                const reqId = e.currentTarget.getAttribute('data-id');
+                const req = extensionRequests.find(r => r.id === reqId);
+                if (!req) return;
+
+                const updated = await updateExtensionRequestInSupabase(req.id, 'Approved');
+                if (!updated) {
+                    showToast('Failed to approve extension request in Supabase.', 'error');
+                    return;
+                }
+
+                const dueUpdatePromises = [];
+                projects.forEach(p => {
+                    p.itemsOut.forEach(io => {
+                        if (io.itemId === req.itemId && io.dueDate === req.currentDue) {
+                            io.dueDate = req.requestedDue;
+                            if (io.id) dueUpdatePromises.push(updateProjectItemOutDueDateInSupabase(io.id, req.requestedDue));
+                        }
+                    });
+                });
+
+                await Promise.all(dueUpdatePromises);
+                await Promise.all([refreshRequestsFromSupabase(), refreshProjectsFromSupabase()]);
+
+                showToast(`Extension approved for ${req.itemName}.`, 'success');
+                addLog(currentUser.id, 'Approve Extension', `Approved extension for ${req.itemName} requested by ${req.userName}`);
+                renderOrders();
+            });
+        });
+
+        document.querySelectorAll('.deny-req-btn').forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                const reqId = e.currentTarget.getAttribute('data-id');
+                const req = extensionRequests.find(r => r.id === reqId);
+                if (!req) return;
+
+                const updated = await updateExtensionRequestInSupabase(req.id, 'Denied');
+                if (!updated) {
+                    showToast('Failed to deny extension request in Supabase.', 'error');
+                    return;
+                }
+
+                await refreshRequestsFromSupabase();
+                showToast(`Extension denied for ${req.itemName}.`, 'success');
+                addLog(currentUser.id, 'Deny Extension', `Denied extension for ${req.itemName} requested by ${req.userName}`);
+                renderOrders();
+            });
+        });
+
+        return;
+    }
+
+    if (ordersTabMode === 'flags') {
+        const flags = Array.isArray(systemFlags) ? systemFlags.filter(flag => flag.status !== 'Archived') : [];
+
+        tbody.innerHTML = flags.map(flag => {
+            const statusStyle = flag.status === 'Open'
+                ? 'background:rgba(245,158,11,0.2);color:var(--warning)'
+                : 'background:rgba(255,255,255,0.1);color:var(--text-secondary)';
+            return `
+            <tr>
+                <td><small class="text-muted">${new Date(flag.created_at || flag.timestamp || Date.now()).toLocaleDateString()}</small></td>
+                <td>${flag.flag_type || 'System'}</td>
+                <td>${flag.actor_user_id || '-'}</td>
+                <td>${flag.details || '-'}</td>
+                <td><span class="badge" style="${statusStyle}">${flag.status || 'Open'}</span></td>
+                <td>
+                    ${currentUser.role !== 'student' ? `<button class="btn btn-secondary text-sm resolve-flag-btn" data-id="${flag.id}" style="padding:0.3rem 0.6rem;font-size:0.75rem;">Resolve</button>` : '-'}
+                </td>
+                <td></td>
+                <td></td>
+            </tr>`;
+        }).join('') || '<tr><td colspan="8" class="text-center text-muted">No system flags found. Run the SQL migration to enable flag storage.</td></tr>';
+
+        document.querySelectorAll('.resolve-flag-btn').forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                const flagId = e.currentTarget.getAttribute('data-id');
+                const updated = await updateSystemFlagStatusInSupabase(flagId, 'Archived');
+                if (!updated) {
+                    showToast('Failed to archive flag in Supabase.', 'error');
+                    return;
+                }
+                await refreshRequestsFromSupabase();
+                addLog(currentUser.id, 'Archive Flag', `Archived system flag ${flagId}`);
+                showToast('System flag archived.', 'success');
+                renderOrders();
+            });
+        });
+
         return;
     }
 
@@ -4912,15 +6020,22 @@ function renderOrders() {
                 : 'background:rgba(245,158,11,0.2);color:var(--warning)';
 
         const canModerate = currentUser.role !== 'student' && r.status === 'Pending';
+        const parsed = parseOrderJustification(r.justification);
+        const formData = parsed.formData || {};
+        const priorityLevel = formData.priorityLevel || 'Medium';
+        const estimatedTotalCost = formData.estimatedTotalCost;
+        const formattedTotalCost = typeof estimatedTotalCost === 'number'
+            ? `$${estimatedTotalCost.toFixed(2)}`
+            : '-';
 
         return `
             <tr>
                 <td><small class="text-muted">${new Date(r.timestamp).toLocaleDateString()}</small></td>
                 <td>${r.requestedByName || r.requestedByUserId}</td>
                 <td><strong>${r.itemName}</strong></td>
-                <td>${r.category || 'Uncategorized'}</td>
                 <td>${r.quantity || 1}</td>
-                <td>${r.justification || ''}</td>
+                <td>${priorityLevel}</td>
+                <td>${formattedTotalCost}</td>
                 <td><span class="badge" style="${statusStyle}">${r.status}</span></td>
                 <td>
                     ${canModerate ? `
@@ -4944,6 +6059,7 @@ function renderOrders() {
                 return;
             }
 
+            queueOrderReportEvent('order_status_updated', req, { nextStatus: 'Approved' });
             await refreshRequestsFromSupabase();
             addLog(currentUser.id, 'Approve Order Request', `Approved order request for ${req.itemName} (${req.quantity})`);
             showToast('Order request approved.', 'success');
@@ -4963,6 +6079,7 @@ function renderOrders() {
                 return;
             }
 
+            queueOrderReportEvent('order_status_updated', req, { nextStatus: 'Denied' });
             await refreshRequestsFromSupabase();
             addLog(currentUser.id, 'Deny Order Request', `Denied order request for ${req.itemName} (${req.quantity})`);
             showToast('Order request denied.', 'success');
@@ -5156,6 +6273,30 @@ function openEditItemModal(itemId) {
             </div>
             <div class="grid-2-col" style="gap:1rem">
                 <div class="form-group">
+                    <label>Storage Location</label>
+                    <input type="text" id="edit-item-location" class="form-control" value="${item.location || item.storageLocation || ''}">
+                </div>
+                <div class="form-group">
+                    <label>Brand</label>
+                    <input type="text" id="edit-item-brand" class="form-control" value="${item.brand || ''}">
+                </div>
+            </div>
+            <div class="grid-2-col" style="gap:1rem">
+                <div class="form-group">
+                    <label>Supplier</label>
+                    <input type="text" id="edit-item-supplier" class="form-control" value="${item.supplier || ''}">
+                </div>
+                <div class="form-group">
+                    <label>Image Link</label>
+                    <input type="url" id="edit-item-image-link" class="form-control" value="${item.image_link || item.imageLink || ''}">
+                </div>
+            </div>
+            <div class="form-group">
+                <label>Supplier Product Listing Link</label>
+                <input type="url" id="edit-item-supplier-link" class="form-control" value="${item.supplier_listing_link || item.supplierListingLink || ''}">
+            </div>
+            <div class="grid-2-col" style="gap:1rem">
+                <div class="form-group">
                     <label>Stock</label>
                     <input type="number" id="edit-item-stock" class="form-control" value="${item.stock}">
                 </div>
@@ -5166,7 +6307,7 @@ function openEditItemModal(itemId) {
             </div>
             <div class="form-group">
                 <label>Visibility Tags</label>
-                <small class="text-muted" style="display:block;margin-bottom:0.5rem">Control which classes can see this item based on their allowed tags. Items with no tags are always visible.</small>
+                <small class="text-muted" style="display:block;margin-bottom:0.5rem">Control which classes can see this item based on their allowed tags. Untagged items are hidden from students.</small>
                 <div class="glass-panel" style="padding:0.75rem">
                     ${tagOptions || '<p class="text-muted text-sm">No visibility tags defined. Use Manage Visibility Tags to create some.</p>'}
                 </div>
@@ -5184,6 +6325,11 @@ function openEditItemModal(itemId) {
         const name = document.getElementById('edit-item-name').value.trim();
         const category = document.getElementById('edit-item-category').value;
         const sku = document.getElementById('edit-item-sku').value.trim();
+        const location = document.getElementById('edit-item-location').value.trim();
+        const brand = document.getElementById('edit-item-brand').value.trim();
+        const supplier = document.getElementById('edit-item-supplier').value.trim();
+        const imageLink = document.getElementById('edit-item-image-link').value.trim();
+        const supplierListingLink = document.getElementById('edit-item-supplier-link').value.trim();
         const stock = parseInt(document.getElementById('edit-item-stock').value) || 0;
         const threshold = parseInt(document.getElementById('edit-item-threshold').value) || 0;
         const selectedTags = Array.from(document.querySelectorAll('.edit-item-tag-cb:checked')).map(cb => cb.value);
@@ -5193,6 +6339,12 @@ function openEditItemModal(itemId) {
                 name,
                 category,
                 sku,
+                location,
+                storageLocation: location,
+                brand,
+                supplier,
+                image_link: imageLink || null,
+                supplier_listing_link: supplierListingLink || null,
                 stock,
                 threshold
             });
@@ -5413,7 +6565,7 @@ document.getElementById('manage-visibility-tags-btn')?.addEventListener('click',
                 <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
             </div>
             <div class="modal-body">
-                <p class="text-secondary mb-4" style="font-size:0.85rem">Visibility tags are applied to items and allowed on classes. A student sees a tagged item only if their class allows that tag. Items with <em>no tags</em> are always visible to enrolled students.</p>
+                <p class="text-secondary mb-4" style="font-size:0.85rem">Visibility tags are applied to items and allowed on classes. A student sees a tagged item only if their class allows that tag. Items with <em>no tags</em> are hidden from students.</p>
                 <div style="max-height:250px; overflow-y:auto; background:rgba(0,0,0,0.2); border-radius:var(--radius-sm); border:1px solid var(--glass-border); margin-bottom:1rem;">
                     ${tagList || '<p class="text-muted" style="padding:1rem;">No visibility tags defined.</p>'}
                 </div>
@@ -5568,7 +6720,7 @@ function _trackPageVisit(pageId) {
 function openDebugMenuGated() {
     if (!debugConfig.pin) {
         if (!currentUser || currentUser.role !== 'developer') {
-            showToast('Debug menu not configured. Log in as developer to set the PIN.', 'error');
+            showToast('Debug menu not configured. Log in as teacher to set the PIN.', 'error');
             return;
         }
         _promptSetDebugPin();
@@ -5584,7 +6736,7 @@ function _promptSetDebugPin() {
             <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
         </div>
         <div class="modal-body">
-            <p class="text-secondary mb-4">No debug PIN is set. As a developer you can create one now.</p>
+            <p class="text-secondary mb-4">No debug PIN is set. As a teacher you can create one now.</p>
             <div class="form-group">
                 <label>New PIN <small>(4–8 digits)</small></label>
                 <input type="password" id="dbg-pin-new" class="form-control" maxlength="8" inputmode="numeric" placeholder="••••" autofocus>
@@ -5725,6 +6877,7 @@ let kioskPreviewState = {
     activeIndex: 0,
     touchStartX: null
 };
+let kioskUnavailableDescriptionOverride = '';
 
 function getKioskLockScreen(screenKey) {
     return KIOSK_LOCK_SCREENS[screenKey] || KIOSK_LOCK_SCREENS.systemLocked;
@@ -5732,10 +6885,13 @@ function getKioskLockScreen(screenKey) {
 
 function getKioskLockMarkup(screenKey) {
     const screen = getKioskLockScreen(screenKey);
+    const description = screenKey === 'kioskUnavailable' && kioskUnavailableDescriptionOverride
+        ? kioskUnavailableDescriptionOverride
+        : screen.description;
     return `<div class="kiosk-lock-card" style="text-align:center;">
         <i class="ph ph-${screen.icon} kiosk-lock-icon"></i>
         <h2 class="kiosk-lock-title">${screen.title}</h2>
-        <p class="kiosk-lock-description">${screen.description}</p>
+        <p class="kiosk-lock-description">${description}</p>
     </div>`;
 }
 
@@ -5835,16 +6991,22 @@ function closeKioskLockPreview() {
 
 async function applyKioskLock(lock, screenKey = debugConfig.kioskLockScreen || 'systemLocked', options = {}) {
     const syncRemote = options.syncRemote === true;
+    const customDescription = String(options.customDescription || '').trim();
     debugConfig.kioskLocked = lock;
     debugConfig.kioskLockScreen = Object.keys(KIOSK_LOCK_SCREENS).includes(screenKey)
         ? screenKey
         : 'systemLocked';
 
+    if (lock && debugConfig.kioskLockScreen === 'kioskUnavailable' && customDescription) {
+        kioskUnavailableDescriptionOverride = customDescription;
+    } else if (!lock || debugConfig.kioskLockScreen !== 'kioskUnavailable') {
+        kioskUnavailableDescriptionOverride = '';
+    }
+
     let overlay = document.getElementById('kiosk-lock-overlay');
 
     const renderOverlay = () => {
-        overlay.innerHTML = `${getKioskLockMarkup(debugConfig.kioskLockScreen)}
-        <p class="kiosk-lock-unlock-hint">Debug unlock: Ctrl+Shift+&#96;, Ctrl+Shift+D, or tap bottom-left 4x.</p>`;
+        overlay.innerHTML = `${getKioskLockMarkup(debugConfig.kioskLockScreen)}`;
         overlay.style.display = 'flex';
     };
 
@@ -6195,7 +7357,7 @@ function renderDebugSettings(el) {
             <div class="debug-actions">
                 <button class="dbg-btn btn btn-secondary" id="dbg-change-pin"><i class="ph ph-lock-key"></i> Change PIN</button>
             </div>
-            <small class="text-muted" style="display:block;margin-top:0.4rem">Only developer accounts can change the PIN.</small>
+            <small class="text-muted" style="display:block;margin-top:0.4rem">Only teacher accounts can change the PIN.</small>
         `)}
         ${_dbgSection('Access Methods', `
             <table class="debug-table">
@@ -6220,7 +7382,7 @@ function renderDebugSettings(el) {
     });
     document.getElementById('dbg-change-pin')?.addEventListener('click', () => {
         if (!currentUser || currentUser.role !== 'developer') {
-            showToast('Only developers can change the debug PIN.', 'error'); return;
+            showToast('Only teachers can change the debug PIN.', 'error'); return;
         }
         debugConfig.pin = null;
         closeModal();

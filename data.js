@@ -72,6 +72,7 @@ let activityLogs = [];
 let helpRequests = [];
 let extensionRequests = [];
 let orderRequests = [];
+let systemFlags = [];
 
 /* =======================================
    DATA LOADING FUNCTIONS
@@ -94,6 +95,7 @@ async function loadAllData() {
             loadHelpRequests(),
             loadExtensionRequests(),
             loadOrderRequests(),
+            loadSystemFlags(),
             loadProjectCollaborators(),
             loadProjectItemsOut(),
             loadInventoryItemVisibility(),
@@ -292,6 +294,22 @@ async function loadOrderRequests() {
 }
 
 /**
+ * Load system flags from public.system_flags table.
+ * If table is not present yet, fail gracefully with an empty list.
+ */
+async function loadSystemFlags() {
+    const { data, error } = await dbClient.from('system_flags').select('*').order('created_at', { ascending: false });
+    if (error) {
+        console.warn('system_flags unavailable (run migration to enable):', error.message || error);
+        systemFlags = [];
+        return;
+    }
+
+    systemFlags = data || [];
+    console.log(`Loaded ${systemFlags.length} system flags`);
+}
+
+/**
  * Reload projects and dependent relations from Supabase
  */
 async function refreshProjectsFromSupabase() {
@@ -310,7 +328,8 @@ async function refreshRequestsFromSupabase() {
     await Promise.all([
         loadHelpRequests(),
         loadExtensionRequests(),
-        loadOrderRequests()
+        loadOrderRequests(),
+        loadSystemFlags()
     ]);
 }
 
@@ -408,7 +427,7 @@ async function loadStudentClasses() {
         dbClient.from('class_visible_items').select('class_id, item_id'),
         dbClient.from('class_visibility_tags').select('class_id, visibility_tags(name)'),
         dbClient.from('class_due_policy').select('class_id, default_signout_minutes, class_period_minutes, timezone'),
-        dbClient.from('class_due_policy_periods').select('class_id, start_time, end_time, return_class_periods'),
+        dbClient.from('class_due_policy_periods').select('class_id, start_time, end_time, return_class_periods, due_mode, due_minutes_before_end, due_at_time'),
         dbClient.from('class_permissions').select('class_id, can_create_projects, can_join_projects, can_sign_out')
     ]);
 
@@ -470,7 +489,10 @@ async function loadStudentClasses() {
         duePolicyByClass[row.class_id].periodRanges.push({
             start: String(row.start_time).slice(0, 5),
             end: String(row.end_time).slice(0, 5),
-            returnClassPeriods: row.return_class_periods
+            returnClassPeriods: row.return_class_periods,
+            dueMode: row.due_mode || 'class_periods',
+            dueMinutesBeforeEnd: row.due_minutes_before_end || 0,
+            dueAtTime: row.due_at_time ? String(row.due_at_time).slice(0, 5) : ''
         });
     });
 
@@ -807,7 +829,7 @@ async function deleteUserFromSupabase(userId) {
  * Add inventory item to inventory_items table
  */
 async function addItemToSupabase(item) {
-    const { data, error } = await dbClient.from('inventory_items').insert([{
+    const payload = {
         id: item.id,
         name: item.name,
         category: item.category,
@@ -816,9 +838,32 @@ async function addItemToSupabase(item) {
         threshold: item.threshold || 5,
         status: item.status || 'Active',
         part_number: item.part_number || null,
+        location: item.location || item.storageLocation || null,
+        brand: item.brand || null,
+        supplier: item.supplier || null,
+        image_link: item.image_link || item.imageLink || null,
+        supplier_listing_link: item.supplier_listing_link || item.supplierListingLink || null,
         item_type: item.item_type || 'item',
         visibility_level: item.visibility_level || 'standard'
-    }]).select();
+    };
+
+    let { data, error } = await dbClient.from('inventory_items').insert([payload]).select();
+
+    if (error && /column .* does not exist/i.test(String(error.message || ''))) {
+        const fallbackPayload = {
+            id: item.id,
+            name: item.name,
+            category: item.category,
+            sku: item.sku,
+            stock: item.stock || 0,
+            threshold: item.threshold || 5,
+            status: item.status || 'Active',
+            part_number: item.part_number || null,
+            item_type: item.item_type || 'item',
+            visibility_level: item.visibility_level || 'standard'
+        };
+        ({ data, error } = await dbClient.from('inventory_items').insert([fallbackPayload]).select());
+    }
     
     if (error) {
         console.error('Error adding item:', error);
@@ -831,9 +876,23 @@ async function addItemToSupabase(item) {
  * Update inventory item in inventory_items table
  */
 async function updateItemInSupabase(itemId, updates) {
-    const { data, error } = await dbClient.from('inventory_items')
+    let { data, error } = await dbClient.from('inventory_items')
         .update(updates)
         .eq('id', itemId).select();
+
+    if (error && /column .* does not exist/i.test(String(error.message || ''))) {
+        const safeUpdates = { ...updates };
+        delete safeUpdates.location;
+        delete safeUpdates.storageLocation;
+        delete safeUpdates.brand;
+        delete safeUpdates.supplier;
+        delete safeUpdates.image_link;
+        delete safeUpdates.supplier_listing_link;
+
+        ({ data, error } = await dbClient.from('inventory_items')
+            .update(safeUpdates)
+            .eq('id', itemId).select());
+    }
     
     if (error) {
         console.error('Error updating item:', error);
@@ -1087,6 +1146,59 @@ async function updateOrderRequestInSupabase(requestId, status) {
 
     if (error) {
         console.error('Error updating order request status:', error);
+        return null;
+    }
+
+    return data?.[0] || null;
+}
+
+/**
+ * Add system flag row.
+ */
+async function addSystemFlagToSupabase(flag) {
+    const payload = {
+        id: flag.id,
+        flag_type: flag.flag_type || 'System',
+        item_id: flag.item_id || null,
+        project_id: flag.project_id || null,
+        actor_user_id: flag.actor_user_id || null,
+        assigned_user_id: flag.assigned_user_id || null,
+        details: flag.details || '',
+        status: flag.status || 'Open',
+        created_at: flag.timestamp || new Date().toISOString()
+    };
+
+    let { data, error } = await dbClient.from('system_flags').insert([payload]).select();
+
+    if (error && (String(error.code || '') === '22P02' || /uuid/i.test(String(error.message || '')))) {
+        delete payload.id;
+        ({ data, error } = await dbClient.from('system_flags').insert([payload]).select());
+    }
+
+    if (error) {
+        console.error('Error adding system flag:', error);
+        return null;
+    }
+
+    return data?.[0] || null;
+}
+
+/**
+ * Update system flag status.
+ */
+async function updateSystemFlagStatusInSupabase(flagId, status) {
+    const updates = {
+        status,
+        archived_at: status === 'Archived' ? new Date().toISOString() : null
+    };
+
+    const { data, error } = await dbClient.from('system_flags')
+        .update(updates)
+        .eq('id', flagId)
+        .select();
+
+    if (error) {
+        console.error('Error updating system flag status:', error);
         return null;
     }
 

@@ -169,7 +169,7 @@
                 <button class="nav-btn restricted" id="nav-users" data-target="users">
                     <i class="ph ph-users"></i> Users
                 </button>
-                <button class="nav-btn restricted" id="nav-requests" data-target="requests">
+                <button class="nav-btn restricted hidden" id="nav-requests" data-target="requests">
                     <i class="ph ph-envelope-open"></i> Requests
                 </button>
             </nav>
@@ -240,21 +240,26 @@
 
                 <!-- Inventory Page -->
                 <div id="page-inventory" class="page hidden">
-                    <div class="action-bar">
-                        <div class="flex" style="gap:0.75rem;align-items:center;">
-                            <input type="text" id="inventory-search" class="form-control" style="min-width:280px;"
+                    <div class="action-bar inventory-action-bar">
+                        <div class="flex inventory-primary-controls" style="gap:0.75rem;align-items:center;">
+                            <input type="text" id="inventory-search" class="form-control inventory-search-input" style="min-width:280px;"
                                 placeholder="Search by item, ID, SKU, category...">
                             <button class="btn btn-secondary" id="request-item-btn">
                                 <i class="ph ph-package"></i> Request Item
                             </button>
                         </div>
-                        <div class="filters">
-                            <button class="filter-btn active">All</button>
-                            <button class="filter-btn">Hardware</button>
-                            <button class="filter-btn">Electronics</button>
-                            <button class="filter-btn">Consumables</button>
+                        <div class="filters inventory-category-filters">
+                            <select id="inventory-category-filter" class="form-control" style="min-width:180px;">
+                                <option value="All">All Categories</option>
+                            </select>
+                            <select id="inventory-supplier-filter" class="form-control" style="min-width:180px;">
+                                <option value="All">All Suppliers</option>
+                            </select>
+                            <select id="inventory-brand-filter" class="form-control" style="min-width:180px;">
+                                <option value="All">All Brands</option>
+                            </select>
                         </div>
-                        <div style="display:flex;gap:1rem;">
+                        <div class="inventory-secondary-controls" style="display:flex;gap:1rem;">
                             <button class="btn btn-secondary" id="manage-categories-btn">
                                 <i class="ph ph-tag"></i> Manage Categories
                             </button>
@@ -312,8 +317,11 @@
                 <!-- Orders Page -->
                 <div id="page-orders" class="page hidden">
                     <div class="action-bar">
-                        <h3>Order Requests</h3>
+                        <h3>Orders, Requests, and Flags</h3>
                         <div class="flex" style="gap:0.75rem;align-items:center;">
+                            <button class="btn btn-secondary orders-mode-btn active" data-mode="orders">Orders</button>
+                            <button class="btn btn-secondary orders-mode-btn" data-mode="requests">Requests</button>
+                            <button class="btn btn-secondary orders-mode-btn" data-mode="flags">System Flags</button>
                             <select id="orders-status-filter" class="form-control" style="min-width:190px;">
                                 <option value="all">All Statuses</option>
                                 <option value="Pending">Pending</option>
@@ -321,6 +329,9 @@
                                 <option value="Denied">Denied</option>
                                 <option value="Ordered">Ordered</option>
                             </select>
+                            <button class="btn btn-secondary hidden" id="configure-order-form-btn">
+                                <i class="ph ph-sliders-horizontal"></i> Customize Form
+                            </button>
                             <button class="btn btn-primary" id="new-order-request-btn">
                                 <i class="ph ph-plus"></i> New Order Request
                             </button>
@@ -340,10 +351,10 @@
                                 <tr>
                                     <th>Date</th>
                                     <th>Requested By</th>
-                                    <th>Item</th>
-                                    <th>Category</th>
+                                    <th>Part Name</th>
                                     <th>Qty</th>
-                                    <th>Justification</th>
+                                    <th>Priority</th>
+                                    <th>Est. Total</th>
                                     <th>Status</th>
                                     <th>Actions</th>
                                 </tr>
@@ -378,6 +389,12 @@
                             <select id="logs-action-filter" class="form-control" style="min-width:220px;">
                                 <option value="all">View All Actions</option>
                             </select>
+                            <label for="logs-actor-filter" class="text-sm text-muted">Actor</label>
+                            <select id="logs-actor-filter" class="form-control" style="min-width:180px;">
+                                <option value="all">All Users</option>
+                                <option value="student">Students</option>
+                                <option value="staff">Teachers/Developers</option>
+                            </select>
                         </div>
                     </div>
                     <div class="table-container glass-panel">
@@ -403,7 +420,7 @@
                         <h3>System Users</h3>
                         <div class="flex" style="gap: 1rem;">
                             <button class="btn btn-secondary" id="view-requests-btn">
-                                <i class="ph ph-lifebuoy"></i> View Requests
+                                <i class="ph ph-lifebuoy"></i> Open Requests Tab
                             </button>
                             <div class="view-toggles"
                                 style="display: none; gap: 0.5rem; border-right: 1px solid var(--glass-border); padding-right: 1rem;">
@@ -414,11 +431,20 @@
                                     <i class="ph ph-squares-four"></i>
                                 </button>
                             </div>
-                            <button class="btn btn-secondary" id="bulk-users-btn">
+                            <select id="users-bulk-action-select" class="form-control" style="min-width:190px;">
+                                <option value="">Bulk Actions</option>
+                                <option value="import">Bulk Import Users</option>
+                                <option value="delete">Bulk Delete Selected</option>
+                                <option value="suspend">Bulk Suspend/Activate Selected</option>
+                            </select>
+                            <button class="btn btn-secondary" id="bulk-users-btn" style="display:none;">
                                 <i class="ph ph-users-three"></i> Bulk Import
                             </button>
-                            <button class="btn btn-danger" id="bulk-delete-users-btn">
+                            <button class="btn btn-danger" id="bulk-delete-users-btn" style="display:none;">
                                 <i class="ph ph-trash"></i> Bulk Delete
+                            </button>
+                            <button class="btn btn-secondary" id="bulk-suspend-users-btn" style="display:none;">
+                                <i class="ph ph-user-minus"></i> Bulk Suspend
                             </button>
                             <button class="btn btn-primary" id="add-user-btn">
                                 <i class="ph ph-user-plus"></i> Add User
