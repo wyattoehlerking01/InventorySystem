@@ -832,9 +832,18 @@ h6 {
     gap: 1rem;
 }
 
+.inventory-smart-search-row {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+}
+
 .inventory-smart-search-wrap {
     position: relative;
-    width: 100%;
+    flex: 1 1 320px;
+    min-width: 220px;
 }
 
 .inventory-smart-search-wrap i {
@@ -848,21 +857,69 @@ h6 {
 }
 
 .inventory-smart-search-input {
-    min-height: 48px;
+    min-height: 40px;
     padding-left: 2.5rem;
     font-size: 0.98rem;
 }
 
-.inventory-smart-filters {
+.inventory-toolbar-btn {
+    min-height: 40px;
+    padding: 0.5rem 0.9rem;
+    font-size: 0.9rem;
+    white-space: nowrap;
+}
+
+.inventory-filter-panel {
     width: 100%;
-    display: grid;
-    grid-template-columns: repeat(3, minmax(180px, 1fr));
+    display: flex;
+    align-items: center;
     gap: 0.75rem;
+    flex-wrap: wrap;
+    padding: 0.7rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--glass-border);
+    background: rgba(0, 0, 0, 0.18);
+}
+
+.inventory-filter-type-tabs {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    flex-wrap: wrap;
+}
+
+.inventory-filter-type-btn {
+    border: 1px solid var(--glass-border);
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--text-secondary);
+    border-radius: 999px;
+    padding: 0.38rem 0.68rem;
+    font-size: 0.82rem;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+
+.inventory-filter-type-btn:hover {
+    color: var(--text-primary);
+    border-color: rgba(255, 255, 255, 0.22);
+}
+
+.inventory-filter-type-btn.is-active {
+    background: rgba(5, 150, 105, 0.2);
+    border-color: rgba(5, 150, 105, 0.5);
+    color: var(--text-primary);
+}
+
+.inventory-smart-filters {
+    flex: 1 1 260px;
+    min-width: 220px;
 }
 
 .inventory-filter-select {
-    min-height: 128px;
-    padding: 0.45rem 0.5rem;
+    width: 100%;
+    min-height: 40px;
+    max-height: 168px;
+    padding: 0.35rem 0.45rem;
     font-size: 0.9rem;
 }
 
@@ -1774,7 +1831,9 @@ kbd {
     .inventory-primary-controls,
     .inventory-secondary-controls,
     .inventory-category-filters,
-    .inventory-smart-filters {
+    .inventory-smart-filters,
+    .inventory-smart-search-row,
+    .inventory-filter-panel {
         width: 100%;
         justify-content: flex-start;
     }
@@ -1786,8 +1845,13 @@ kbd {
     }
 
     .inventory-secondary-controls .btn,
-    .inventory-primary-controls .btn {
+    .inventory-primary-controls .btn,
+    .inventory-smart-search-row .btn {
         justify-content: center;
+    }
+
+    .inventory-smart-search-row .btn {
+        width: 100%;
     }
 
     .inventory-category-filters {
@@ -1795,12 +1859,8 @@ kbd {
         padding-bottom: 0.25rem;
     }
 
-    .inventory-smart-filters {
-        grid-template-columns: 1fr;
-    }
-
     .inventory-filter-select {
-        min-height: 116px;
+        max-height: 150px;
     }
 
     .inventory-filter-chips-bar {

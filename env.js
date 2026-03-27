@@ -4,7 +4,7 @@ window.APP_ENV = {
     APP_SUBTITLE: 'Inventory Management System',
     APP_LOGO_URL: '',
     APP_SIDEBAR_LOGO_URL: '',
-    APP_VERSION: '',
+    APP_VERSION: 'Version',
     KIOSK_ID: 'KIOSK-001',
     ORGANIZATION_ID: '4339f9a2-dc08-4232-851a-cf993eba2e67',
     APP_UPDATE_ACTION: 'overlay',

@@ -243,15 +243,30 @@
                 <!-- Inventory Page -->
                 <div id="page-inventory" class="page hidden">
                     <div class="action-bar inventory-action-bar inventory-smart-toolbar">
-                        <div class="inventory-smart-search-wrap">
-                            <i class="ph ph-magnifying-glass"></i>
-                            <input type="text" id="inventory-smart-search" class="form-control inventory-smart-search-input"
-                                placeholder="Search items, SKU, or category..." autocomplete="off">
+                        <div class="inventory-smart-search-row">
+                            <div class="inventory-smart-search-wrap">
+                                <i class="ph ph-magnifying-glass"></i>
+                                <input type="text" id="inventory-smart-search" class="form-control inventory-smart-search-input"
+                                    placeholder="Search items, SKU, or category..." autocomplete="off">
+                            </div>
+                            <button class="btn btn-secondary inventory-toolbar-btn" id="inventory-search-btn" type="button">
+                                <i class="ph ph-magnifying-glass"></i> Search
+                            </button>
+                            <button class="btn btn-secondary inventory-toolbar-btn hidden" id="inventory-filter-toggle-btn" type="button" aria-expanded="false" aria-controls="inventory-filter-panel">
+                                <i class="ph ph-funnel-simple"></i> Filter
+                            </button>
                         </div>
-                        <div class="inventory-smart-filters">
-                            <select id="inventory-filter-category" class="form-control inventory-filter-select" multiple size="4" aria-label="Filter by category"></select>
-                            <select id="inventory-filter-brand" class="form-control inventory-filter-select" multiple size="4" aria-label="Filter by brand"></select>
-                            <select id="inventory-filter-supplier" class="form-control inventory-filter-select" multiple size="4" aria-label="Filter by supplier"></select>
+                        <div id="inventory-filter-panel" class="inventory-filter-panel hidden" aria-hidden="true">
+                            <div class="inventory-filter-type-tabs" role="tablist" aria-label="Inventory filter type">
+                                <button type="button" class="inventory-filter-type-btn is-active" data-filter-type="category" aria-pressed="true">Category</button>
+                                <button type="button" class="inventory-filter-type-btn" data-filter-type="brand" aria-pressed="false">Brand</button>
+                                <button type="button" class="inventory-filter-type-btn" data-filter-type="supplier" aria-pressed="false">Supplier</button>
+                            </div>
+                            <div class="inventory-smart-filters">
+                                <select id="inventory-filter-category" class="form-control inventory-filter-select" multiple size="5" aria-label="Filter by category"></select>
+                                <select id="inventory-filter-brand" class="form-control inventory-filter-select hidden" multiple size="5" aria-label="Filter by brand"></select>
+                                <select id="inventory-filter-supplier" class="form-control inventory-filter-select hidden" multiple size="5" aria-label="Filter by supplier"></select>
+                            </div>
                         </div>
                         <div class="inventory-filter-chips-bar">
                             <div id="inventory-active-filter-chips" class="inventory-active-filter-chips"></div>

@@ -5,6 +5,7 @@
    ======================================= */
 let currentUser = null;
 let privilegedSessionAuthenticated = false;
+const privilegedPasswordStoragePrefix = 'privilegedAuthPasswordHash:';
 
 const envConfig = window.APP_ENV || {};
 const kioskId = String(envConfig.KIOSK_ID ?? envConfig.kioskId ?? '').trim();
@@ -91,6 +92,9 @@ let inventorySelectedCategories = [];
 let inventorySelectedBrands = [];
 let inventorySelectedSuppliers = [];
 let inventorySearchDebounceTimer = null;
+let inventoryFiltersEnabled = false;
+let inventoryFilterPanelVisible = false;
+let inventoryActiveFilterType = 'category';
 let ordersTabMode = 'all';
 
 // Modals & Toasts
@@ -2097,6 +2101,187 @@ function userCanPerformPrivilegedActions() {
     return !!currentUser && ['teacher', 'developer'].includes(currentUser.role);
 }
 
+function getPrivilegedPasswordStorageKey(userId) {
+    return `${privilegedPasswordStoragePrefix}${String(userId || '').trim().toUpperCase()}`;
+}
+
+function getUserPrivilegedPasswordHash(user) {
+    if (!user) return '';
+
+    const direct = String(
+        user.privileged_password_hash
+        || user.privileged_auth_password_hash
+        || user.staff_password_hash
+        || ''
+    ).trim();
+    if (direct) return direct;
+
+    try {
+        const stored = localStorage.getItem(getPrivilegedPasswordStorageKey(user.id));
+        return String(stored || '').trim();
+    } catch {
+        return '';
+    }
+}
+
+function setUserPrivilegedPasswordHash(userId, hashValue) {
+    if (!userId) return;
+    const normalizedUserId = String(userId).trim().toUpperCase();
+    const normalizedHash = String(hashValue || '').trim();
+
+    if (currentUser && String(currentUser.id || '').trim().toUpperCase() === normalizedUserId) {
+        currentUser.privileged_password_hash = normalizedHash;
+    }
+
+    const target = mockUsers.find(u => String(u.id || '').trim().toUpperCase() === normalizedUserId);
+    if (target) target.privileged_password_hash = normalizedHash;
+}
+
+function hasStaffPasswordHashConflict(passwordHash, excludeUserId = '') {
+    const normalizedHash = String(passwordHash || '').trim();
+    const normalizedExclude = String(excludeUserId || '').trim().toUpperCase();
+    if (!normalizedHash) return false;
+
+    return (mockUsers || []).some(user => {
+        const role = String(user?.role || '').toLowerCase();
+        if (!['teacher', 'developer'].includes(role)) return false;
+        if (String(user?.id || '').trim().toUpperCase() === normalizedExclude) return false;
+        return getUserPrivilegedPasswordHash(user) === normalizedHash;
+    });
+}
+
+async function savePrivilegedPasswordHashForCurrentUser(hashValue) {
+    const normalizedHash = String(hashValue || '').trim();
+    if (!currentUser?.id || !normalizedHash) return false;
+
+    let savedToSupabase = false;
+    const payloadCandidates = [
+        { privileged_password_hash: normalizedHash },
+        { privileged_auth_password_hash: normalizedHash },
+        { staff_password_hash: normalizedHash }
+    ];
+
+    if (typeof updateUserInSupabase === 'function') {
+        for (const payload of payloadCandidates) {
+            const updated = await updateUserInSupabase(currentUser.id, payload);
+            if (!updated) continue;
+            savedToSupabase = true;
+            currentUser = { ...currentUser, ...updated, privileged_password_hash: normalizedHash };
+            break;
+        }
+    }
+
+    setUserPrivilegedPasswordHash(currentUser.id, normalizedHash);
+
+    try {
+        localStorage.setItem(getPrivilegedPasswordStorageKey(currentUser.id), normalizedHash);
+    } catch {
+        // Ignore storage failures.
+    }
+
+    return savedToSupabase;
+}
+
+async function promptSetPrivilegedActionPassword(reason = 'this action', forcedReset = false) {
+    if (!currentUser || !userCanPerformPrivilegedActions()) return false;
+
+    return new Promise(resolve => {
+        const resetHint = forcedReset
+            ? 'Your current privileged password matches the debug PIN. Create a different password now.'
+            : `Set a privileged password for ${escapeHtml(currentUser.name)} to continue with ${escapeHtml(reason)}.`;
+
+        const html = `
+            <div class="modal-header debug-modal-header">
+                <h3 style="color:#a78bfa"><i class="ph ph-lock-key"></i> Set Privileged Password</h3>
+                <button class="close-btn" id="priv-pass-close"><i class="ph ph-x"></i></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-secondary mb-4">${resetHint}</p>
+                <div class="form-group">
+                    <label>New Password <small>(min 6 characters)</small></label>
+                    <input type="password" id="priv-pass-new" class="form-control" minlength="6" maxlength="64" autocomplete="new-password" autofocus>
+                </div>
+                <div class="form-group">
+                    <label>Confirm Password</label>
+                    <input type="password" id="priv-pass-confirm" class="form-control" minlength="6" maxlength="64" autocomplete="new-password">
+                </div>
+                <small id="priv-pass-err" class="text-danger" style="display:none;margin-top:0.25rem"></small>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="priv-pass-cancel">Cancel</button>
+                <button class="btn btn-primary" id="priv-pass-save">Save Password</button>
+            </div>`;
+
+        openModal(html);
+
+        const finish = (result) => {
+            closeModal();
+            resolve(result);
+        };
+
+        const showErr = (msg) => {
+            const errEl = document.getElementById('priv-pass-err');
+            if (!errEl) return;
+            errEl.style.display = '';
+            errEl.textContent = msg;
+        };
+
+        const savePassword = async () => {
+            const p1 = String(document.getElementById('priv-pass-new')?.value || '').trim();
+            const p2 = String(document.getElementById('priv-pass-confirm')?.value || '').trim();
+
+            if (p1.length < 6) {
+                showErr('Password must be at least 6 characters.');
+                return;
+            }
+            if (p1 !== p2) {
+                showErr('Passwords do not match.');
+                return;
+            }
+
+            const passwordHash = await hashDebugPin(p1);
+            if (!passwordHash) {
+                showErr('Failed to generate password hash.');
+                return;
+            }
+
+            if (debugConfig.pinHash && passwordHash === debugConfig.pinHash) {
+                showErr('Password must be different from the debug PIN.');
+                return;
+            }
+
+            if (hasStaffPasswordHashConflict(passwordHash, currentUser.id)) {
+                showErr('This password is already used by another teacher/developer. Choose a different password.');
+                return;
+            }
+
+            const savedToSupabase = await savePrivilegedPasswordHashForCurrentUser(passwordHash);
+            privilegedSessionAuthenticated = true;
+
+            if (!savedToSupabase) {
+                showToast('Password saved locally. Supabase update unavailable for this field.', 'warning');
+            } else {
+                showToast('Privileged password saved.', 'success');
+            }
+            finish(true);
+        };
+
+        document.getElementById('priv-pass-save')?.addEventListener('click', savePassword);
+        document.getElementById('priv-pass-new')?.addEventListener('keydown', e => {
+            if (e.key !== 'Enter') return;
+            e.preventDefault();
+            savePassword();
+        });
+        document.getElementById('priv-pass-confirm')?.addEventListener('keydown', e => {
+            if (e.key !== 'Enter') return;
+            e.preventDefault();
+            savePassword();
+        });
+        document.getElementById('priv-pass-cancel')?.addEventListener('click', () => finish(false));
+        document.getElementById('priv-pass-close')?.addEventListener('click', () => finish(false));
+    });
+}
+
 function requestPrivilegedActionAuth(reason = 'this action') {
     return new Promise(resolve => {
         const html = `
@@ -2105,9 +2290,9 @@ function requestPrivilegedActionAuth(reason = 'this action') {
                 <button class="close-btn" id="priv-auth-close"><i class="ph ph-x"></i></button>
             </div>
             <div class="modal-body">
-                <p class="text-secondary mb-4">Enter the access PIN to continue with ${escapeHtml(reason)}.</p>
+                <p class="text-secondary mb-4">Enter your privileged password to continue with ${escapeHtml(reason)}.</p>
                 <div class="form-group">
-                    <input type="password" id="priv-auth-pin" class="form-control" maxlength="8" inputmode="numeric" placeholder="PIN" autofocus>
+                    <input type="password" id="priv-auth-password" class="form-control" maxlength="64" autocomplete="current-password" placeholder="Password" autofocus>
                     <small id="priv-auth-err" class="text-danger" style="display:none;margin-top:0.25rem"></small>
                 </div>
             </div>
@@ -2124,12 +2309,19 @@ function requestPrivilegedActionAuth(reason = 'this action') {
             resolve(result);
         };
 
-        const tryPin = async () => {
-            const enteredPin = (document.getElementById('priv-auth-pin')?.value || '').trim();
+        const tryPassword = async () => {
+            const expectedHash = getUserPrivilegedPasswordHash(currentUser);
+            if (!expectedHash) {
+                showToast('No privileged password is set for this account yet.', 'error');
+                finish(false);
+                return;
+            }
+
+            const enteredPassword = (document.getElementById('priv-auth-password')?.value || '').trim();
             attempts++;
 
-            const enteredHash = await hashDebugPin(enteredPin);
-            if (enteredHash && enteredHash === debugConfig.pinHash) {
+            const enteredHash = await hashDebugPin(enteredPassword);
+            if (enteredHash && enteredHash === expectedHash) {
                 privilegedSessionAuthenticated = true;
                 showToast('Session authenticated.', 'success');
                 finish(true);
@@ -2139,22 +2331,22 @@ function requestPrivilegedActionAuth(reason = 'this action') {
             const errEl = document.getElementById('priv-auth-err');
             if (errEl) {
                 errEl.style.display = '';
-                errEl.textContent = `Incorrect PIN. Attempt ${attempts}/5.`;
+                errEl.textContent = `Incorrect password. Attempt ${attempts}/5.`;
             }
-            const pinInput = document.getElementById('priv-auth-pin');
-            if (pinInput) pinInput.value = '';
+            const passwordInput = document.getElementById('priv-auth-password');
+            if (passwordInput) passwordInput.value = '';
 
             if (attempts >= 5) {
-                showToast('Too many incorrect PIN attempts.', 'error');
+                showToast('Too many incorrect password attempts.', 'error');
                 finish(false);
             }
         };
 
-        document.getElementById('priv-auth-confirm')?.addEventListener('click', tryPin);
-        document.getElementById('priv-auth-pin')?.addEventListener('keydown', e => {
+        document.getElementById('priv-auth-confirm')?.addEventListener('click', tryPassword);
+        document.getElementById('priv-auth-password')?.addEventListener('keydown', e => {
             if (e.key === 'Enter') {
                 e.preventDefault();
-                tryPin();
+                tryPassword();
             }
         });
         document.getElementById('priv-auth-cancel')?.addEventListener('click', () => finish(false));
@@ -2166,9 +2358,15 @@ async function ensurePrivilegedActionAuth(reason = 'this action') {
     if (!userCanPerformPrivilegedActions()) return true;
     if (privilegedSessionAuthenticated) return true;
 
-    if (!debugConfig.pinHash) {
-        showToast('No access PIN configured yet. Open Debug menu to set one first.', 'error');
-        return false;
+    const privilegedHash = getUserPrivilegedPasswordHash(currentUser);
+    if (!privilegedHash) {
+        showToast('Set your privileged password to continue.', 'warning');
+        return promptSetPrivilegedActionPassword(reason);
+    }
+
+    if (debugConfig.pinHash && privilegedHash === debugConfig.pinHash) {
+        showToast('Privileged password cannot match the debug PIN. Please set a new password.', 'warning');
+        return promptSetPrivilegedActionPassword(reason, true);
     }
 
     return requestPrivilegedActionAuth(reason);
@@ -2849,11 +3047,18 @@ function renderInventory() {
     const resultsMeta = document.getElementById('inventory-results-meta');
 
     if (searchInput) inventorySmartSearchTerm = String(searchInput.value || '').trim().toLowerCase();
-    if (categorySelect) inventorySelectedCategories = Array.from(categorySelect.selectedOptions).map(option => option.value);
-    if (brandSelect) inventorySelectedBrands = Array.from(brandSelect.selectedOptions).map(option => option.value);
-    if (supplierSelect) inventorySelectedSuppliers = Array.from(supplierSelect.selectedOptions).map(option => option.value);
+    if (inventoryFiltersEnabled) {
+        if (categorySelect) inventorySelectedCategories = Array.from(categorySelect.selectedOptions).map(option => option.value);
+        if (brandSelect) inventorySelectedBrands = Array.from(brandSelect.selectedOptions).map(option => option.value);
+        if (supplierSelect) inventorySelectedSuppliers = Array.from(supplierSelect.selectedOptions).map(option => option.value);
+    } else {
+        inventorySelectedCategories = [];
+        inventorySelectedBrands = [];
+        inventorySelectedSuppliers = [];
+    }
 
     populateInventorySmartFilterOptions();
+    applyInventoryFilterUiState();
     renderInventoryFilterChips();
 
     let filtered = currentUser.role === 'student'
@@ -3097,10 +3302,58 @@ function clearInventorySmartFilters() {
     inventorySelectedCategories = [];
     inventorySelectedBrands = [];
     inventorySelectedSuppliers = [];
+    inventoryFilterPanelVisible = false;
 
     const searchInput = document.getElementById('inventory-smart-search');
     if (searchInput) searchInput.value = '';
 
+    applyInventoryFilterUiState();
+    renderInventory();
+}
+
+function setInventoryActiveFilterType(filterType) {
+    const allowed = new Set(['category', 'brand', 'supplier']);
+    if (!allowed.has(filterType)) return;
+
+    inventoryActiveFilterType = filterType;
+    applyInventoryFilterUiState();
+}
+
+function applyInventoryFilterUiState() {
+    const filterToggleBtn = document.getElementById('inventory-filter-toggle-btn');
+    const filterPanel = document.getElementById('inventory-filter-panel');
+    const filterSelects = {
+        category: document.getElementById('inventory-filter-category'),
+        brand: document.getElementById('inventory-filter-brand'),
+        supplier: document.getElementById('inventory-filter-supplier')
+    };
+
+    if (filterToggleBtn) {
+        filterToggleBtn.classList.toggle('hidden', !inventoryFiltersEnabled);
+        filterToggleBtn.setAttribute('aria-expanded', inventoryFiltersEnabled && inventoryFilterPanelVisible ? 'true' : 'false');
+    }
+
+    if (filterPanel) {
+        const showPanel = inventoryFiltersEnabled && inventoryFilterPanelVisible;
+        filterPanel.classList.toggle('hidden', !showPanel);
+        filterPanel.setAttribute('aria-hidden', showPanel ? 'false' : 'true');
+    }
+
+    Object.entries(filterSelects).forEach(([filterType, selectEl]) => {
+        if (!selectEl) return;
+        selectEl.classList.toggle('hidden', filterType !== inventoryActiveFilterType);
+    });
+
+    document.querySelectorAll('.inventory-filter-type-btn').forEach(btn => {
+        const isActive = btn.dataset.filterType === inventoryActiveFilterType;
+        btn.classList.toggle('is-active', isActive);
+        btn.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+    });
+}
+
+function runInventorySearchAction() {
+    inventoryFiltersEnabled = true;
+    applyInventoryFilterUiState();
     renderInventory();
 }
 
@@ -3133,6 +3386,29 @@ function getItemTotalQuantity(item) {
 
 document.getElementById('inventory-smart-search')?.addEventListener('input', () => {
     scheduleInventoryRender();
+});
+
+document.getElementById('inventory-smart-search')?.addEventListener('keydown', event => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    runInventorySearchAction();
+});
+
+document.getElementById('inventory-search-btn')?.addEventListener('click', () => {
+    runInventorySearchAction();
+});
+
+document.getElementById('inventory-filter-toggle-btn')?.addEventListener('click', () => {
+    if (!inventoryFiltersEnabled) return;
+    inventoryFilterPanelVisible = !inventoryFilterPanelVisible;
+    applyInventoryFilterUiState();
+});
+
+document.querySelectorAll('.inventory-filter-type-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        const filterType = String(btn.dataset.filterType || '').toLowerCase();
+        setInventoryActiveFilterType(filterType);
+    });
 });
 
 document.getElementById('inventory-filter-category')?.addEventListener('change', () => renderInventory());
@@ -7645,6 +7921,11 @@ function _promptSetDebugPin() {
             return;
         }
 
+        if (hasStaffPasswordHashConflict(pinHash)) {
+            showToast('Debug PIN cannot match a teacher/developer privileged password.', 'error');
+            return;
+        }
+
         debugConfig.pinHash = pinHash;
         try {
             localStorage.setItem('debugMenuPinHash', pinHash);
@@ -7657,7 +7938,6 @@ function _promptSetDebugPin() {
             showToast('Debug PIN saved for this device, but Supabase sync failed.', 'warning');
         }
 
-        privilegedSessionAuthenticated = true;
         showToast('Debug PIN set.', 'success');
         closeModal();
         openDebugMenu();
@@ -7690,7 +7970,6 @@ function _promptEnterDebugPin() {
         const pinHash = await hashDebugPin(val);
         if (pinHash && pinHash === debugConfig.pinHash) {
             _pinAttempts = 0;
-            privilegedSessionAuthenticated = true;
             closeModal();
             openDebugMenu(debugConfig.kioskLocked ? 'session' : 'system');
         } else {
