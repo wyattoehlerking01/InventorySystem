@@ -6,6 +6,7 @@
 let currentUser = null;
 let privilegedSessionAuthenticated = false;
 const privilegedPasswordStoragePrefix = 'privilegedAuthPasswordHash:';
+let privilegedStartupAuditShown = false;
 
 const envConfig = window.APP_ENV || {};
 const kioskId = String(envConfig.KIOSK_ID ?? envConfig.kioskId ?? '').trim();
@@ -1929,6 +1930,7 @@ function applyOrdersNavVisibility() {
 function login(user) {
     currentUser = user;
     privilegedSessionAuthenticated = false;
+    privilegedStartupAuditShown = false;
     getOrCreatePersonalProject(user.id);
     _trackLogin();
     startCountdown();
@@ -1973,6 +1975,7 @@ function login(user) {
         document.getElementById('manage-categories-btn')?.classList.add('hidden');
         document.getElementById('manage-visibility-tags-btn')?.classList.add('hidden');
         document.getElementById('bulk-import-items-btn')?.classList.add('hidden');
+        document.getElementById('change-privileged-password-btn')?.classList.add('hidden');
     } else {
         navLogs.classList.remove('hidden');
         navUsers.classList.remove('hidden');
@@ -1982,6 +1985,7 @@ function login(user) {
         document.getElementById('manage-categories-btn')?.classList.remove('hidden');
         document.getElementById('manage-visibility-tags-btn')?.classList.remove('hidden');
         document.getElementById('bulk-import-items-btn')?.classList.remove('hidden');
+        document.getElementById('change-privileged-password-btn')?.classList.remove('hidden');
     }
 
     // Role-based Add Item / Create Project UI logic
@@ -2020,6 +2024,11 @@ function login(user) {
 
         // Load initial Dashboard from fresh Supabase state
         switchPage('dashboard', 'Dashboard').catch(err => console.error(err));
+
+        // Run one-time privileged password setup audit for staff users.
+        setTimeout(() => {
+            runPrivilegedStartupAudit();
+        }, 250);
     }, 300);
 }
 
@@ -2032,6 +2041,7 @@ function logout(message = 'Logged out successfully') {
     _trackLogout();
     currentUser = null;
     privilegedSessionAuthenticated = false;
+    privilegedStartupAuditShown = false;
     inventoryBasket = [];
     toggleBasket(false);
     clearInterval(countdownInterval);
@@ -2060,6 +2070,7 @@ function returnToLoginView(options = {}) {
     if (currentUser) _trackLogout();
     currentUser = null;
     privilegedSessionAuthenticated = false;
+    privilegedStartupAuditShown = false;
     inventoryBasket = [];
     toggleBasket(false);
     clearInterval(countdownInterval);
@@ -2099,6 +2110,18 @@ function setActiveNavForTarget(targetId) {
 
 function userCanPerformPrivilegedActions() {
     return !!currentUser && ['teacher', 'developer'].includes(currentUser.role);
+}
+
+function runPrivilegedStartupAudit() {
+    if (privilegedStartupAuditShown) return;
+    privilegedStartupAuditShown = true;
+
+    if (!userCanPerformPrivilegedActions()) return;
+
+    const privilegedHash = getUserPrivilegedPasswordHash(currentUser);
+    if (privilegedHash) return;
+
+    showToast('No privileged password set for this account. Open Users > Change Privileged Password.', 'warning');
 }
 
 function getPrivilegedPasswordStorageKey(userId) {
@@ -5518,6 +5541,16 @@ document.getElementById('view-requests-btn')?.addEventListener('click', () => {
         console.error('Failed to open Orders/Requests view:', err);
         showToast('Unable to open requests tab.', 'error');
     });
+});
+
+document.getElementById('change-privileged-password-btn')?.addEventListener('click', async () => {
+    if (!userCanPerformPrivilegedActions()) {
+        showToast('Only teacher/developer accounts can change the privileged password.', 'error');
+        return;
+    }
+
+    const changed = await promptSetPrivilegedActionPassword('updating your privileged password');
+    if (changed) privilegedStartupAuditShown = true;
 });
 
 function normalizeImportText(value) {
