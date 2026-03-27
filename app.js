@@ -4,6 +4,7 @@
    STATE & INITIALIZATION
    ======================================= */
 let currentUser = null;
+let privilegedSessionAuthenticated = false;
 
 const envConfig = window.APP_ENV || {};
 const kioskId = String(envConfig.KIOSK_ID ?? envConfig.kioskId ?? '').trim();
@@ -85,9 +86,11 @@ let ordersStudentViewEnabled = localStorage.getItem(ordersStudentViewStorageKey)
     ? defaultOrdersStudentView
     : localStorage.getItem(ordersStudentViewStorageKey) === 'true';
 
-let inventorySearchTerm = '';
-let inventoryCategoryFilter = '';
-let inventoryMetaFilter = '';
+let inventorySmartSearchTerm = '';
+let inventorySelectedCategories = [];
+let inventorySelectedBrands = [];
+let inventorySelectedSuppliers = [];
+let inventorySearchDebounceTimer = null;
 let ordersTabMode = 'all';
 
 // Modals & Toasts
@@ -879,7 +882,8 @@ async function fetchKioskSettings(targetKioskId = kioskId) {
         app_version: fallbackVersion,
         organization_id: runtimeOrganizationId,
         is_locked: false,
-        lock_screen: 'systemLocked'
+        lock_screen: 'systemLocked',
+        debug_menu_pin_hash: null
     };
 
     if (!targetKioskId) return fallback;
@@ -903,7 +907,8 @@ async function fetchKioskSettings(targetKioskId = kioskId) {
             app_version: String(data?.app_version || '').trim() || fallbackVersion,
             organization_id: String(data?.organization_id || runtimeOrganizationId || '').trim(),
             is_locked: !!(data?.is_locked ?? data?.kiosk_locked),
-            lock_screen: String(data?.lock_screen || data?.kiosk_lock_screen || 'systemLocked')
+            lock_screen: String(data?.lock_screen || data?.kiosk_lock_screen || 'systemLocked'),
+            debug_menu_pin_hash: String(data?.debug_menu_pin_hash || data?.debug_menu_pin || '').trim() || null
         };
     } catch (error) {
         console.warn('Unexpected error fetching kiosk settings:', error);
@@ -979,6 +984,17 @@ async function handleRemoteKioskSettingsChange(nextSettings = {}) {
         const remoteLockScreen = String(nextSettings.lock_screen || 'systemLocked');
         await applyKioskLock(remoteLocked, remoteLockScreen);
     }
+
+    if (Object.prototype.hasOwnProperty.call(nextSettings || {}, 'debug_menu_pin_hash')) {
+        const remotePinHash = String(nextSettings.debug_menu_pin_hash || '').trim();
+        debugConfig.pinHash = remotePinHash || null;
+        try {
+            if (remotePinHash) localStorage.setItem('debugMenuPinHash', remotePinHash);
+            else localStorage.removeItem('debugMenuPinHash');
+        } catch {
+            // Ignore storage failures.
+        }
+    }
 }
 
 function startKioskVersionRealtimeListener(targetKioskId = kioskId) {
@@ -1004,7 +1020,8 @@ function startKioskVersionRealtimeListener(targetKioskId = kioskId) {
                 app_version: payload?.new?.app_version,
                 organization_id: payload?.new?.organization_id,
                 is_locked: payload?.new?.is_locked ?? payload?.new?.kiosk_locked,
-                lock_screen: payload?.new?.lock_screen || payload?.new?.kiosk_lock_screen
+                lock_screen: payload?.new?.lock_screen || payload?.new?.kiosk_lock_screen,
+                debug_menu_pin_hash: payload?.new?.debug_menu_pin_hash || payload?.new?.debug_menu_pin
             };
             await handleRemoteKioskSettingsChange(next);
         })
@@ -1045,6 +1062,66 @@ async function syncKioskLockStateToSupabase(lock, screenKey) {
     if (fallbackError) {
         console.warn('Failed to sync kiosk lock state to Supabase:', fallbackError);
     }
+}
+
+async function hashDebugPin(pinValue) {
+    const value = String(pinValue || '').trim();
+    if (!value) return '';
+
+    try {
+        if (window.crypto?.subtle && typeof TextEncoder !== 'undefined') {
+            const bytes = new TextEncoder().encode(value);
+            const digest = await window.crypto.subtle.digest('SHA-256', bytes);
+            return Array.from(new Uint8Array(digest))
+                .map(byte => byte.toString(16).padStart(2, '0'))
+                .join('');
+        }
+    } catch {
+        // Fall through to non-crypto fallback.
+    }
+
+    // Lightweight fallback when WebCrypto is unavailable.
+    let hash = 0;
+    for (let i = 0; i < value.length; i++) {
+        hash = ((hash << 5) - hash) + value.charCodeAt(i);
+        hash |= 0;
+    }
+    return `fallback-${Math.abs(hash)}`;
+}
+
+async function saveDebugPinHashToSupabase(pinHash, targetKioskId = kioskId) {
+    const normalizedHash = String(pinHash || '').trim();
+    if (!normalizedHash || !targetKioskId) return false;
+
+    const client = getSettingsSupabaseClient();
+    if (!client) return false;
+
+    const primaryPayload = {
+        kiosk_id: targetKioskId,
+        debug_menu_pin_hash: normalizedHash
+    };
+
+    const { error } = await client
+        .from('kiosk_settings')
+        .upsert([primaryPayload], { onConflict: 'kiosk_id' });
+
+    if (!error) return true;
+
+    const fallbackPayload = {
+        kiosk_id: targetKioskId,
+        debug_menu_pin: normalizedHash
+    };
+
+    const { error: fallbackError } = await client
+        .from('kiosk_settings')
+        .upsert([fallbackPayload], { onConflict: 'kiosk_id' });
+
+    if (fallbackError) {
+        console.warn('Failed to save debug PIN hash to Supabase:', fallbackError);
+        return false;
+    }
+
+    return true;
 }
 
 // Inventory Basket Logic
@@ -1476,6 +1553,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     const kioskSettings = await fetchKioskSettings(kioskId);
+    debugConfig.pinHash = String(kioskSettings.debug_menu_pin_hash || '').trim() || null;
+    if (!debugConfig.pinHash) {
+        try {
+            debugConfig.pinHash = String(localStorage.getItem('debugMenuPinHash') || '').trim() || null;
+        } catch {
+            // Ignore storage failures.
+        }
+    }
     const organizationId = String(kioskSettings.organization_id || runtimeOrganizationId || '').trim();
     const verification = await verifyOrganizationLicense(organizationId);
     setRuntimeAppVersion(kioskSettings.app_version);
@@ -1839,6 +1924,7 @@ function applyOrdersNavVisibility() {
 
 function login(user) {
     currentUser = user;
+    privilegedSessionAuthenticated = false;
     getOrCreatePersonalProject(user.id);
     _trackLogin();
     startCountdown();
@@ -1941,6 +2027,7 @@ function logout(message = 'Logged out successfully') {
 
     _trackLogout();
     currentUser = null;
+    privilegedSessionAuthenticated = false;
     inventoryBasket = [];
     toggleBasket(false);
     clearInterval(countdownInterval);
@@ -1968,6 +2055,7 @@ function returnToLoginView(options = {}) {
 
     if (currentUser) _trackLogout();
     currentUser = null;
+    privilegedSessionAuthenticated = false;
     inventoryBasket = [];
     toggleBasket(false);
     clearInterval(countdownInterval);
@@ -2003,6 +2091,87 @@ function setActiveNavForTarget(targetId) {
         const isActive = btn.getAttribute('data-target') === targetId;
         btn.classList.toggle('active', isActive);
     });
+}
+
+function userCanPerformPrivilegedActions() {
+    return !!currentUser && ['teacher', 'developer'].includes(currentUser.role);
+}
+
+function requestPrivilegedActionAuth(reason = 'this action') {
+    return new Promise(resolve => {
+        const html = `
+            <div class="modal-header debug-modal-header">
+                <h3 style="color:#a78bfa"><i class="ph ph-lock-key"></i> Authentication Required</h3>
+                <button class="close-btn" id="priv-auth-close"><i class="ph ph-x"></i></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-secondary mb-4">Enter the access PIN to continue with ${escapeHtml(reason)}.</p>
+                <div class="form-group">
+                    <input type="password" id="priv-auth-pin" class="form-control" maxlength="8" inputmode="numeric" placeholder="PIN" autofocus>
+                    <small id="priv-auth-err" class="text-danger" style="display:none;margin-top:0.25rem"></small>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="priv-auth-cancel">Cancel</button>
+                <button class="btn btn-primary" id="priv-auth-confirm">Continue</button>
+            </div>`;
+
+        openModal(html);
+
+        let attempts = 0;
+        const finish = (result) => {
+            closeModal();
+            resolve(result);
+        };
+
+        const tryPin = async () => {
+            const enteredPin = (document.getElementById('priv-auth-pin')?.value || '').trim();
+            attempts++;
+
+            const enteredHash = await hashDebugPin(enteredPin);
+            if (enteredHash && enteredHash === debugConfig.pinHash) {
+                privilegedSessionAuthenticated = true;
+                showToast('Session authenticated.', 'success');
+                finish(true);
+                return;
+            }
+
+            const errEl = document.getElementById('priv-auth-err');
+            if (errEl) {
+                errEl.style.display = '';
+                errEl.textContent = `Incorrect PIN. Attempt ${attempts}/5.`;
+            }
+            const pinInput = document.getElementById('priv-auth-pin');
+            if (pinInput) pinInput.value = '';
+
+            if (attempts >= 5) {
+                showToast('Too many incorrect PIN attempts.', 'error');
+                finish(false);
+            }
+        };
+
+        document.getElementById('priv-auth-confirm')?.addEventListener('click', tryPin);
+        document.getElementById('priv-auth-pin')?.addEventListener('keydown', e => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                tryPin();
+            }
+        });
+        document.getElementById('priv-auth-cancel')?.addEventListener('click', () => finish(false));
+        document.getElementById('priv-auth-close')?.addEventListener('click', () => finish(false));
+    });
+}
+
+async function ensurePrivilegedActionAuth(reason = 'this action') {
+    if (!userCanPerformPrivilegedActions()) return true;
+    if (privilegedSessionAuthenticated) return true;
+
+    if (!debugConfig.pinHash) {
+        showToast('No access PIN configured yet. Open Debug menu to set one first.', 'error');
+        return false;
+    }
+
+    return requestPrivilegedActionAuth(reason);
 }
 
 navBtns.forEach(btn => {
@@ -2093,6 +2262,15 @@ async function switchPage(targetId, title) {
     if (targetId === 'orders' && !canCurrentUserViewOrders()) {
         showToast('Orders view is disabled for students.', 'error');
         return;
+    }
+
+    if (['users', 'classes', 'logs'].includes(targetId)) {
+        if (currentUser?.role === 'student') {
+            showToast('You do not have access to that page.', 'error');
+            return;
+        }
+        const authOk = await ensurePrivilegedActionAuth(`${title || targetId} page`);
+        if (!authOk) return;
     }
 
     if (isBasketOpen && targetId !== 'inventory') {
@@ -2662,65 +2840,72 @@ function openItemPreviewModal(itemId) {
     openModal(html);
 }
 
-function renderInventory(filterStr = 'All') {
+function renderInventory() {
     const tbody = document.getElementById('inventory-table-body');
-    rebuildInventoryFilterOptions();
+    const searchInput = document.getElementById('inventory-smart-search');
+    const categorySelect = document.getElementById('inventory-filter-category');
+    const brandSelect = document.getElementById('inventory-filter-brand');
+    const supplierSelect = document.getElementById('inventory-filter-supplier');
+    const resultsMeta = document.getElementById('inventory-results-meta');
 
-    const categorySelect = document.getElementById('inventory-meta-filter');
+    if (searchInput) inventorySmartSearchTerm = String(searchInput.value || '').trim().toLowerCase();
+    if (categorySelect) inventorySelectedCategories = Array.from(categorySelect.selectedOptions).map(option => option.value);
+    if (brandSelect) inventorySelectedBrands = Array.from(brandSelect.selectedOptions).map(option => option.value);
+    if (supplierSelect) inventorySelectedSuppliers = Array.from(supplierSelect.selectedOptions).map(option => option.value);
 
-    inventoryCategoryFilter = String(categorySelect?.value || (filterStr === 'All' ? '' : filterStr)).trim();
-    inventoryMetaFilter = String(categorySelect?.value || '').trim();
-    inventorySearchTerm = String(document.getElementById('inventory-search')?.value || '').trim().toLowerCase();
-
-    const parsedMetaFilter = parseInventoryMetaFilter(inventoryMetaFilter);
+    populateInventorySmartFilterOptions();
+    renderInventoryFilterChips();
 
     let filtered = currentUser.role === 'student'
         ? inventoryItems.filter(item => canUserSeeItem(currentUser, item))
         : inventoryItems;
 
-    if (filterStr !== 'All') {
-        const categoryNeedle = String(filterStr || '').toLowerCase();
-        filtered = filtered.filter(i => String(i.category || 'Uncategorized').toLowerCase().includes(categoryNeedle));
-    }
-
-    if (parsedMetaFilter.value) {
-        const needle = parsedMetaFilter.value.toLowerCase();
+    if (inventorySmartSearchTerm) {
         filtered = filtered.filter(i => {
+            const name = String(i.name || '').toLowerCase();
+            const sku = String(i.sku || '').toLowerCase();
             const category = String(i.category || 'Uncategorized').toLowerCase();
             const supplier = String(i.supplier || 'Unspecified').toLowerCase();
             const brand = String(i.brand || 'Unspecified').toLowerCase();
-
-            if (parsedMetaFilter.type === 'category') return category.includes(needle);
-            if (parsedMetaFilter.type === 'supplier') return supplier.includes(needle);
-            if (parsedMetaFilter.type === 'brand') return brand.includes(needle);
-
-            return category.includes(needle) || supplier.includes(needle) || brand.includes(needle);
+            return name.includes(inventorySmartSearchTerm)
+                || sku.includes(inventorySmartSearchTerm)
+                || category.includes(inventorySmartSearchTerm)
+                || supplier.includes(inventorySmartSearchTerm)
+                || brand.includes(inventorySmartSearchTerm);
         });
     }
 
-    if (inventorySearchTerm) {
-        filtered = filtered.filter(item => {
-            const haystack = [
-                item.name,
-                item.id,
-                item.sku,
-                item.category,
-                item.supplier,
-                item.brand,
-                item.location,
-                item.storageLocation,
-                item.bin,
-                item.description,
-                item.notes
-            ].map(value => String(value || '').toLowerCase()).join(' ');
+    if (inventorySelectedCategories.length > 0) {
+        const selectedSet = new Set(inventorySelectedCategories);
+        filtered = filtered.filter(item => selectedSet.has(String(item.category || 'Uncategorized')));
+    }
 
-            return haystack.includes(inventorySearchTerm);
-        });
+    if (inventorySelectedBrands.length > 0) {
+        const selectedSet = new Set(inventorySelectedBrands);
+        filtered = filtered.filter(item => selectedSet.has(String(item.brand || 'Unspecified')));
+    }
+
+    if (inventorySelectedSuppliers.length > 0) {
+        const selectedSet = new Set(inventorySelectedSuppliers);
+        filtered = filtered.filter(item => selectedSet.has(String(item.supplier || 'Unspecified')));
+    }
+
+    if (resultsMeta) {
+        resultsMeta.textContent = filtered.length === 0
+            ? 'No matching items found. Adjust search or clear filters.'
+            : `Showing ${filtered.length} item${filtered.length === 1 ? '' : 's'}.`;
+    }
+
+    if (filtered.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">No items match your current search/filters.</td></tr>';
+        return;
     }
 
     tbody.innerHTML = filtered.map(item => {
         const currentStatus = determineStatus(item.stock, item.threshold, item.item_type);
         const statusClass = currentStatus === 'In Stock' ? 'status-instock' : (currentStatus === 'Low Stock' || currentStatus === 'Out of Stock') ? 'status-lowstock' : 'status-na';
+        const categoryLabel = String(item.category || 'Uncategorized');
+        const brandLabel = String(item.brand || 'Unspecified');
         const tagsHtml = (item.visibilityTags || []).map(tag =>
             `<span class="visibility-tag">${tag}</span>`
         ).join('');
@@ -2738,7 +2923,7 @@ function renderInventory(filterStr = 'All') {
                     ${item.sku ? `<small class="text-xs text-muted">SKU: ${item.sku}</small>` : ''}
                     ${currentUser.role === 'student' && tagsHtml ? `<div class="visibility-tags-row">${tagsHtml}</div>` : ''}
                 </td>
-                <td>${item.category}</td>
+                <td>${categoryLabel}<br><small class="text-muted">${brandLabel}</small></td>
                 <td class="text-muted font-mono" style="font-size:0.8rem">${item.sku}</td>
                 <td>${getItemOutQuantity(item.id)}/${getItemTotalQuantity(item)}</td>
                 <td><span class="status-badge ${statusClass}">${currentStatus}</span></td>
@@ -2822,33 +3007,111 @@ function renderInventory(filterStr = 'All') {
 
                 showToast(`${item.name} returned to inventory.`, 'success');
                 addLog(currentUser.id, 'Return Item', `Returned ${item.name} to inventory`);
-                renderInventory(filterStr);
+                renderInventory();
             }
         });
     });
 }
 
-function parseInventoryMetaFilter(value) {
-    const raw = String(value || '').trim();
-    if (!raw) return { type: '', value: '' };
+function getUniqueInventoryValues(mapper) {
+    return [...new Set((inventoryItems || []).map(mapper))].sort((a, b) => a.localeCompare(b));
+}
 
-    const normalized = raw.toLowerCase();
-    const prefixes = [
-        { type: 'category', prefix: 'category:' },
-        { type: 'supplier', prefix: 'supplier:' },
-        { type: 'brand', prefix: 'brand:' }
-    ];
+function syncSelectValues(selectEl, selectedValues) {
+    if (!selectEl) return;
+    const selectedSet = new Set(selectedValues || []);
+    Array.from(selectEl.options).forEach(option => {
+        option.selected = selectedSet.has(option.value);
+    });
+}
 
-    for (const entry of prefixes) {
-        if (normalized.startsWith(entry.prefix)) {
-            return {
-                type: entry.type,
-                value: raw.slice(entry.prefix.length).trim()
-            };
-        }
+function populateInventorySmartFilterOptions() {
+    const categorySelect = document.getElementById('inventory-filter-category');
+    const brandSelect = document.getElementById('inventory-filter-brand');
+    const supplierSelect = document.getElementById('inventory-filter-supplier');
+
+    if (!categorySelect || !brandSelect || !supplierSelect) return;
+
+    const categories = getUniqueInventoryValues(item => String(item.category || 'Uncategorized'));
+    const brands = getUniqueInventoryValues(item => String(item.brand || 'Unspecified'));
+    const suppliers = getUniqueInventoryValues(item => String(item.supplier || 'Unspecified'));
+
+    categorySelect.innerHTML = categories.map(value => `<option value="${escapeHtml(value)}">Category: ${escapeHtml(value)}</option>`).join('');
+    brandSelect.innerHTML = brands.map(value => `<option value="${escapeHtml(value)}">Brand: ${escapeHtml(value)}</option>`).join('');
+    supplierSelect.innerHTML = suppliers.map(value => `<option value="${escapeHtml(value)}">Supplier: ${escapeHtml(value)}</option>`).join('');
+
+    syncSelectValues(categorySelect, inventorySelectedCategories);
+    syncSelectValues(brandSelect, inventorySelectedBrands);
+    syncSelectValues(supplierSelect, inventorySelectedSuppliers);
+}
+
+function renderInventoryFilterChips() {
+    const chipsWrap = document.getElementById('inventory-active-filter-chips');
+    const clearBtn = document.getElementById('inventory-clear-filters-btn');
+    if (!chipsWrap || !clearBtn) return;
+
+    const chips = [];
+
+    inventorySelectedCategories.forEach(value => chips.push({ type: 'category', value, label: `Category: ${value}` }));
+    inventorySelectedBrands.forEach(value => chips.push({ type: 'brand', value, label: `Brand: ${value}` }));
+    inventorySelectedSuppliers.forEach(value => chips.push({ type: 'supplier', value, label: `Supplier: ${value}` }));
+
+    if (inventorySmartSearchTerm) {
+        chips.push({ type: 'search', value: inventorySmartSearchTerm, label: `Search: ${inventorySmartSearchTerm}` });
     }
 
-    return { type: 'any', value: raw };
+    chipsWrap.innerHTML = chips.length === 0
+        ? '<span class="text-muted" style="font-size:0.82rem;">No active filters.</span>'
+        : chips.map(chip => `
+            <span class="inventory-filter-chip">
+                ${escapeHtml(chip.label)}
+                <button type="button" data-chip-type="${chip.type}" data-chip-value="${escapeHtml(chip.value)}" aria-label="Remove filter">
+                    <i class="ph ph-x"></i>
+                </button>
+            </span>
+        `).join('');
+
+    clearBtn.disabled = chips.length === 0;
+
+    chipsWrap.querySelectorAll('[data-chip-type]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const chipType = btn.getAttribute('data-chip-type');
+            const chipValue = btn.getAttribute('data-chip-value') || '';
+
+            if (chipType === 'search') {
+                inventorySmartSearchTerm = '';
+                const searchInput = document.getElementById('inventory-smart-search');
+                if (searchInput) searchInput.value = '';
+            }
+            if (chipType === 'category') inventorySelectedCategories = inventorySelectedCategories.filter(value => value !== chipValue);
+            if (chipType === 'brand') inventorySelectedBrands = inventorySelectedBrands.filter(value => value !== chipValue);
+            if (chipType === 'supplier') inventorySelectedSuppliers = inventorySelectedSuppliers.filter(value => value !== chipValue);
+
+            renderInventory();
+        });
+    });
+}
+
+function clearInventorySmartFilters() {
+    inventorySmartSearchTerm = '';
+    inventorySelectedCategories = [];
+    inventorySelectedBrands = [];
+    inventorySelectedSuppliers = [];
+
+    const searchInput = document.getElementById('inventory-smart-search');
+    if (searchInput) searchInput.value = '';
+
+    renderInventory();
+}
+
+function scheduleInventoryRender() {
+    if (inventorySearchDebounceTimer) {
+        clearTimeout(inventorySearchDebounceTimer);
+    }
+
+    inventorySearchDebounceTimer = setTimeout(() => {
+        renderInventory();
+    }, 180);
 }
 
 function getItemOutQuantity(itemId) {
@@ -2868,37 +3131,18 @@ function getItemTotalQuantity(item) {
     return Math.max(0, currentStock + outQty);
 }
 
-function rebuildInventoryFilterOptions() {
-    const mergedInput = document.getElementById('inventory-meta-filter');
-    const mergedOptions = document.getElementById('inventory-meta-filter-options');
-    if (!mergedInput || !mergedOptions) return;
-
-    const uniqueCategories = [...new Set(inventoryItems.map(i => String(i.category || 'Uncategorized')))].sort((a, b) => a.localeCompare(b));
-    const uniqueSuppliers = [...new Set(inventoryItems.map(i => String(i.supplier || 'Unspecified')))].sort((a, b) => a.localeCompare(b));
-    const uniqueBrands = [...new Set(inventoryItems.map(i => String(i.brand || 'Unspecified')))].sort((a, b) => a.localeCompare(b));
-
-    const mergedValues = [
-        ...uniqueCategories.map(c => `Category: ${c}`),
-        ...uniqueSuppliers.map(s => `Supplier: ${s}`),
-        ...uniqueBrands.map(b => `Brand: ${b}`)
-    ];
-
-    mergedOptions.innerHTML = mergedValues.map(v => `<option value="${escapeHtml(v)}"></option>`).join('');
-    mergedInput.value = inventoryMetaFilter || '';
-}
-
-document.getElementById('inventory-meta-filter')?.addEventListener('input', () => {
-    inventoryMetaFilter = document.getElementById('inventory-meta-filter').value;
-    renderInventory();
+document.getElementById('inventory-smart-search')?.addEventListener('input', () => {
+    scheduleInventoryRender();
 });
 
-document.getElementById('inventory-search')?.addEventListener('input', () => {
-    renderInventory();
-});
+document.getElementById('inventory-filter-category')?.addEventListener('change', () => renderInventory());
+document.getElementById('inventory-filter-brand')?.addEventListener('change', () => renderInventory());
+document.getElementById('inventory-filter-supplier')?.addEventListener('change', () => renderInventory());
+document.getElementById('inventory-clear-filters-btn')?.addEventListener('click', clearInventorySmartFilters);
 
 document.getElementById('request-item-btn')?.addEventListener('click', () => {
     openOrderRequestModal({
-        initialName: document.getElementById('inventory-search')?.value || ''
+        initialName: document.getElementById('inventory-smart-search')?.value || ''
     });
 });
 
@@ -4142,7 +4386,10 @@ function openEditClassModal(classId) {
     });
 }
 
-document.getElementById('create-class-btn')?.addEventListener('click', () => {
+document.getElementById('create-class-btn')?.addEventListener('click', async () => {
+    const authOk = await ensurePrivilegedActionAuth('creating classes');
+    if (!authOk) return;
+
     if (!currentUser || !['teacher', 'developer'].includes(currentUser.role)) {
         showToast('Only teachers can create classes.', 'error');
         return;
@@ -4556,7 +4803,15 @@ document.getElementById('view-grid-btn')?.addEventListener('click', () => {
     if (container) container.classList.add('grid-view-active');
 });
 
-function openUserModal(editId = null) {
+async function openUserModal(editId = null) {
+    if (currentUser?.role === 'student') {
+        showToast('You do not have permission to manage users.', 'error');
+        return;
+    }
+
+    const authOk = await ensurePrivilegedActionAuth(editId ? 'editing users' : 'adding users');
+    if (!authOk) return;
+
     const isEdit = !!editId;
     const userToEdit = isEdit ? mockUsers.find(u => u.id === editId) : null;
     const canEditBarcode = isEdit && (currentUser.role === 'teacher' || currentUser.role === 'developer');
@@ -4945,7 +5200,15 @@ function openUserItemsModal(userId) {
     openModal(html);
 }
 
-document.getElementById('add-user-btn')?.addEventListener('click', () => openUserModal());
+document.getElementById('add-user-btn')?.addEventListener('click', async () => {
+    if (currentUser?.role === 'student') {
+        showToast('You do not have permission to manage users.', 'error');
+        return;
+    }
+    const authOk = await ensurePrivilegedActionAuth('adding users');
+    if (!authOk) return;
+    openUserModal();
+});
 
 document.getElementById('users-bulk-actions-btn')?.addEventListener('click', () => {
     document.getElementById('users-bulk-actions-menu')?.classList.toggle('hidden');
@@ -5405,7 +5668,15 @@ dynamicModal.addEventListener('mousedown', (e) => {
 // Setup Add Item flow
 document.getElementById('add-item-btn')?.addEventListener('click', openAddItemModal);
 
-function openAddItemModal() {
+async function openAddItemModal() {
+    if (currentUser?.role === 'student') {
+        showToast('You do not have permission to add inventory items.', 'error');
+        return;
+    }
+
+    const authOk = await ensurePrivilegedActionAuth('adding inventory items');
+    if (!authOk) return;
+
     const categoryOptions = categories.length > 0
         ? categories.map(c => `<option value="${c}">${c}</option>`).join('')
         : '<option value="Uncategorized">Uncategorized</option>';
@@ -6804,7 +7075,15 @@ function renderRequests() {
 /* =======================================
    EDIT ITEM MODAL
    ======================================= */
-function openEditItemModal(itemId) {
+async function openEditItemModal(itemId) {
+    if (currentUser?.role === 'student') {
+        showToast('You do not have permission to edit inventory items.', 'error');
+        return;
+    }
+
+    const authOk = await ensurePrivilegedActionAuth('editing inventory items');
+    if (!authOk) return;
+
     const item = inventoryItems.find(i => i.id === itemId);
     if (!item) return;
 
@@ -6954,7 +7233,15 @@ function openEditItemModal(itemId) {
 /* =======================================
    BULK IMPORT ITEMS
    ======================================= */
-document.getElementById('bulk-import-items-btn')?.addEventListener('click', () => {
+document.getElementById('bulk-import-items-btn')?.addEventListener('click', async () => {
+    if (currentUser?.role === 'student') {
+        showToast('You do not have permission to bulk import items.', 'error');
+        return;
+    }
+
+    const authOk = await ensurePrivilegedActionAuth('bulk importing items');
+    if (!authOk) return;
+
     const html = `
         <div class="modal-header">
             <h3>Bulk Import Items</h3>
@@ -7029,7 +7316,15 @@ document.getElementById('bulk-import-items-btn')?.addEventListener('click', () =
 /* =======================================
    MANAGE CATEGORIES
    ======================================= */
-document.getElementById('manage-categories-btn')?.addEventListener('click', () => {
+document.getElementById('manage-categories-btn')?.addEventListener('click', async () => {
+    if (currentUser?.role === 'student') {
+        showToast('You do not have permission to manage categories.', 'error');
+        return;
+    }
+
+    const authOk = await ensurePrivilegedActionAuth('managing categories');
+    if (!authOk) return;
+
     function renderCategoryModal() {
         const categoryList = categories.map((cat, i) => `
             <div style="display:flex; align-items:center; justify-content:space-between; padding:0.5rem; border-bottom:1px solid rgba(255,255,255,0.05);">
@@ -7126,7 +7421,15 @@ document.getElementById('manage-categories-btn')?.addEventListener('click', () =
 /* =======================================
    MANAGE VISIBILITY TAGS
    ======================================= */
-document.getElementById('manage-visibility-tags-btn')?.addEventListener('click', () => {
+document.getElementById('manage-visibility-tags-btn')?.addEventListener('click', async () => {
+    if (currentUser?.role === 'student') {
+        showToast('You do not have permission to manage visibility tags.', 'error');
+        return;
+    }
+
+    const authOk = await ensurePrivilegedActionAuth('managing visibility tags');
+    if (!authOk) return;
+
     function renderVisibilityTagModal() {
         const tagList = visibilityTags.map((tag, i) => `
             <div style="display:flex; align-items:center; justify-content:space-between; padding:0.5rem; border-bottom:1px solid rgba(255,255,255,0.05);">
@@ -7234,7 +7537,7 @@ document.getElementById('manage-visibility-tags-btn')?.addEventListener('click',
 
 // ── Config & runtime state ────────────────────────────────────────────
 let debugConfig = {
-    pin: null,               // null = unset; developer must configure first
+    pinHash: null,           // null = unset; teacher/developer must configure first
     kioskLocked: false,
     kioskLockScreen: 'systemLocked',
     debugModeActive: false,
@@ -7297,9 +7600,9 @@ function _trackPageVisit(pageId) {
 
 // ── PIN gate ─────────────────────────────────────────────────────────
 function openDebugMenuGated() {
-    if (!debugConfig.pin) {
-        if (!currentUser || currentUser.role !== 'developer') {
-            showToast('Debug menu not configured. Log in as teacher to set the PIN.', 'error');
+    if (!debugConfig.pinHash) {
+        if (!userCanPerformPrivilegedActions()) {
+            showToast('Debug menu not configured. Log in as teacher or developer to set the PIN.', 'error');
             return;
         }
         _promptSetDebugPin();
@@ -7315,7 +7618,7 @@ function _promptSetDebugPin() {
             <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
         </div>
         <div class="modal-body">
-            <p class="text-secondary mb-4">No debug PIN is set. As a teacher you can create one now.</p>
+            <p class="text-secondary mb-4">No debug PIN is set. As a teacher or developer you can create one now.</p>
             <div class="form-group">
                 <label>New PIN <small>(4–8 digits)</small></label>
                 <input type="password" id="dbg-pin-new" class="form-control" maxlength="8" inputmode="numeric" placeholder="••••" autofocus>
@@ -7330,12 +7633,31 @@ function _promptSetDebugPin() {
             <button class="btn btn-primary" id="dbg-set-pin-btn">Set PIN</button>
         </div>`;
     openModal(html);
-    document.getElementById('dbg-set-pin-btn')?.addEventListener('click', () => {
+    document.getElementById('dbg-set-pin-btn')?.addEventListener('click', async () => {
         const p1 = document.getElementById('dbg-pin-new').value.trim();
         const p2 = document.getElementById('dbg-pin-confirm').value.trim();
         if (!/^\d{4,8}$/.test(p1)) { showToast('PIN must be 4–8 digits.', 'error'); return; }
         if (p1 !== p2) { showToast('PINs do not match.', 'error'); return; }
-        debugConfig.pin = p1;
+
+        const pinHash = await hashDebugPin(p1);
+        if (!pinHash) {
+            showToast('Failed to generate PIN hash.', 'error');
+            return;
+        }
+
+        debugConfig.pinHash = pinHash;
+        try {
+            localStorage.setItem('debugMenuPinHash', pinHash);
+        } catch {
+            // Ignore storage failures.
+        }
+
+        const saved = await saveDebugPinHashToSupabase(pinHash);
+        if (!saved) {
+            showToast('Debug PIN saved for this device, but Supabase sync failed.', 'warning');
+        }
+
+        privilegedSessionAuthenticated = true;
         showToast('Debug PIN set.', 'success');
         closeModal();
         openDebugMenu();
@@ -7362,11 +7684,13 @@ function _promptEnterDebugPin() {
             <button class="btn btn-primary" id="dbg-enter-pin-btn">Enter</button>
         </div>`;
     openModal(html);
-    const tryPin = () => {
+    const tryPin = async () => {
         const val = (document.getElementById('dbg-pin-input')?.value || '').trim();
         _pinAttempts++;
-        if (val === debugConfig.pin) {
+        const pinHash = await hashDebugPin(val);
+        if (pinHash && pinHash === debugConfig.pinHash) {
             _pinAttempts = 0;
+            privilegedSessionAuthenticated = true;
             closeModal();
             openDebugMenu(debugConfig.kioskLocked ? 'session' : 'system');
         } else {
@@ -7936,7 +8260,7 @@ function renderDebugSettings(el) {
             <div class="debug-actions">
                 <button class="dbg-btn btn btn-secondary" id="dbg-change-pin"><i class="ph ph-lock-key"></i> Change PIN</button>
             </div>
-            <small class="text-muted" style="display:block;margin-top:0.4rem">Only teacher accounts can change the PIN.</small>
+            <small class="text-muted" style="display:block;margin-top:0.4rem">Only teacher/developer accounts can change the PIN.</small>
         `)}
         ${_dbgSection('Access Methods', `
             <table class="debug-table">
@@ -7960,10 +8284,10 @@ function renderDebugSettings(el) {
         r.addEventListener('change', () => { applyTheme(r.value); renderDebugTab('settings'); });
     });
     document.getElementById('dbg-change-pin')?.addEventListener('click', () => {
-        if (!currentUser || currentUser.role !== 'developer') {
-            showToast('Only teachers can change the debug PIN.', 'error'); return;
+        if (!userCanPerformPrivilegedActions()) {
+            showToast('Only teacher/developer accounts can change the debug PIN.', 'error'); return;
         }
-        debugConfig.pin = null;
+        debugConfig.pinHash = null;
         closeModal();
         _promptSetDebugPin();
     });

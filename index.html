@@ -150,34 +150,30 @@
             </div>
 
             <nav class="sidebar-nav">
-                <div class="sidebar-nav-main">
-                    <button class="nav-btn active" data-target="dashboard">
-                        <i class="ph ph-squares-four"></i> Dashboard
-                    </button>
-                    <button class="nav-btn" data-target="inventory">
-                        <i class="ph ph-package"></i> Inventory
-                    </button>
-                    <button class="nav-btn" data-target="projects">
-                        <i class="ph ph-folder-open"></i> Projects
-                    </button>
-                    <button class="nav-btn restricted" id="nav-classes" data-target="classes">
-                        <i class="ph ph-users-four"></i> Classes
-                    </button>
-                    <button class="nav-btn restricted" id="nav-users" data-target="users">
-                        <i class="ph ph-users"></i> Users
-                    </button>
-                    <button class="nav-btn restricted hidden" id="nav-requests" data-target="requests">
-                        <i class="ph ph-envelope-open"></i> Requests
-                    </button>
-                </div>
-                <div class="sidebar-nav-bottom">
-                    <button class="nav-btn" id="nav-orders" data-target="orders">
-                        <i class="ph ph-rows-plus-bottom"></i> Operations Hub
-                    </button>
-                    <button class="nav-btn restricted" id="nav-logs" data-target="logs">
-                        <i class="ph ph-list-dashes"></i> Activity Log
-                    </button>
-                </div>
+                <button class="nav-btn active" data-target="dashboard">
+                    <i class="ph ph-squares-four"></i> Dashboard
+                </button>
+                <button class="nav-btn" data-target="inventory">
+                    <i class="ph ph-package"></i> Inventory
+                </button>
+                <button class="nav-btn" data-target="projects">
+                    <i class="ph ph-folder-open"></i> Projects
+                </button>
+                <button class="nav-btn" id="nav-orders" data-target="orders">
+                    <i class="ph ph-rows-plus-bottom"></i> Operations Hub
+                </button>
+                <button class="nav-btn restricted" id="nav-logs" data-target="logs">
+                    <i class="ph ph-list-dashes"></i> Activity Log
+                </button>
+                <button class="nav-btn restricted" id="nav-classes" data-target="classes">
+                    <i class="ph ph-users-four"></i> Classes
+                </button>
+                <button class="nav-btn restricted" id="nav-users" data-target="users">
+                    <i class="ph ph-users"></i> Users
+                </button>
+                <button class="nav-btn restricted hidden" id="nav-requests" data-target="requests">
+                    <i class="ph ph-envelope-open"></i> Requests
+                </button>
             </nav>
 
             <div class="sidebar-footer">
@@ -246,20 +242,28 @@
 
                 <!-- Inventory Page -->
                 <div id="page-inventory" class="page hidden">
-                    <div class="action-bar inventory-action-bar">
-                        <div class="flex inventory-primary-controls" style="gap:0.75rem;align-items:center;">
-                            <input type="text" id="inventory-search" class="form-control inventory-search-input" style="min-width:280px;"
-                                placeholder="Search by item, ID, SKU, category...">
+                    <div class="action-bar inventory-action-bar inventory-smart-toolbar">
+                        <div class="inventory-smart-search-wrap">
+                            <i class="ph ph-magnifying-glass"></i>
+                            <input type="text" id="inventory-smart-search" class="form-control inventory-smart-search-input"
+                                placeholder="Search items, SKU, or category..." autocomplete="off">
+                        </div>
+                        <div class="inventory-smart-filters">
+                            <select id="inventory-filter-category" class="form-control inventory-filter-select" multiple size="4" aria-label="Filter by category"></select>
+                            <select id="inventory-filter-brand" class="form-control inventory-filter-select" multiple size="4" aria-label="Filter by brand"></select>
+                            <select id="inventory-filter-supplier" class="form-control inventory-filter-select" multiple size="4" aria-label="Filter by supplier"></select>
+                        </div>
+                        <div class="inventory-filter-chips-bar">
+                            <div id="inventory-active-filter-chips" class="inventory-active-filter-chips"></div>
+                            <button class="btn btn-secondary" id="inventory-clear-filters-btn">
+                                <i class="ph ph-eraser"></i> Clear All
+                            </button>
+                        </div>
+                        <div id="inventory-results-meta" class="inventory-results-meta text-muted">Loading inventory...</div>
+                        <div class="inventory-secondary-controls" style="display:flex;gap:1rem;">
                             <button class="btn btn-secondary" id="request-item-btn">
                                 <i class="ph ph-package"></i> Request Item
                             </button>
-                        </div>
-                        <div class="filters inventory-category-filters">
-                            <input type="text" id="inventory-meta-filter" list="inventory-meta-filter-options" class="form-control" style="min-width:260px;"
-                                placeholder="Filter by category, supplier, or brand...">
-                            <datalist id="inventory-meta-filter-options"></datalist>
-                        </div>
-                        <div class="inventory-secondary-controls" style="display:flex;gap:1rem;">
                             <button class="btn btn-secondary" id="manage-categories-btn">
                                 <i class="ph ph-tag"></i> Manage Categories
                             </button>
