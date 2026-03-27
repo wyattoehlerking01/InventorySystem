@@ -87,8 +87,7 @@ let ordersStudentViewEnabled = localStorage.getItem(ordersStudentViewStorageKey)
 
 let inventorySearchTerm = '';
 let inventoryCategoryFilter = '';
-let inventorySupplierFilter = '';
-let inventoryBrandFilter = '';
+let inventoryMetaFilter = '';
 let ordersTabMode = 'all';
 
 // Modals & Toasts
@@ -2399,8 +2398,9 @@ function loadDashboard() {
             } else if (tab === 'activity') {
                 const recentLogs = activityLogs.slice(0, 8);
                 tabContent.innerHTML = `<ul class="activity-list mini">${recentLogs.map(log => {
-                    const user = mockUsers.find(u => u.id === log.userId);
-                    const displayName = user?.name || (log.userId === 'SYSTEM' ? 'SYSTEM' : log.userId) || 'Unknown';
+                    const actorId = log.userId || log.user_id || '';
+                    const user = mockUsers.find(u => u.id === actorId);
+                    const displayName = user?.name || (actorId === 'SYSTEM' ? 'SYSTEM' : actorId) || 'Unknown';
                     return `
                     <li class="activity-item">
                         <div class="timestamp">${new Date(log.timestamp).toLocaleString()}</div>
@@ -2666,32 +2666,36 @@ function renderInventory(filterStr = 'All') {
     const tbody = document.getElementById('inventory-table-body');
     rebuildInventoryFilterOptions();
 
-    const categorySelect = document.getElementById('inventory-category-filter');
-    const supplierSelect = document.getElementById('inventory-supplier-filter');
-    const brandSelect = document.getElementById('inventory-brand-filter');
+    const categorySelect = document.getElementById('inventory-meta-filter');
 
     inventoryCategoryFilter = String(categorySelect?.value || (filterStr === 'All' ? '' : filterStr)).trim();
-    inventorySupplierFilter = String(supplierSelect?.value || '').trim();
-    inventoryBrandFilter = String(brandSelect?.value || '').trim();
+    inventoryMetaFilter = String(categorySelect?.value || '').trim();
     inventorySearchTerm = String(document.getElementById('inventory-search')?.value || '').trim().toLowerCase();
+
+    const parsedMetaFilter = parseInventoryMetaFilter(inventoryMetaFilter);
 
     let filtered = currentUser.role === 'student'
         ? inventoryItems.filter(item => canUserSeeItem(currentUser, item))
         : inventoryItems;
 
-    if (inventoryCategoryFilter) {
-        const categoryNeedle = inventoryCategoryFilter.toLowerCase();
+    if (filterStr !== 'All') {
+        const categoryNeedle = String(filterStr || '').toLowerCase();
         filtered = filtered.filter(i => String(i.category || 'Uncategorized').toLowerCase().includes(categoryNeedle));
     }
 
-    if (inventorySupplierFilter) {
-        const supplierNeedle = inventorySupplierFilter.toLowerCase();
-        filtered = filtered.filter(i => String(i.supplier || 'Unspecified').toLowerCase().includes(supplierNeedle));
-    }
+    if (parsedMetaFilter.value) {
+        const needle = parsedMetaFilter.value.toLowerCase();
+        filtered = filtered.filter(i => {
+            const category = String(i.category || 'Uncategorized').toLowerCase();
+            const supplier = String(i.supplier || 'Unspecified').toLowerCase();
+            const brand = String(i.brand || 'Unspecified').toLowerCase();
 
-    if (inventoryBrandFilter) {
-        const brandNeedle = inventoryBrandFilter.toLowerCase();
-        filtered = filtered.filter(i => String(i.brand || 'Unspecified').toLowerCase().includes(brandNeedle));
+            if (parsedMetaFilter.type === 'category') return category.includes(needle);
+            if (parsedMetaFilter.type === 'supplier') return supplier.includes(needle);
+            if (parsedMetaFilter.type === 'brand') return brand.includes(needle);
+
+            return category.includes(needle) || supplier.includes(needle) || brand.includes(needle);
+        });
     }
 
     if (inventorySearchTerm) {
@@ -2736,7 +2740,7 @@ function renderInventory(filterStr = 'All') {
                 </td>
                 <td>${item.category}</td>
                 <td class="text-muted font-mono" style="font-size:0.8rem">${item.sku}</td>
-                <td>${item.stock}</td>
+                <td>${getItemOutQuantity(item.id)}/${getItemTotalQuantity(item)}</td>
                 <td><span class="status-badge ${statusClass}">${currentStatus}</span></td>
                 <td>
                     <div class="flex" style="gap:0.65rem;flex-wrap:wrap;">
@@ -2824,40 +2828,67 @@ function renderInventory(filterStr = 'All') {
     });
 }
 
+function parseInventoryMetaFilter(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return { type: '', value: '' };
+
+    const normalized = raw.toLowerCase();
+    const prefixes = [
+        { type: 'category', prefix: 'category:' },
+        { type: 'supplier', prefix: 'supplier:' },
+        { type: 'brand', prefix: 'brand:' }
+    ];
+
+    for (const entry of prefixes) {
+        if (normalized.startsWith(entry.prefix)) {
+            return {
+                type: entry.type,
+                value: raw.slice(entry.prefix.length).trim()
+            };
+        }
+    }
+
+    return { type: 'any', value: raw };
+}
+
+function getItemOutQuantity(itemId) {
+    return projects.reduce((total, project) => {
+        const outItems = Array.isArray(project?.itemsOut) ? project.itemsOut : [];
+        const qtyForItem = outItems
+            .filter(entry => entry.itemId === itemId)
+            .reduce((sum, entry) => sum + (parseInt(entry.quantity, 10) || 0), 0);
+
+        return total + qtyForItem;
+    }, 0);
+}
+
+function getItemTotalQuantity(item) {
+    const currentStock = parseInt(item?.stock, 10) || 0;
+    const outQty = getItemOutQuantity(item?.id);
+    return Math.max(0, currentStock + outQty);
+}
+
 function rebuildInventoryFilterOptions() {
-    const categoryInput = document.getElementById('inventory-category-filter');
-    const supplierInput = document.getElementById('inventory-supplier-filter');
-    const brandInput = document.getElementById('inventory-brand-filter');
-    const categoryOptions = document.getElementById('inventory-category-filter-options');
-    const supplierOptions = document.getElementById('inventory-supplier-filter-options');
-    const brandOptions = document.getElementById('inventory-brand-filter-options');
-    if (!categoryInput || !supplierInput || !brandInput || !categoryOptions || !supplierOptions || !brandOptions) return;
+    const mergedInput = document.getElementById('inventory-meta-filter');
+    const mergedOptions = document.getElementById('inventory-meta-filter-options');
+    if (!mergedInput || !mergedOptions) return;
 
     const uniqueCategories = [...new Set(inventoryItems.map(i => String(i.category || 'Uncategorized')))].sort((a, b) => a.localeCompare(b));
     const uniqueSuppliers = [...new Set(inventoryItems.map(i => String(i.supplier || 'Unspecified')))].sort((a, b) => a.localeCompare(b));
     const uniqueBrands = [...new Set(inventoryItems.map(i => String(i.brand || 'Unspecified')))].sort((a, b) => a.localeCompare(b));
 
-    categoryOptions.innerHTML = uniqueCategories.map(c => `<option value="${escapeHtml(c)}"></option>`).join('');
-    supplierOptions.innerHTML = uniqueSuppliers.map(s => `<option value="${escapeHtml(s)}"></option>`).join('');
-    brandOptions.innerHTML = uniqueBrands.map(b => `<option value="${escapeHtml(b)}"></option>`).join('');
+    const mergedValues = [
+        ...uniqueCategories.map(c => `Category: ${c}`),
+        ...uniqueSuppliers.map(s => `Supplier: ${s}`),
+        ...uniqueBrands.map(b => `Brand: ${b}`)
+    ];
 
-    categoryInput.value = inventoryCategoryFilter || '';
-    supplierInput.value = inventorySupplierFilter || '';
-    brandInput.value = inventoryBrandFilter || '';
+    mergedOptions.innerHTML = mergedValues.map(v => `<option value="${escapeHtml(v)}"></option>`).join('');
+    mergedInput.value = inventoryMetaFilter || '';
 }
 
-document.getElementById('inventory-category-filter')?.addEventListener('input', () => {
-    inventoryCategoryFilter = document.getElementById('inventory-category-filter').value;
-    renderInventory();
-});
-
-document.getElementById('inventory-supplier-filter')?.addEventListener('input', () => {
-    inventorySupplierFilter = document.getElementById('inventory-supplier-filter').value;
-    renderInventory();
-});
-
-document.getElementById('inventory-brand-filter')?.addEventListener('input', () => {
-    inventoryBrandFilter = document.getElementById('inventory-brand-filter').value;
+document.getElementById('inventory-meta-filter')?.addEventListener('input', () => {
+    inventoryMetaFilter = document.getElementById('inventory-meta-filter').value;
     renderInventory();
 });
 
@@ -3215,7 +3246,12 @@ async function openScannedItemActionModal(match) {
     openModal(html);
 
     document.getElementById('scan-signin-btn')?.addEventListener('click', async () => {
-        await returnProjectItem(project.id, signoutId, { skipConfirmPrompt: true });
+        await returnProjectItem(project.id, signoutId, {
+            skipConfirmPrompt: true,
+            forceFlagOnBehalf: true,
+            flagType: 'Scanned Return On Behalf',
+            flagDetails: `${currentUser.name} scanned and signed in ${item.name} on behalf of ${assignedName}.`
+        });
         closeModal();
     });
 
@@ -3242,11 +3278,7 @@ async function openScannedItemActionModal(match) {
             return;
         }
 
-        const shouldFlag = shouldFlagReturnOnBehalf({
-            project,
-            actorUserId: currentUser.id,
-            assignedUserId: assignedToUserId
-        });
+        const shouldFlag = currentUser.id !== assignedToUserId;
 
         if (shouldFlag) {
             await addSystemFlagToSupabase({
@@ -3382,21 +3414,24 @@ async function returnProjectItem(projectId, signoutId, options = {}) {
         addLog(currentUser.id, 'Return On Behalf', `Returned ${io.quantity}x ${item ? item.name : io.itemId} for ${assignedName} in ${project.name}`);
         showToast(`Returned on behalf of ${assignedName}.`, 'warning');
 
-        const shouldFlag = !options.suppressFlag && shouldFlagReturnOnBehalf({
-            project,
-            actorUserId: currentUser.id,
-            assignedUserId: assignedToUserId
-        });
+        const shouldFlag = !options.suppressFlag && (
+            options.forceFlagOnBehalf === true ||
+            shouldFlagReturnOnBehalf({
+                project,
+                actorUserId: currentUser.id,
+                assignedUserId: assignedToUserId
+            })
+        );
 
         if (shouldFlag) {
             await addSystemFlagToSupabase({
                 id: generateId('FLAG'),
-                flag_type: 'Improper Return',
+                flag_type: options.flagType || 'Improper Return',
                 item_id: io.itemId,
                 project_id: project.id,
                 actor_user_id: currentUser.id,
                 assigned_user_id: assignedToUserId,
-                details: `${currentUser.name} signed in ${item ? item.name : io.itemId} on behalf of ${assignedName}.`,
+                details: options.flagDetails || `${currentUser.name} signed in ${item ? item.name : io.itemId} on behalf of ${assignedName}.`,
                 status: 'Open',
                 timestamp: new Date().toISOString()
             });
