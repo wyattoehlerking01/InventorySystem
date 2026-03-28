@@ -1927,7 +1927,7 @@ function setProfilePrivilegedActionState(isEnabled) {
     if (!userProfileEl) return;
     userProfileEl.classList.toggle('profile-action-enabled', !!isEnabled);
     if (isEnabled) {
-        userProfileEl.setAttribute('title', 'Change Privileged Password');
+        userProfileEl.setAttribute('title', 'Change Authentication Password');
         userProfileEl.setAttribute('role', 'button');
         userProfileEl.setAttribute('tabindex', '0');
     } else {
@@ -2035,7 +2035,7 @@ function login(user) {
         // Load initial Dashboard from fresh Supabase state
         switchPage('dashboard', 'Dashboard').catch(err => console.error(err));
 
-        // Run one-time privileged password setup audit for staff users.
+        // Run one-time authentication password setup audit for staff users.
         setTimeout(() => {
             runPrivilegedStartupAudit();
         }, 250);
@@ -2132,7 +2132,7 @@ function runPrivilegedStartupAudit() {
     const privilegedHash = getUserPrivilegedPasswordHash(currentUser);
     if (privilegedHash) return;
 
-    showToast('No privileged password set for this account. Click your profile in the sidebar to set one.', 'warning');
+    showToast('No authentication password set for this account. Click your profile in the sidebar to set one.', 'warning');
 }
 
 function getPrivilegedPasswordStorageKey(userId) {
@@ -2221,19 +2221,23 @@ async function promptSetPrivilegedActionPassword(reason = 'this action', forcedR
 
     return new Promise(resolve => {
         const resetHint = forcedReset
-            ? 'Your current privileged password matches the debug PIN. Create a different password now.'
-            : `Set a privileged password for ${escapeHtml(currentUser.name)} to continue with ${escapeHtml(reason)}.`;
+            ? 'Your current authentication password matches the debug PIN. Create a different password now.'
+            : `Set an authentication password for ${escapeHtml(currentUser.name)} to continue with ${escapeHtml(reason)}.`;
 
         const html = `
             <div class="modal-header debug-modal-header">
-                <h3 style="color:#a78bfa"><i class="ph ph-lock-key"></i> Set Privileged Password</h3>
+                <h3 style="color:#a78bfa"><i class="ph ph-lock-key"></i> Set Authentication Password</h3>
                 <button class="close-btn" id="priv-pass-close"><i class="ph ph-x"></i></button>
             </div>
             <div class="modal-body">
                 <p class="text-secondary mb-4">${resetHint}</p>
                 <div class="form-group">
+                    <label>Confirm Username or User Barcode</label>
+                    <input type="text" id="priv-pass-identity" class="form-control" maxlength="120" autocomplete="username" placeholder="Enter your username or barcode" autofocus>
+                </div>
+                <div class="form-group">
                     <label>New Password <small>(min 6 characters)</small></label>
-                    <input type="password" id="priv-pass-new" class="form-control" minlength="6" maxlength="64" autocomplete="new-password" autofocus>
+                    <input type="password" id="priv-pass-new" class="form-control" minlength="6" maxlength="64" autocomplete="new-password">
                 </div>
                 <div class="form-group">
                     <label>Confirm Password</label>
@@ -2261,8 +2265,24 @@ async function promptSetPrivilegedActionPassword(reason = 'this action', forcedR
         };
 
         const savePassword = async () => {
+            const identityInput = String(document.getElementById('priv-pass-identity')?.value || '').trim();
             const p1 = String(document.getElementById('priv-pass-new')?.value || '').trim();
             const p2 = String(document.getElementById('priv-pass-confirm')?.value || '').trim();
+
+            const normalizeUserToken = value => String(value || '').trim().replace(/\s+/g, ' ').toUpperCase();
+            const enteredToken = normalizeUserToken(identityInput);
+            const expectedBarcode = normalizeUserToken(currentUser.id);
+            const expectedUsername = normalizeUserToken(currentUser.name);
+
+            if (!enteredToken) {
+                showErr('Enter your username or user barcode to continue.');
+                return;
+            }
+
+            if (enteredToken !== expectedBarcode && enteredToken !== expectedUsername) {
+                showErr('Username or user barcode does not match your account.');
+                return;
+            }
 
             if (p1.length < 6) {
                 showErr('Password must be at least 6 characters.');
@@ -2295,12 +2315,17 @@ async function promptSetPrivilegedActionPassword(reason = 'this action', forcedR
             if (!savedToSupabase) {
                 showToast('Password saved locally. Supabase update unavailable for this field.', 'warning');
             } else {
-                showToast('Privileged password saved.', 'success');
+                showToast('Authentication password saved.', 'success');
             }
             finish(true);
         };
 
         document.getElementById('priv-pass-save')?.addEventListener('click', savePassword);
+        document.getElementById('priv-pass-identity')?.addEventListener('keydown', e => {
+            if (e.key !== 'Enter') return;
+            e.preventDefault();
+            savePassword();
+        });
         document.getElementById('priv-pass-new')?.addEventListener('keydown', e => {
             if (e.key !== 'Enter') return;
             e.preventDefault();
@@ -2324,7 +2349,7 @@ function requestPrivilegedActionAuth(reason = 'this action') {
                 <button class="close-btn" id="priv-auth-close"><i class="ph ph-x"></i></button>
             </div>
             <div class="modal-body">
-                <p class="text-secondary mb-4">Enter your privileged password to continue with ${escapeHtml(reason)}.</p>
+                <p class="text-secondary mb-4">Enter your authentication password to continue with ${escapeHtml(reason)}.</p>
                 <div class="form-group">
                     <input type="password" id="priv-auth-password" class="form-control" maxlength="64" autocomplete="current-password" placeholder="Password" autofocus>
                     <small id="priv-auth-err" class="text-danger" style="display:none;margin-top:0.25rem"></small>
@@ -2346,7 +2371,7 @@ function requestPrivilegedActionAuth(reason = 'this action') {
         const tryPassword = async () => {
             const expectedHash = getUserPrivilegedPasswordHash(currentUser);
             if (!expectedHash) {
-                showToast('No privileged password is set for this account yet.', 'error');
+                showToast('No authentication password is set for this account yet.', 'error');
                 finish(false);
                 return;
             }
@@ -2394,12 +2419,12 @@ async function ensurePrivilegedActionAuth(reason = 'this action') {
 
     const privilegedHash = getUserPrivilegedPasswordHash(currentUser);
     if (!privilegedHash) {
-        showToast('Set your privileged password to continue.', 'warning');
+        showToast('Set your authentication password to continue.', 'warning');
         return promptSetPrivilegedActionPassword(reason);
     }
 
     if (debugConfig.pinHash && privilegedHash === debugConfig.pinHash) {
-        showToast('Privileged password cannot match the debug PIN. Please set a new password.', 'warning');
+        showToast('Authentication password cannot match the debug PIN. Please set a new password.', 'warning');
         return promptSetPrivilegedActionPassword(reason, true);
     }
 
@@ -5712,11 +5737,11 @@ document.getElementById('view-requests-btn')?.addEventListener('click', () => {
 
 async function handleProfilePrivilegedPasswordAction() {
     if (!userCanPerformPrivilegedActions()) {
-        showToast('Only teacher/developer accounts can change the privileged password.', 'error');
+        showToast('Only teacher/developer accounts can change the authentication password.', 'error');
         return;
     }
 
-    const changed = await promptSetPrivilegedActionPassword('updating your privileged password');
+    const changed = await promptSetPrivilegedActionPassword('updating your authentication password');
     if (changed) privilegedStartupAuditShown = true;
 }
 
@@ -8149,7 +8174,7 @@ function _promptSetDebugPin() {
         }
 
         if (hasStaffPasswordHashConflict(pinHash)) {
-            showToast('Debug PIN cannot match a teacher/developer privileged password.', 'error');
+            showToast('Debug PIN cannot match a teacher/developer authentication password.', 'error');
             return;
         }
 
