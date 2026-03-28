@@ -3656,7 +3656,16 @@ function wireDashboardProjectSummaryActions(scope = document) {
 }
 
 function findSignoutIndex(project, signoutId) {
-    return project.itemsOut.findIndex(io => (io.id || `${io.itemId}-${io.signoutDate}-${io.quantity}`) === signoutId);
+    const target = String(signoutId ?? '').trim();
+    if (!target) return -1;
+
+    return project.itemsOut.findIndex(io => {
+        const ioId = String(io.id ?? '').trim();
+        if (ioId && ioId === target) return true;
+
+        const composite = `${io.itemId}-${io.signoutDate}-${io.quantity}`;
+        return composite === target;
+    });
 }
 
 function doesUserBelongToProject(userId, project) {
@@ -4090,12 +4099,21 @@ async function returnProjectItem(projectId, signoutId, options = {}) {
     if (!project) return false;
 
     const ioIndex = findSignoutIndex(project, signoutId);
-    if (ioIndex < 0) return false;
+    if (ioIndex < 0) {
+        showToast('Could not find the selected sign-out record. Refresh and try again.', 'error');
+        return false;
+    }
 
     const io = project.itemsOut[ioIndex];
     const item = inventoryItems.find(i => i.id === io.itemId);
     const assignedToUserId = io.assignedToUserId || project.ownerId;
     const assignedToUser = mockUsers.find(u => u.id === assignedToUserId);
+    const returnQty = Math.max(0, parseInt(io.quantity, 10) || 0);
+
+    if (returnQty <= 0) {
+        showToast('Invalid sign-in quantity on this record.', 'error');
+        return false;
+    }
 
     if (!options.skipConfirmPrompt && currentUser.role === 'student' && currentUser.id !== assignedToUserId) {
         const assignedName = assignedToUser ? assignedToUser.name : assignedToUserId;
@@ -4107,7 +4125,7 @@ async function returnProjectItem(projectId, signoutId, options = {}) {
         const unlocked = await requestDoorUnlockAndLogAccess({
             actionType: 'sign-in',
             item,
-            quantity: io.quantity,
+            quantity: returnQty,
             projectName: project.name
         });
 
@@ -4118,12 +4136,16 @@ async function returnProjectItem(projectId, signoutId, options = {}) {
     }
 
     if (item) {
-        const nextStock = item.stock + io.quantity;
+        const currentStock = Math.max(0, parseInt(item.stock, 10) || 0);
+        const nextStock = currentStock + returnQty;
         const stockUpdated = await updateItemInSupabase(item.id, { stock: nextStock });
         if (!stockUpdated) {
             showToast('Failed to update item stock in Supabase.', 'error');
             return false;
         }
+
+        // Keep local state in sync immediately, even if a subsequent refresh is delayed.
+        item.stock = nextStock;
     }
 
     if (io.id) {
@@ -4145,14 +4167,21 @@ async function returnProjectItem(projectId, signoutId, options = {}) {
         }
     }
 
-    await Promise.all([
-        refreshProjectsFromSupabase(),
-        refreshInventoryFromSupabase()
-    ]);
+    // Remove local sign-out row immediately so My Items reflects the return without waiting on reload.
+    project.itemsOut.splice(ioIndex, 1);
+
+    try {
+        await Promise.all([
+            refreshProjectsFromSupabase(),
+            refreshInventoryFromSupabase()
+        ]);
+    } catch (refreshError) {
+        console.warn('Post-sign-in refresh failed:', refreshError);
+    }
 
     if (currentUser.id !== assignedToUserId) {
         const assignedName = assignedToUser ? assignedToUser.name : assignedToUserId;
-        addLog(currentUser.id, 'Return On Behalf', `Returned ${io.quantity}x ${item ? item.name : io.itemId} for ${assignedName} in ${project.name}`);
+        addLog(currentUser.id, 'Return On Behalf', `Returned ${returnQty}x ${item ? item.name : io.itemId} for ${assignedName} in ${project.name}`);
         if (!options.suppressToast) {
             showToast(`Returned on behalf of ${assignedName}.`, 'warning');
         }
@@ -4181,7 +4210,7 @@ async function returnProjectItem(projectId, signoutId, options = {}) {
             await refreshRequestsFromSupabase();
         }
     } else {
-        addLog(currentUser.id, 'Return Item', `Returned ${io.quantity}x ${item ? item.name : io.itemId} in ${project.name}`);
+        addLog(currentUser.id, 'Return Item', `Returned ${returnQty}x ${item ? item.name : io.itemId} in ${project.name}`);
         if (!options.suppressToast) {
             showToast('Item signed back in.', 'success');
         }
