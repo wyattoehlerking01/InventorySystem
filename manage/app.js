@@ -1796,6 +1796,12 @@ async function handleBarcodeLogin(rawId) {
 
         const user = loginResult.user || null;
         if (user) {
+            const appMode = String(window.APP_ENV?.APP_MODE || '').trim().toLowerCase();
+            if (appMode === 'manage' && user.role === 'student') {
+                showToast('Management console access is restricted to teachers and developers.', 'error');
+                return;
+            }
+
             if (user.status === 'Suspended' && !isSuspensionBypassedUser(user)) {
                 showToast('Your account is suspended. Please contact a teacher.', 'error');
                 return;

@@ -1,0 +1,22 @@
+// Runtime environment configuration
+window.APP_ENV = {
+    APP_MODE: 'manage',
+    APP_NAME: 'LCHS Electro-Tech Manage',
+    APP_SUBTITLE: 'Inventory Management Console',
+    APP_LOGO_URL: '',
+    APP_SIDEBAR_LOGO_URL: '',
+    APP_VERSION: 'Version',
+    KIOSK_ID: 'KIOSK-001',
+    ORGANIZATION_ID: '4339f9a2-dc08-4232-851a-cf993eba2e67',
+    APP_UPDATE_ACTION: 'overlay',
+    ALLOW_STUDENT_ORDER_VIEW: false,
+    INFO_POPUP_HEADING: 'System Information',
+    INFO_POPUP_SUBHEADING_1: 'Platform Release Overview',
+    INFO_POPUP_DESCRIPTION_1: 'The LCHS Electro-Tech Inventory Management System is built on the OehlerOS platform, a custom platform designed to meet the specific needs that cookie cutter solutions cannot.',
+    INFO_POPUP_SUBHEADING_2: 'Copyright Information',
+    INFO_POPUP_DESCRIPTION_2: 'Copyright © 2026 Wyatt Oehlerking. All rights reserved. This software is proprietary and may not be reproduced, distributed, or used without explicit permission from the author.',
+    INFO_POPUP_SUBHEADING_3: 'License',
+    INFO_POPUP_DESCRIPTION_3: 'Used Under License. Until further notice, École Secondaire Lacombe Composite High School is granted the right to use this software solely for the purpose of managing the inventory of the Automotive Mechanics, Electro-Technologies, After-School Robotics Program (Also known as the United Robotics of Lacombe or URL). This software is only to be used for non-commercial purposes only whithin these deparments. Furthermore, Any redistribution or modification to/of software, use in unauthorized school enviroments or departments, without my explicit written consent to be considered a breach of this license agreement and use must be ceased immediately.',
+    SUPABASE_URL: 'https://xgiqhzexzrumjlxmooly.supabase.co',
+    SUPABASE_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhnaXFoemV4enJ1bWpseG1vb2x5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM2NTE3OTcsImV4cCI6MjA4OTIyNzc5N30.4sHNN7CFZ9gQG8VmyZ8STp2U1eb-TC4hkLKh2-ErY4M'
+};

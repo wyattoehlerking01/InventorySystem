@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title id="app-page-title">LCHS Inventory System</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Inter:wght@400;500;600&display=swap"
+        rel="stylesheet">
+    <!-- Phosphor Icons (Modern Icons) -->
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+    <!-- Supabase JS Library -->
+    <script src="supabase.js"></script>
+    <link rel="stylesheet" href="index.css">
+</head>
+
+<body class="dark-theme">
+
+    <!-- Toast Notification Container -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <!-- Modals Container -->
+    <div id="modal-container" class="modal-container hidden">
+        <div class="modal glass-panel" id="dynamic-modal">
+            <!-- Modal content injected via JS -->
+        </div>
+    </div>
+
+    <!-- Inventory Basket Panel (Floating/Side) -->
+    <div id="basket-panel" class="basket-panel hidden glass-panel">
+        <div class="basket-header">
+            <h3><i class="ph ph-shopping-cart"></i> Inventory Basket</h3>
+            <button class="close-btn" id="close-basket-btn"><i class="ph ph-x"></i></button>
+        </div>
+        <div class="basket-body" id="basket-items-list">
+            <!-- Basket items injected here -->
+            <div class="empty-basket-msg text-center py-8 opacity-50">
+                <i class="ph ph-package" style="font-size: 3rem;"></i>
+                <p>Your basket is empty</p>
+            </div>
+        </div>
+        <div class="basket-footer">
+            <div class="basket-summary mb-4">
+                <div class="flex justify-between">
+                    <span>Total Items:</span>
+                    <span id="basket-total-qty">0</span>
+                </div>
+            </div>
+            <div class="form-group mb-4">
+                <label>Sign-out to Project</label>
+                <select id="basket-project-select" class="form-control">
+                    <option value="">Personal Sign-out</option>
+                    <!-- Projects injected here -->
+                </select>
+            </div>
+            <button class="btn btn-primary w-full" id="checkout-basket-btn" disabled>
+                <i class="ph ph-check-circle"></i> Bulk Checkout
+            </button>
+            <div class="text-xs text-center mt-2 text-warning">
+                <i class="ph ph-timer"></i> Auto-logout paused while basket is open
+            </div>
+        </div>
+    </div>
+
+    <!-- Login View -->
+    <div id="login-view" class="view active h-screen flex-center">
+        <div class="login-card glass-panel flex-col flex-center">
+            <div class="login-logo mb-4">
+                <img id="app-login-logo-image" class="brand-logo-image hidden" alt="App logo">
+                <h1 id="app-login-name">LCHS</h1>
+            </div>
+            <p class="subtitle" id="app-login-subtitle">Secure Inventory Management</p>
+
+            <div class="scanner-container">
+                <div class="scanner-anim"></div>
+                <i class="ph ph-barcode"></i>
+                <p>Waiting for Barcode Scan...</p>
+                <!-- Hidden input that captures the barcode scanner keystrokes -->
+                <input type="password" id="barcode-input" class="hidden-input" autocomplete="off" autofocus
+                    placeholder="Scan Barcode">
+            </div>
+
+            <button class="btn btn-secondary mt-4 w-full" id="show-help-btn" style="margin-top: 2rem;">
+                <i class="ph ph-question"></i> Need Help / Request Credential?
+            </button>
+
+
+        </div>
+    </div>
+
+    <!-- Login Help View -->
+    <div id="login-help-view" class="view hidden h-screen flex-center">
+        <div class="login-card glass-panel flex-col flex-center">
+            <div class="login-logo mb-4">
+                <i class="ph-fill ph-lifebuoy"></i>
+                <h2>Support</h2>
+            </div>
+            <p class="subtitle">Request new credentials or report a login issue.</p>
+
+            <div class="w-full text-left mt-4">
+                <div class="form-group">
+                    <label>Full Name</label>
+                    <input type="text" class="form-control" id="help-name" placeholder="John Doe">
+                </div>
+                <div class="form-group">
+                    <label>Email Address</label>
+                    <input type="email" class="form-control" id="help-email" placeholder="john@example.com">
+                </div>
+                <div class="form-group">
+                    <label>Issue / Request Description</label>
+                    <textarea class="form-control" id="help-desc" rows="3"
+                        placeholder="I lost my ID card..."></textarea>
+                </div>
+            </div>
+
+            <div class="flex w-full mt-4" style="gap:1rem;">
+                <button class="btn btn-secondary flex-1" id="back-to-login-btn">Back</button>
+                <button class="btn btn-primary flex-1" id="submit-help-btn">Submit Request</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Application View -->
+    <div id="main-view" class="view hidden app-layout">
+        <!-- Sidebar -->
+        <aside class="sidebar glass-panel">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <img id="app-sidebar-logo-image" class="brand-logo-image hidden" alt="App logo">
+                    <h2 id="app-sidebar-name">LCHS</h2>
+                </div>
+            </div>
+
+            <div class="user-profile">
+                <div class="avatar" id="user-avatar">
+                    <i class="ph ph-user"></i>
+                </div>
+                <div class="user-info">
+                    <h3 id="user-name">John Doe</h3>
+                    <div class="flex flex-col">
+                        <span id="user-role" class="badge"
+                            style="width: fit-content; margin-bottom: 2px;">Student</span>
+                        <span id="user-class" class="text-xs text-muted hidden">Intro to Robotics</span>
+                    </div>
+                </div>
+            </div>
+
+            <nav class="sidebar-nav">
+                <button class="nav-btn active" data-target="dashboard">
+                    <i class="ph ph-squares-four"></i> Dashboard
+                </button>
+                <button class="nav-btn" data-target="inventory">
+                    <i class="ph ph-package"></i> Inventory
+                </button>
+                <button class="nav-btn" data-target="projects">
+                    <i class="ph ph-folder-open"></i> Projects
+                </button>
+                <button class="nav-btn" id="nav-orders" data-target="orders">
+                    <i class="ph ph-rows-plus-bottom"></i> Operations Hub
+                </button>
+                <button class="nav-btn restricted" id="nav-logs" data-target="logs">
+                    <i class="ph ph-list-dashes"></i> Activity Log
+                </button>
+                <button class="nav-btn restricted" id="nav-classes" data-target="classes">
+                    <i class="ph ph-users-four"></i> Classes
+                </button>
+                <button class="nav-btn restricted" id="nav-users" data-target="users">
+                    <i class="ph ph-users"></i> Users
+                </button>
+                <button class="nav-btn restricted hidden" id="nav-requests" data-target="requests">
+                    <i class="ph ph-envelope-open"></i> Requests
+                </button>
+            </nav>
+
+            <div class="sidebar-footer">
+                <button class="nav-btn text-danger" id="logout-btn">
+                    <i class="ph ph-sign-out"></i> Sign Out
+                </button>
+            </div>
+        </aside>
+
+        <!-- Main Content Area -->
+        <main class="content-area">
+            <!-- Header -->
+            <header class="app-header glass-panel">
+                <h2 id="page-title">Dashboard</h2>
+                <div class="header-actions">
+                    <div id="auto-logout-timer" class="timer-display">
+                        <i class="ph ph-clock-countdown"></i>
+                        <span id="timer-countdown">3:00</span>
+                    </div>
+                </div>
+            </header>
+
+            <!-- Scrollable Content -->
+            <div class="page-content" id="page-content">
+                <!-- Dashboard Page -->
+                <div id="page-dashboard" class="page active">
+                    <div class="stats-grid" id="dashboard-stats">
+                        <!-- Injected via JS -->
+                    </div>
+
+                    <div class="dashboard-widgets">
+                        <div class="widget glass-panel" id="dashboard-tabbed-widget" style="width:100%">
+                            <div class="widget-tabs"
+                                style="display:flex;gap:0;border-bottom:1px solid var(--glass-border);margin-bottom:1rem;">
+                                <button class="widget-tab active" data-tab="lowstock"
+                                    style="padding:0.75rem 1.25rem;background:none;border:none;color:var(--text-secondary);cursor:pointer;border-bottom:2px solid transparent;font-weight:500;">Low
+                                    Stock Alerts</button>
+                                <button class="widget-tab" data-tab="activity"
+                                    style="padding:0.75rem 1.25rem;background:none;border:none;color:var(--text-secondary);cursor:pointer;border-bottom:2px solid transparent;font-weight:500;">Recent
+                                    Activity</button>
+                                <button class="widget-tab" data-tab="itemsout"
+                                    style="padding:0.75rem 1.25rem;background:none;border:none;color:var(--text-secondary);cursor:pointer;border-bottom:2px solid transparent;font-weight:500;">Items
+                                    Out</button>
+                                <button class="widget-tab" data-tab="projectsummary"
+                                    style="padding:0.75rem 1.25rem;background:none;border:none;color:var(--text-secondary);cursor:pointer;border-bottom:2px solid transparent;font-weight:500;">Project
+                                    Summary</button>
+                            </div>
+                            <div id="widget-tab-content">
+                                <!-- Injected via JS -->
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Student widgets (hidden for admin) -->
+                    <div class="dashboard-widgets grid-2-col" id="student-dashboard-widgets" style="display:none;">
+                        <div class="widget glass-panel" id="dashboard-widget-1">
+                            <h3 id="widget-1-title">Items Due Back</h3>
+                            <ul class="stock-list" id="low-stock-list"></ul>
+                        </div>
+                        <div class="widget glass-panel" id="dashboard-widget-2">
+                            <h3 id="widget-2-title">Your Projects</h3>
+                            <ul class="activity-list mini" id="recent-activity-mini"></ul>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Inventory Page -->
+                <div id="page-inventory" class="page hidden">
+                    <div class="action-bar inventory-action-bar inventory-smart-toolbar">
+                        <div class="inventory-smart-search-row">
+                            <div class="inventory-smart-search-wrap">
+                                <input type="text" id="inventory-smart-search" class="form-control inventory-smart-search-input"
+                                    placeholder="Search items, SKU, or category..." autocomplete="off">
+                            </div>
+                            <button class="btn btn-secondary inventory-toolbar-btn" id="inventory-search-btn" type="button">
+                                <i class="ph ph-magnifying-glass"></i> Search
+                            </button>
+                        </div>
+                        <div id="inventory-results-meta" class="inventory-results-meta text-muted">Loading inventory...</div>
+                        <div class="inventory-secondary-controls" style="display:flex;gap:1rem;">
+                            <button class="btn btn-secondary" id="request-item-btn">
+                                <i class="ph ph-package"></i> Request Item
+                            </button>
+                            <button class="btn btn-secondary" id="manage-categories-btn">
+                                <i class="ph ph-tag"></i> Manage Categories
+                            </button>
+                            <button class="btn btn-secondary" id="manage-visibility-tags-btn">
+                                <i class="ph ph-eye"></i> Visibility Tags
+                            </button>
+                            <button class="btn btn-secondary" id="bulk-manage-items-btn">
+                                <i class="ph ph-stack"></i> Bulk Tags/Categories
+                            </button>
+                            <button class="btn btn-secondary" id="bulk-import-items-btn">
+                                <i class="ph ph-upload"></i> Bulk Import
+                            </button>
+                            <button class="btn btn-secondary" id="open-basket-btn"
+                                style="background: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid rgba(10, 185, 129, 0.2)">
+                                <i class="ph ph-shopping-cart"></i> Basket (<span id="basket-count">0</span>)
+                            </button>
+                            <button class="btn btn-primary" id="add-item-btn">
+                                <i class="ph ph-plus"></i> Add Item
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="table-container glass-panel">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th style="width:40px;"><input type="checkbox" id="select-all-items"
+                                            title="Select All"></th>
+                                    <th>Item Name</th>
+                                    <th>Category</th>
+                                    <th>SKU</th>
+                                    <th>Stock Status</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="inventory-table-body">
+                                <!-- Injected via JS -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Projects Page -->
+                <div id="page-projects" class="page hidden">
+                    <div class="action-bar">
+                        <h3>Active Projects</h3>
+                        <button class="btn btn-primary" id="create-project-btn">
+                            <i class="ph ph-folder-plus"></i> New Project
+                        </button>
+                    </div>
+
+                    <div class="projects-grid" id="projects-container">
+                        <!-- Injected via JS -->
+                    </div>
+                </div>
+
+                <!-- Orders Page -->
+                <div id="page-orders" class="page hidden">
+                    <div class="action-bar">
+                        <h3>Operations Hub</h3>
+                        <div class="flex" style="gap:0.75rem;align-items:center;">
+                            <button class="btn btn-secondary orders-mode-btn active" data-mode="all">All Activity</button>
+                            <button class="btn btn-secondary orders-mode-btn" data-mode="orders">Orders</button>
+                            <button class="btn btn-secondary orders-mode-btn" data-mode="requests">Requests</button>
+                            <button class="btn btn-secondary orders-mode-btn" data-mode="flags">System Flags</button>
+                            <select id="orders-status-filter" class="form-control" style="min-width:190px;">
+                                <option value="all">All Statuses</option>
+                                <option value="Pending">Pending</option>
+                                <option value="Approved">Approved</option>
+                                <option value="Denied">Denied</option>
+                                <option value="Ordered">Ordered</option>
+                            </select>
+                            <button class="btn btn-secondary hidden" id="configure-order-form-btn">
+                                <i class="ph ph-sliders-horizontal"></i> Customize Form
+                            </button>
+                            <button class="btn btn-primary" id="new-order-request-btn">
+                                <i class="ph ph-plus"></i> New Order Request
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="action-bar" id="orders-student-toggle-wrap" style="margin-top:0.5rem;display:none;">
+                        <div class="glass-panel" style="padding:0.65rem 0.8rem;display:flex;align-items:center;gap:0.55rem;">
+                            <input type="checkbox" id="orders-student-visible-toggle">
+                            <label for="orders-student-visible-toggle" style="cursor:pointer;">Allow students to view Orders tab</label>
+                        </div>
+                    </div>
+
+                    <div class="table-container glass-panel">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Date</th>
+                                    <th>Requested By</th>
+                                    <th>Part Name</th>
+                                    <th>Qty</th>
+                                    <th>Priority</th>
+                                    <th>Est. Total</th>
+                                    <th>Status</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="orders-table-body">
+                                <!-- Injected via JS -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Classes Page -->
+                <div id="page-classes" class="page hidden">
+                    <div class="action-bar">
+                        <h3>Student Classes</h3>
+                        <button class="btn btn-primary" id="create-class-btn">
+                            <i class="ph ph-users-three"></i> New Class
+                        </button>
+                    </div>
+
+                    <div class="projects-grid" id="classes-container">
+                        <!-- Injected via JS -->
+                    </div>
+                </div>
+
+                <!-- Activity Log Page -->
+                <div id="page-logs" class="page hidden">
+                    <div class="action-bar">
+                        <h3>Activity Log</h3>
+                        <div class="flex" style="gap:0.75rem;align-items:center;">
+                            <label for="logs-action-filter" class="text-sm text-muted">Filter</label>
+                            <select id="logs-action-filter" class="form-control" style="min-width:220px;">
+                                <option value="all">View All Actions</option>
+                            </select>
+                            <label for="logs-actor-filter" class="text-sm text-muted">Actor</label>
+                            <select id="logs-actor-filter" class="form-control" style="min-width:180px;">
+                                <option value="all">All Users</option>
+                                <option value="student">Students</option>
+                                <option value="staff">Teachers/Developers</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="table-container glass-panel">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Timestamp</th>
+                                    <th>User</th>
+                                    <th>Action</th>
+                                    <th>Details</th>
+                                </tr>
+                            </thead>
+                            <tbody id="logs-table-body">
+                                <!-- Injected via JS -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Users Page -->
+                <div id="page-users" class="page hidden">
+                    <div class="action-bar">
+                        <h3>System Users</h3>
+                        <div class="flex" style="gap: 1rem;">
+                            <button class="btn btn-secondary" id="view-requests-btn">
+                                <i class="ph ph-lifebuoy"></i> Open Requests Tab
+                            </button>
+                            <div class="view-toggles"
+                                style="display: none; gap: 0.5rem; border-right: 1px solid var(--glass-border); padding-right: 1rem;">
+                                <button class="btn btn-secondary active-view" id="view-list-btn" title="List View">
+                                    <i class="ph ph-list"></i>
+                                </button>
+                                <button class="btn btn-secondary" id="view-grid-btn" title="Grid View">
+                                    <i class="ph ph-squares-four"></i>
+                                </button>
+                            </div>
+                            <div class="bulk-actions-menu-wrap" id="users-bulk-actions-wrap">
+                                <button class="btn btn-secondary" id="users-bulk-actions-btn" type="button">
+                                    <i class="ph ph-list-checks"></i> Bulk Actions
+                                </button>
+                                <div class="bulk-actions-menu hidden" id="users-bulk-actions-menu">
+                                    <button class="btn btn-secondary bulk-action-item" id="bulk-action-import" type="button">
+                                        <i class="ph ph-users-three"></i> Bulk Import Users
+                                    </button>
+                                    <button class="btn btn-danger bulk-action-item" id="bulk-action-delete" type="button">
+                                        <i class="ph ph-trash"></i> Bulk Delete Selected
+                                    </button>
+                                    <button class="btn btn-secondary bulk-action-item" id="bulk-action-suspend" type="button">
+                                        <i class="ph ph-user-minus"></i> Bulk Suspend/Activate
+                                    </button>
+                                </div>
+                            </div>
+                            <button class="btn btn-secondary" id="bulk-users-btn" style="display:none;">
+                                <i class="ph ph-users-three"></i> Bulk Import
+                            </button>
+                            <button class="btn btn-danger" id="bulk-delete-users-btn" style="display:none;">
+                                <i class="ph ph-trash"></i> Bulk Delete
+                            </button>
+                            <button class="btn btn-secondary" id="bulk-suspend-users-btn" style="display:none;">
+                                <i class="ph ph-user-minus"></i> Bulk Suspend
+                            </button>
+                            <button class="btn btn-primary" id="add-user-btn">
+                                <i class="ph ph-user-plus"></i> Add User
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="table-container glass-panel">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th style="width:40px;"><input type="checkbox" id="select-all-users"
+                                            title="Select All"></th>
+                                    <th>User</th>
+                                    <th>Grade</th>
+                                    <th>Status/Role</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="users-table-body">
+                                <!-- Injected via JS -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Requests Page -->
+                <div id="page-requests" class="page hidden">
+                    <div class="action-bar">
+                        <h3>Requests</h3>
+                    </div>
+                    <div class="table-container glass-panel">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Date</th>
+                                    <th>Type</th>
+                                    <th>From</th>
+                                    <th>Details</th>
+                                    <th>Status</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="requests-table-body">
+                                <!-- Injected via JS -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <div class="app-version-overlay" aria-label="Application version">
+        <span id="app-version-login" class="version-badge"></span>
+    </div>
+
+    <div class="app-info-overlay" aria-label="Application info">
+        <button id="app-info-trigger" class="app-info-trigger" type="button">Info</button>
+    </div>
+
+    <!-- Data and Application Logic -->
+    <script src="env.js"></script>
+    <script src="data.js"></script>
+    <script src="app.js"></script>
+</body>
+
+</html>

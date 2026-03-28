@@ -52,6 +52,41 @@ Supported URL formats:
 
 If the URL is blank or fails to load, the app falls back to text branding.
 
+Split App Paths
+
+The web app is now scaffolded into two static-path entries for deployment:
+
+- `/kiosk/` for day-to-day kiosk operation workflows
+- `/manage/` for management workflows
+
+Implementation notes:
+
+- Both folders currently start from the same duplicated baseline.
+- `kiosk/env.js` sets `APP_MODE: 'kiosk'`.
+- `manage/env.js` sets `APP_MODE: 'manage'`.
+- In manage mode, student logins are blocked in `manage/app.js`; only teacher/developer roles can enter.
+
+GitHub Pages usage:
+
+- Publish the repository as static files, then open `.../kiosk/` or `.../manage/` directly.
+- Root (`/`) behavior is unchanged in this first implementation step.
+
+Kiosk Listener Security Configuration
+
+The realtime kiosk listener now uses safe command execution for lock overlays.
+
+- `LOCK_OVERLAY_COMMAND_BIN`: executable path to run when kiosk lock is enabled.
+- `LOCK_OVERLAY_COMMAND_ARGS`: optional JSON array of arguments for the command.
+
+Example:
+
+- `LOCK_OVERLAY_COMMAND_BIN=/usr/bin/python3`
+- `LOCK_OVERLAY_COMMAND_ARGS=["/opt/kiosk/lock_overlay.py","--fullscreen"]`
+
+Deprecated:
+
+- `LOCK_OVERLAY_COMMAND` string execution is intentionally rejected for security hardening.
+
 Contributions
 
 At this stage, the project is in early development. Feedback, testing results, and improvement suggestions are welcome.

@@ -1,14 +1,16 @@
 #!/usr/bin/env node
 
 const path = require('path');
-const { spawn, exec } = require('child_process');
+const { spawn } = require('child_process');
 const { createClient } = require('@supabase/supabase-js');
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY;
 const KIOSK_ID = process.env.KIOSK_ID || 'KIOSK-001';
 
-const LOCK_OVERLAY_COMMAND = process.env.LOCK_OVERLAY_COMMAND || '';
+const LOCK_OVERLAY_COMMAND_BIN = String(process.env.LOCK_OVERLAY_COMMAND_BIN || '').trim();
+const LOCK_OVERLAY_COMMAND_ARGS = parseCommandArgs(process.env.LOCK_OVERLAY_COMMAND_ARGS || '');
+const LEGACY_LOCK_OVERLAY_COMMAND = String(process.env.LOCK_OVERLAY_COMMAND || '').trim();
 const PYTHON_BIN = process.env.PYTHON_BIN || 'python3';
 const UNLOCK_SCRIPT_PATH = process.env.UNLOCK_SCRIPT_PATH || path.resolve(__dirname, 'unlock_door.py');
 
@@ -25,24 +27,71 @@ let channel = null;
 let pulseInFlight = false;
 let previousLockState = null;
 
-function runShellCommand(command) {
+function parseCommandArgs(rawValue) {
+    const raw = String(rawValue || '').trim();
+    if (!raw) return [];
+
+    try {
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) throw new Error('LOCK_OVERLAY_COMMAND_ARGS must be a JSON array');
+        return parsed.map((part) => String(part));
+    } catch (error) {
+        console.error('[kiosk-listener] Invalid LOCK_OVERLAY_COMMAND_ARGS. Expected JSON array of strings.');
+        console.error('[kiosk-listener] Parse error:', error.message);
+        return [];
+    }
+}
+
+function runOverlayCommand() {
     return new Promise((resolve) => {
-        if (!command || !command.trim()) {
-            console.warn('[kiosk-listener] LOCK_OVERLAY_COMMAND is not set; skipping overlay command.');
+        if (!LOCK_OVERLAY_COMMAND_BIN) {
+            if (LEGACY_LOCK_OVERLAY_COMMAND) {
+                console.error('[kiosk-listener] LOCK_OVERLAY_COMMAND is deprecated for security.');
+                console.error('[kiosk-listener] Use LOCK_OVERLAY_COMMAND_BIN and optional LOCK_OVERLAY_COMMAND_ARGS (JSON array).');
+            } else {
+                console.warn('[kiosk-listener] LOCK_OVERLAY_COMMAND_BIN is not set; skipping overlay command.');
+            }
             resolve(false);
             return;
         }
 
-        exec(command, { timeout: 15000 }, (error, stdout, stderr) => {
-            if (error) {
-                console.error('[kiosk-listener] Lock overlay command failed:', error.message);
-                if (stderr) console.error(stderr.trim());
-                resolve(false);
+        const child = spawn(LOCK_OVERLAY_COMMAND_BIN, LOCK_OVERLAY_COMMAND_ARGS, {
+            stdio: ['ignore', 'pipe', 'pipe'],
+            shell: false,
+            timeout: 15000
+        });
+
+        let stderr = '';
+        let stdout = '';
+
+        child.stdout.on('data', (chunk) => {
+            stdout += String(chunk);
+        });
+
+        child.stderr.on('data', (chunk) => {
+            stderr += String(chunk);
+        });
+
+        child.on('error', (error) => {
+            console.error('[kiosk-listener] Lock overlay command failed to start:', error.message);
+            resolve(false);
+        });
+
+        child.on('close', (code, signal) => {
+            if (stdout.trim()) console.log(`[kiosk-listener] overlay stdout: ${stdout.trim()}`);
+            if (stderr.trim()) console.error(`[kiosk-listener] overlay stderr: ${stderr.trim()}`);
+
+            if (code === 0) {
+                resolve(true);
                 return;
             }
 
-            if (stdout && stdout.trim()) console.log(stdout.trim());
-            resolve(true);
+            if (signal) {
+                console.error(`[kiosk-listener] overlay command terminated by signal ${signal}`);
+            } else {
+                console.error(`[kiosk-listener] overlay command exited with code ${code}`);
+            }
+            resolve(false);
         });
     });
 }
@@ -107,7 +156,7 @@ async function processKioskSettingsRow(row, source = 'event') {
 
     if (isLocked && previousLockState !== true) {
         console.log(`[kiosk-listener] (${source}) kiosk is_locked=true, running overlay command.`);
-        await runShellCommand(LOCK_OVERLAY_COMMAND);
+        await runOverlayCommand();
     }
 
     previousLockState = isLocked;
