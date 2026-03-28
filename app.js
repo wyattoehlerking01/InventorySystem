@@ -3189,16 +3189,16 @@ function renderInventory() {
                 <td>${Math.max(0, parseInt(item?.stock, 10) || 0)}/${getItemTotalQuantity(item)}</td>
                 <td><span class="status-badge ${statusClass}">${currentStatus}</span></td>
                 <td>
-                    <div class="flex" style="gap:0.65rem;flex-wrap:wrap;">
+                    <div class="flex inventory-item-actions" style="gap:0.65rem;flex-wrap:nowrap;">
                         ${currentUser.role !== 'student' ? `
-                            <button class="btn btn-secondary btn-sm edit-item-btn" data-id="${item.id}" title="Edit Item">
+                            <button class="btn btn-secondary btn-sm inventory-item-action-btn edit-item-btn" data-id="${item.id}" title="Edit Item">
                                 <i class="ph ph-pencil-simple"></i>
                             </button>` : ''}
-                        <button class="btn btn-secondary btn-sm add-basket-btn" data-id="${item.id}" title="Add to Basket" 
+                        <button class="btn btn-secondary btn-sm inventory-item-action-btn add-basket-btn" data-id="${item.id}" title="Add to Basket" 
                             style="background: rgba(16, 185, 129, 0.1); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.2)">
                             <i class="ph ph-shopping-cart-simple"></i>
                         </button>
-                        <button class="btn btn-primary btn-sm signout-btn" data-id="${item.id}" title="Sign out to Project">
+                        <button class="btn btn-primary btn-sm inventory-item-action-btn signout-btn" data-id="${item.id}" title="Sign out to Project">
                             <i class="ph ph-export"></i> Sign Out
                         </button>
                     </div>

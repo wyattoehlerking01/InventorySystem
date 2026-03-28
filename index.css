@@ -902,6 +902,23 @@ h6 {
     white-space: nowrap;
 }
 
+.inventory-item-actions {
+    align-items: center;
+}
+
+.inventory-item-action-btn {
+    min-height: 34px;
+    height: 34px;
+    padding: 0.35rem 0.6rem;
+    font-size: 0.8rem;
+    line-height: 1;
+    white-space: nowrap;
+}
+
+.inventory-item-action-btn i {
+    font-size: 0.95rem;
+}
+
 .inventory-filter-panel {
     width: 100%;
     display: flex;

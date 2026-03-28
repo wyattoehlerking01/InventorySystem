@@ -1182,32 +1182,29 @@ async function addProjectItemOutToSupabase(itemOut) {
         signout_date: itemOut.signoutDate
     };
 
-    const camelPayload = {
-        id: normalizedId,
-        projectId: itemOut.projectId,
-        itemId: itemOut.itemId,
+    const payloadNoId = {
+        project_id: itemOut.projectId,
+        item_id: itemOut.itemId,
         quantity: normalizedQty,
-        signoutDate: itemOut.signoutDate,
-        dueDate: itemOut.dueDate,
-        assignedToUserId: itemOut.assignedToUserId || null,
-        signedOutByUserId: itemOut.signedOutByUserId || null
+        signout_date: itemOut.signoutDate,
+        due_date: itemOut.dueDate,
+        assigned_to_user_id: itemOut.assignedToUserId || null,
+        signed_out_by_user_id: itemOut.signedOutByUserId || null
     };
 
-    const camelFallbackPayload = {
-        id: normalizedId,
-        projectId: itemOut.projectId,
-        itemId: itemOut.itemId,
+    const fallbackPayloadNoId = {
+        project_id: itemOut.projectId,
+        item_id: itemOut.itemId,
         quantity: normalizedQty,
-        signoutDate: itemOut.signoutDate,
-        dueDate: itemOut.dueDate
+        signout_date: itemOut.signoutDate,
+        due_date: itemOut.dueDate
     };
 
-    const camelMinimalPayload = {
-        id: normalizedId,
-        projectId: itemOut.projectId,
-        itemId: itemOut.itemId,
+    const minimalPayloadNoId = {
+        project_id: itemOut.projectId,
+        item_id: itemOut.itemId,
         quantity: normalizedQty,
-        signoutDate: itemOut.signoutDate
+        signout_date: itemOut.signoutDate
     };
 
     let data = null;
@@ -1215,20 +1212,27 @@ async function addProjectItemOutToSupabase(itemOut) {
 
     const attempts = [
         payload,
+        payloadNoId,
         fallbackPayload,
+        fallbackPayloadNoId,
         minimalPayload,
-        camelPayload,
-        camelFallbackPayload,
-        camelMinimalPayload
+        minimalPayloadNoId
     ];
+
+    let firstErrorText = '';
 
     for (const attemptPayload of attempts) {
         ({ data, error } = await dbClient.from('project_items_out').insert([attemptPayload]).select());
         if (!error) break;
-        lastProjectItemOutError = `${error.code || 'db_error'}: ${error.message || 'insert failed'}`;
+        const currentErrorText = `${error.code || 'db_error'}: ${error.message || 'insert failed'}`;
+        if (!firstErrorText) firstErrorText = currentErrorText;
+        lastProjectItemOutError = currentErrorText;
     }
     
     if (error) {
+        if (firstErrorText) {
+            lastProjectItemOutError = firstErrorText;
+        }
         console.error('Error adding project item out:', error);
         return null;
     }
