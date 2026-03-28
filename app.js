@@ -2662,7 +2662,7 @@ function loadDashboard() {
                 const item = inventoryItems.find(i => i.id === io.itemId);
                 const dueDate = io.dueDate ? new Date(io.dueDate) : null;
                 const isOverdue = dueDate ? dueDate < new Date() : false;
-                const dueLabel = dueDate ? dueDate.toLocaleDateString() : 'No due date';
+                const dueLabel = dueDate ? dueDate.toLocaleString() : 'No due date';
                 return `
                 <li class="stock-item">
                     <div>
@@ -3186,8 +3186,10 @@ function renderInventory() {
                 </td>
                 <td>${categoryLabel}<br><small class="text-muted">${brandLabel}</small></td>
                 <td class="text-muted font-mono" style="font-size:0.8rem">${item.sku}</td>
-                <td>${Math.max(0, parseInt(item?.stock, 10) || 0)}/${getItemTotalQuantity(item)}</td>
-                <td><span class="status-badge ${statusClass}">${currentStatus}</span></td>
+                <td style="display:flex;align-items:center;gap:0.75rem;white-space:nowrap;">
+                    <strong>${Math.max(0, parseInt(item?.stock, 10) || 0)}/${getItemTotalQuantity(item)}</strong>
+                    <span class="status-badge ${statusClass}">${currentStatus}</span>
+                </td>
                 <td>
                     <div class="flex inventory-item-actions" style="gap:0.65rem;flex-wrap:nowrap;">
                         ${currentUser.role !== 'student' ? `
