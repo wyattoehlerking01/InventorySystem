@@ -73,6 +73,11 @@ let helpRequests = [];
 let extensionRequests = [];
 let orderRequests = [];
 let systemFlags = [];
+let lastProjectItemOutError = '';
+
+function getLastProjectItemOutError() {
+    return String(lastProjectItemOutError || '').trim();
+}
 
 /* =======================================
    DATA LOADING FUNCTIONS
@@ -1144,10 +1149,16 @@ async function deleteProjectFromSupabase(projectId) {
  * Add project item out to project_items_out table
  */
 async function addProjectItemOutToSupabase(itemOut) {
+    lastProjectItemOutError = '';
+
+    const normalizedId = String(itemOut.id || createUuid()).trim();
+    const normalizedQty = Math.max(1, parseInt(itemOut.quantity, 10) || 1);
+
     const payload = {
+        id: normalizedId,
         project_id: itemOut.projectId,
         item_id: itemOut.itemId,
-        quantity: itemOut.quantity,
+        quantity: normalizedQty,
         signout_date: itemOut.signoutDate,
         due_date: itemOut.dueDate,
         assigned_to_user_id: itemOut.assignedToUserId || null,
@@ -1155,34 +1166,66 @@ async function addProjectItemOutToSupabase(itemOut) {
     };
 
     const fallbackPayload = {
+        id: normalizedId,
         project_id: itemOut.projectId,
         item_id: itemOut.itemId,
-        quantity: itemOut.quantity,
+        quantity: normalizedQty,
         signout_date: itemOut.signoutDate,
         due_date: itemOut.dueDate
     };
 
     const minimalPayload = {
+        id: normalizedId,
         project_id: itemOut.projectId,
         item_id: itemOut.itemId,
-        quantity: itemOut.quantity,
+        quantity: normalizedQty,
         signout_date: itemOut.signoutDate
+    };
+
+    const camelPayload = {
+        id: normalizedId,
+        projectId: itemOut.projectId,
+        itemId: itemOut.itemId,
+        quantity: normalizedQty,
+        signoutDate: itemOut.signoutDate,
+        dueDate: itemOut.dueDate,
+        assignedToUserId: itemOut.assignedToUserId || null,
+        signedOutByUserId: itemOut.signedOutByUserId || null
+    };
+
+    const camelFallbackPayload = {
+        id: normalizedId,
+        projectId: itemOut.projectId,
+        itemId: itemOut.itemId,
+        quantity: normalizedQty,
+        signoutDate: itemOut.signoutDate,
+        dueDate: itemOut.dueDate
+    };
+
+    const camelMinimalPayload = {
+        id: normalizedId,
+        projectId: itemOut.projectId,
+        itemId: itemOut.itemId,
+        quantity: normalizedQty,
+        signoutDate: itemOut.signoutDate
     };
 
     let data = null;
     let error = null;
 
-    // Try full payload first.
-    ({ data, error } = await dbClient.from('project_items_out').insert([payload]).select());
+    const attempts = [
+        payload,
+        fallbackPayload,
+        minimalPayload,
+        camelPayload,
+        camelFallbackPayload,
+        camelMinimalPayload
+    ];
 
-    // If that fails (schema drift, FK issues on optional assignee/signer columns, etc), retry without optional user columns.
-    if (error) {
-        ({ data, error } = await dbClient.from('project_items_out').insert([fallbackPayload]).select());
-    }
-
-    // Last compatibility fallback for older schemas that may not have due_date.
-    if (error) {
-        ({ data, error } = await dbClient.from('project_items_out').insert([minimalPayload]).select());
+    for (const attemptPayload of attempts) {
+        ({ data, error } = await dbClient.from('project_items_out').insert([attemptPayload]).select());
+        if (!error) break;
+        lastProjectItemOutError = `${error.code || 'db_error'}: ${error.message || 'insert failed'}`;
     }
     
     if (error) {

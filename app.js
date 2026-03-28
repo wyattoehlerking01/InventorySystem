@@ -1483,6 +1483,7 @@ async function checkoutBasket() {
             };
 
             const savedSignout = await addProjectItemOutToSupabase({
+                id: signoutData.id,
                 projectId: project.id,
                 itemId: item.id,
                 quantity: basketItem.qty,
@@ -1493,7 +1494,13 @@ async function checkoutBasket() {
             });
 
             if (!savedSignout) {
-                showToast(`Checkout failed while creating sign-out for ${item.name}. No stock was changed for that item.`, 'error');
+                const errDetail = typeof getLastProjectItemOutError === 'function'
+                    ? String(getLastProjectItemOutError() || '').slice(0, 180)
+                    : '';
+                showToast(
+                    `Checkout failed while creating sign-out for ${item.name}. ${errDetail || 'No stock was changed for that item.'}`,
+                    'error'
+                );
                 await Promise.all([refreshProjectsFromSupabase(), refreshInventoryFromSupabase()]);
                 renderInventory();
                 renderDashboard();
@@ -4543,6 +4550,7 @@ function openSignOutModal(itemId) {
             };
 
             const savedSignout = await addProjectItemOutToSupabase({
+                id: signoutData.id,
                 projectId: project.id,
                 itemId: item.id,
                 quantity: qty,
@@ -4553,7 +4561,10 @@ function openSignOutModal(itemId) {
             });
 
             if (!savedSignout) {
-                showToast('Failed to save sign-out record. Item stock was not changed.', 'error');
+                const errDetail = typeof getLastProjectItemOutError === 'function'
+                    ? String(getLastProjectItemOutError() || '').slice(0, 180)
+                    : '';
+                showToast(`Failed to save sign-out record. ${errDetail || 'Item stock was not changed.'}`, 'error');
                 return;
             }
 
