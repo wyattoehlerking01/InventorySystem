@@ -75,14 +75,26 @@
             </div>
             <p class="subtitle" id="app-login-subtitle">Secure Inventory Management</p>
 
-            <div class="scanner-container">
-                <div class="scanner-anim"></div>
-                <i class="ph ph-barcode"></i>
-                <p>Waiting for Barcode Scan...</p>
-                <!-- Hidden input that captures the barcode scanner keystrokes -->
-                <input type="password" id="barcode-input" class="hidden-input" autocomplete="off" autofocus
-                    placeholder="Scan Barcode">
+            <div class="w-full text-left mt-4">
+                <div class="form-group">
+                    <label>Username</label>
+                    <input type="text" class="form-control" id="username-input" autocomplete="username" autofocus
+                        placeholder="Enter your username">
+                </div>
+                <div class="form-group">
+                    <label>Authentication Password</label>
+                    <input type="password" class="form-control" id="password-input" autocomplete="current-password"
+                        placeholder="Enter your password">
+                </div>
             </div>
+
+            <button class="btn btn-primary mt-4 w-full" id="login-submit-btn" style="margin-top: 1rem;">
+                <i class="ph ph-sign-in"></i> Sign In
+            </button>
+
+            <!-- Keep a hidden scanner field to avoid breaking shared scanner utilities -->
+            <input type="password" id="barcode-input" class="hidden-input" autocomplete="off" aria-hidden="true"
+                tabindex="-1">
 
             <button class="btn btn-secondary mt-4 w-full" id="show-help-btn" style="margin-top: 2rem;">
                 <i class="ph ph-question"></i> Need Help / Request Credential?

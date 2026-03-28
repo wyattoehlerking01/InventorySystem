@@ -104,6 +104,111 @@ async function loginWithBarcode(barcode) {
     }
 }
 
+function normalizeUserNameToken(value) {
+    return String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+async function hashAuthPasswordValue(passwordValue) {
+    const value = String(passwordValue || '').trim();
+    if (!value) return '';
+
+    try {
+        if (window.crypto?.subtle && typeof TextEncoder !== 'undefined') {
+            const bytes = new TextEncoder().encode(value);
+            const digest = await window.crypto.subtle.digest('SHA-256', bytes);
+            return Array.from(new Uint8Array(digest))
+                .map(byte => byte.toString(16).padStart(2, '0'))
+                .join('');
+        }
+    } catch {
+        // Fall through to deterministic fallback.
+    }
+
+    let hash = 0;
+    for (let i = 0; i < value.length; i++) {
+        hash = ((hash << 5) - hash) + value.charCodeAt(i);
+        hash |= 0;
+    }
+    return `fallback-${Math.abs(hash)}`;
+}
+
+function getStoredAuthPasswordHash(user) {
+    if (!user) return '';
+    return String(
+        user.privileged_password_hash
+        || user.privileged_auth_password_hash
+        || user.staff_password_hash
+        || ''
+    ).trim();
+}
+
+async function fetchUserByNameFromSupabase(username) {
+    const client = requireSupabaseClient('fetchUserByNameFromSupabase');
+    const normalizedName = normalizeUserNameToken(username);
+    if (!normalizedName) return null;
+
+    const rawName = String(username || '').trim();
+
+    const exactResult = await client
+        .from('users')
+        .select('*')
+        .eq('name', rawName);
+
+    if (exactResult.error) {
+        console.error('Error fetching user by exact name:', exactResult.error);
+        throw exactResult.error;
+    }
+
+    const exactUser = (exactResult.data || []).find(user => normalizeUserNameToken(user?.name) === normalizedName);
+    if (exactUser) return exactUser;
+
+    const ilikeResult = await client
+        .from('users')
+        .select('*')
+        .ilike('name', rawName);
+
+    if (ilikeResult.error) {
+        console.error('Error fetching user by case-insensitive name:', ilikeResult.error);
+        throw ilikeResult.error;
+    }
+
+    return (ilikeResult.data || []).find(user => normalizeUserNameToken(user?.name) === normalizedName) || null;
+}
+
+async function loginWithUsernameAndPassword(username, password) {
+    try {
+        const normalizedUsername = String(username || '').trim();
+        const normalizedPassword = String(password || '').trim();
+
+        if (!normalizedUsername || !normalizedPassword) {
+            return { error: 'Username and password are required.' };
+        }
+
+        const user = await fetchUserByNameFromSupabase(normalizedUsername);
+        if (!user) {
+            return { error: 'Invalid username or password.' };
+        }
+
+        const expectedHash = getStoredAuthPasswordHash(user);
+        if (!expectedHash) {
+            return { error: 'Authentication password is not configured for this account.' };
+        }
+
+        const providedHash = await hashAuthPasswordValue(normalizedPassword);
+        if (!providedHash || providedHash !== expectedHash) {
+            return { error: 'Invalid username or password.' };
+        }
+
+        return {
+            user,
+            error: null
+        };
+    } catch (err) {
+        console.error('loginWithUsernameAndPassword failed:', err);
+        return { error: 'Login failed' };
+    }
+}
+
 /* =======================================
    GLOBAL DATA ARRAYS (from Supabase)
    ======================================= */

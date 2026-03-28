@@ -9,6 +9,8 @@ const privilegedPasswordStoragePrefix = 'privilegedAuthPasswordHash:';
 let privilegedStartupAuditShown = false;
 
 const envConfig = window.APP_ENV || {};
+const appMode = String(envConfig.APP_MODE || '').trim().toLowerCase();
+const isManageMode = appMode === 'manage';
 const kioskId = String(envConfig.KIOSK_ID ?? envConfig.kioskId ?? '').trim();
 const configuredOrganizationId = String(
     envConfig.ORGANIZATION_ID
@@ -64,6 +66,9 @@ const loginView = document.getElementById('login-view');
 const loginHelpView = document.getElementById('login-help-view');
 const mainView = document.getElementById('main-view');
 const barcodeInput = document.getElementById('barcode-input');
+const usernameInput = document.getElementById('username-input');
+const passwordInput = document.getElementById('password-input');
+const loginSubmitBtn = document.getElementById('login-submit-btn');
 const showHelpBtn = document.getElementById('show-help-btn');
 const backToLoginBtn = document.getElementById('back-to-login-btn');
 const submitHelpBtn = document.getElementById('submit-help-btn');
@@ -1673,8 +1678,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         showToast('Unable to load data from Supabase. Login may not work until this is fixed.', 'error');
     }
 
-    // Bring focus to barcode scanner input
-    if (barcodeInput) {
+    // Bring focus to the primary login field for the current app mode.
+    if (isManageMode) {
+        usernameInput?.focus();
+    } else if (barcodeInput) {
         barcodeInput.focus();
         document.addEventListener('click', (e) => {
             const modalOpen = modalContainer && !modalContainer.classList.contains('hidden');
@@ -1716,7 +1723,8 @@ backToLoginBtn?.addEventListener('click', () => {
         loginView.classList.remove('hidden');
         setTimeout(() => {
             loginView.classList.add('active');
-            barcodeInput.focus();
+            if (isManageMode) usernameInput?.focus();
+            else barcodeInput?.focus();
         }, 50);
     }, 300);
 });
@@ -1759,8 +1767,13 @@ submitHelpBtn?.addEventListener('click', async () => {
 });
 
 async function handleBarcodeLogin(rawId) {
+    if (isManageMode) {
+        await handleManageCredentialLogin(usernameInput?.value || '', passwordInput?.value || '');
+        return;
+    }
+
     const id = String(rawId || '').trim().toUpperCase();
-    barcodeInput.value = '';
+    if (barcodeInput) barcodeInput.value = '';
 
     if (currentUser) {
         await handleInSessionBarcodeScan(id);
@@ -1831,6 +1844,80 @@ async function handleBarcodeLogin(rawId) {
     }
 }
 
+async function handleManageCredentialLogin(rawUsername, rawPassword) {
+    if (!isManageMode) return;
+    if (currentUser) return;
+
+    const username = String(rawUsername || '').trim();
+    const password = String(rawPassword || '').trim();
+
+    if (!username || !password) {
+        showToast('Enter your username and authentication password.', 'error');
+        return;
+    }
+
+    if (typeof loginWithUsernameAndPassword !== 'function') {
+        showToast('Credential login module is not loaded. Refresh and verify script loading.', 'error');
+        return;
+    }
+
+    if (!checkLoginRateLimit()) return;
+
+    try {
+        const loginResult = await loginWithUsernameAndPassword(username, password);
+        if (loginResult.error) {
+            recordFailedLoginAttempt();
+            showToast(loginResult.error || 'Login failed', 'error');
+            return;
+        }
+
+        try {
+            await loadAllData();
+        } catch (loadError) {
+            console.error('Post-login load failed:', loadError);
+            showToast('Login succeeded, but data refresh failed.', 'error');
+        }
+
+        const user = loginResult.user || null;
+        if (!user) {
+            recordFailedLoginAttempt();
+            showToast('Invalid username or password.', 'error');
+            return;
+        }
+
+        if (user.role === 'student') {
+            recordFailedLoginAttempt();
+            showToast('Management console access is restricted to teachers and developers.', 'error');
+            return;
+        }
+
+        if (user.status === 'Suspended' && !isSuspensionBypassedUser(user)) {
+            showToast('Your account is suspended. Please contact a teacher.', 'error');
+            return;
+        }
+
+        if (user.status === 'Suspended' && isSuspensionBypassedUser(user)) {
+            user.status = 'Active';
+            updateUserInSupabase(user.id, { status: 'Active' }).catch(err => {
+                console.warn('Failed to auto-reactivate suspension-bypassed developer user:', err);
+            });
+        }
+
+        clearFailedLoginAttempts();
+        if (passwordInput) passwordInput.value = '';
+
+        try {
+            login(user);
+        } catch (loginError) {
+            console.error('Login transition failed:', loginError);
+            showToast('Login succeeded but dashboard failed to load.', 'error');
+        }
+    } catch (error) {
+        console.error('Credential login lookup failed:', error);
+        showToast('Database lookup failed during login.', 'error');
+    }
+}
+
 function showHardwareReturnModal(item, record) {
     const html = `
         <div class="modal-header">
@@ -1884,14 +1971,35 @@ function showHardwareReturnModal(item, record) {
     });
 }
 
-barcodeInput.addEventListener('keydown', async (e) => {
-    if (e.key === 'Enter' || e.key === 'NumpadEnter') {
+if (barcodeInput && !isManageMode) {
+    barcodeInput.addEventListener('keydown', async (e) => {
+        if (e.key === 'Enter' || e.key === 'NumpadEnter') {
+            e.preventDefault();
+            await handleBarcodeLogin(barcodeInput.value);
+        }
+    });
+}
+
+if (isManageMode) {
+    loginSubmitBtn?.addEventListener('click', async () => {
+        await handleManageCredentialLogin(usernameInput?.value || '', passwordInput?.value || '');
+    });
+
+    usernameInput?.addEventListener('keydown', async (e) => {
+        if (e.key !== 'Enter' && e.key !== 'NumpadEnter') return;
         e.preventDefault();
-        await handleBarcodeLogin(barcodeInput.value);
-    }
-});
+        await handleManageCredentialLogin(usernameInput?.value || '', passwordInput?.value || '');
+    });
+
+    passwordInput?.addEventListener('keydown', async (e) => {
+        if (e.key !== 'Enter' && e.key !== 'NumpadEnter') return;
+        e.preventDefault();
+        await handleManageCredentialLogin(usernameInput?.value || '', passwordInput?.value || '');
+    });
+}
 
 document.addEventListener('keydown', async (e) => {
+    if (isManageMode) return;
     if (currentUser) return;
     if (loginView.classList.contains('hidden')) return;
     if (loginHelpView && !loginHelpView.classList.contains('hidden')) return;
@@ -1985,7 +2093,11 @@ document.getElementById('login-view')?.addEventListener('click', (e) => {
     const isInteractive = target?.closest?.('input, textarea, select, button, [contenteditable="true"]');
 
     if (!isInteractive) {
-        barcodeInput.focus();
+        if (isManageMode) {
+            usernameInput?.focus();
+        } else {
+            barcodeInput?.focus();
+        }
     }
 });
 
@@ -2168,7 +2280,8 @@ function logout(message = 'Logged out successfully') {
         updateAppInfoOverlayVisibility();
         setTimeout(() => {
             loginView.classList.add('active');
-            barcodeInput.focus();
+            if (isManageMode) usernameInput?.focus();
+            else barcodeInput?.focus();
         }, 50);
     }, 300);
     showToast(message);
@@ -2202,7 +2315,8 @@ function returnToLoginView(options = {}) {
         updateAppInfoOverlayVisibility();
         setTimeout(() => {
             loginView.classList.add('active');
-            barcodeInput.focus();
+            if (isManageMode) usernameInput?.focus();
+            else barcodeInput?.focus();
         }, 50);
     }, 300);
 
