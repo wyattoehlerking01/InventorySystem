@@ -1154,17 +1154,35 @@ async function addProjectItemOutToSupabase(itemOut) {
         signed_out_by_user_id: itemOut.signedOutByUserId || null
     };
 
-    let { data, error } = await dbClient.from('project_items_out').insert([payload]).select();
+    const fallbackPayload = {
+        project_id: itemOut.projectId,
+        item_id: itemOut.itemId,
+        quantity: itemOut.quantity,
+        signout_date: itemOut.signoutDate,
+        due_date: itemOut.dueDate
+    };
 
-    if (error && /column .* does not exist/i.test(String(error.message || ''))) {
-        const fallbackPayload = {
-            project_id: itemOut.projectId,
-            item_id: itemOut.itemId,
-            quantity: itemOut.quantity,
-            signout_date: itemOut.signoutDate,
-            due_date: itemOut.dueDate
-        };
+    const minimalPayload = {
+        project_id: itemOut.projectId,
+        item_id: itemOut.itemId,
+        quantity: itemOut.quantity,
+        signout_date: itemOut.signoutDate
+    };
+
+    let data = null;
+    let error = null;
+
+    // Try full payload first.
+    ({ data, error } = await dbClient.from('project_items_out').insert([payload]).select());
+
+    // If that fails (schema drift, FK issues on optional assignee/signer columns, etc), retry without optional user columns.
+    if (error) {
         ({ data, error } = await dbClient.from('project_items_out').insert([fallbackPayload]).select());
+    }
+
+    // Last compatibility fallback for older schemas that may not have due_date.
+    if (error) {
+        ({ data, error } = await dbClient.from('project_items_out').insert([minimalPayload]).select());
     }
     
     if (error) {
