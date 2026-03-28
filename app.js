@@ -3153,7 +3153,7 @@ function renderInventory() {
                 </td>
                 <td>${categoryLabel}<br><small class="text-muted">${brandLabel}</small></td>
                 <td class="text-muted font-mono" style="font-size:0.8rem">${item.sku}</td>
-                <td>${getItemOutQuantity(item.id)}/${getItemTotalQuantity(item)}</td>
+                <td>${Math.max(0, parseInt(item?.stock, 10) || 0)}/${getItemTotalQuantity(item)}</td>
                 <td><span class="status-badge ${statusClass}">${currentStatus}</span></td>
                 <td>
                     <div class="flex" style="gap:0.65rem;flex-wrap:wrap;">
@@ -4858,6 +4858,7 @@ function renderLogs() {
     const tbody = document.getElementById('logs-table-body');
     const actionFilter = document.getElementById('logs-action-filter');
     const actorFilter = document.getElementById('logs-actor-filter');
+    if (!tbody) return;
     if (currentUser.role === 'student') return; // Double check protection
 
     if (actionFilter) {
@@ -4904,17 +4905,24 @@ function renderLogs() {
     tbody.innerHTML = filteredLogs.map(log => {
         const idToMatch = log.userId || log.user_id;
         const trUser = mockUsers.find(u => u.id === idToMatch);
+        const rawTimestamp = log.timestamp ? new Date(log.timestamp) : null;
+        const timestampLabel = rawTimestamp && !Number.isNaN(rawTimestamp.getTime())
+            ? rawTimestamp.toLocaleString()
+            : 'Unknown date';
+        const actionLabel = escapeHtml(log.action || 'Unknown Action');
+        const detailsLabel = escapeHtml(log.details || '');
+        const userLabel = escapeHtml(trUser?.name || idToMatch || 'Unknown User');
         return `
             <tr>
-                <td class="text-muted"><small>${new Date(log.timestamp).toLocaleString()}</small></td>
+                <td class="text-muted"><small>${timestampLabel}</small></td>
                 <td>
                     <div style="display:flex;align-items:center;gap:0.5rem">
                         <span style="font-size:1.2rem">${getRoleIcon(trUser?.role)}</span>
-                        ${trUser?.name || idToMatch || 'Unknown User'}
+                        ${userLabel}
                     </div>
                 </td>
-                <td><strong>${log.action}</strong></td>
-                <td>${log.details}</td>
+                <td><strong>${actionLabel}</strong></td>
+                <td>${detailsLabel}</td>
             </tr>
         `;
     }).join('') || '<tr><td colspan="4" class="text-center text-muted">No log entries for this action.</td></tr>';
