@@ -252,27 +252,6 @@
                             <button class="btn btn-secondary inventory-toolbar-btn" id="inventory-search-btn" type="button">
                                 <i class="ph ph-magnifying-glass"></i> Search
                             </button>
-                            <button class="btn btn-secondary inventory-toolbar-btn hidden" id="inventory-filter-toggle-btn" type="button" aria-expanded="false" aria-controls="inventory-filter-panel">
-                                <i class="ph ph-funnel-simple"></i> Filter
-                            </button>
-                        </div>
-                        <div id="inventory-filter-panel" class="inventory-filter-panel hidden" aria-hidden="true">
-                            <div class="inventory-filter-type-tabs" role="tablist" aria-label="Inventory filter type">
-                                <button type="button" class="inventory-filter-type-btn is-active" data-filter-type="category" aria-pressed="true">Category</button>
-                                <button type="button" class="inventory-filter-type-btn" data-filter-type="brand" aria-pressed="false">Brand</button>
-                                <button type="button" class="inventory-filter-type-btn" data-filter-type="supplier" aria-pressed="false">Supplier</button>
-                            </div>
-                            <div class="inventory-smart-filters">
-                                <select id="inventory-filter-category" class="form-control inventory-filter-select" multiple size="5" aria-label="Filter by category"></select>
-                                <select id="inventory-filter-brand" class="form-control inventory-filter-select hidden" multiple size="5" aria-label="Filter by brand"></select>
-                                <select id="inventory-filter-supplier" class="form-control inventory-filter-select hidden" multiple size="5" aria-label="Filter by supplier"></select>
-                            </div>
-                        </div>
-                        <div class="inventory-filter-chips-bar">
-                            <div id="inventory-active-filter-chips" class="inventory-active-filter-chips"></div>
-                            <button class="btn btn-secondary" id="inventory-clear-filters-btn">
-                                <i class="ph ph-eraser"></i> Clear All
-                            </button>
                         </div>
                         <div id="inventory-results-meta" class="inventory-results-meta text-muted">Loading inventory...</div>
                         <div class="inventory-secondary-controls" style="display:flex;gap:1rem;">
@@ -441,9 +420,6 @@
                         <div class="flex" style="gap: 1rem;">
                             <button class="btn btn-secondary" id="view-requests-btn">
                                 <i class="ph ph-lifebuoy"></i> Open Requests Tab
-                            </button>
-                            <button class="btn btn-secondary" id="change-privileged-password-btn">
-                                <i class="ph ph-lock-key"></i> Change Privileged Password
                             </button>
                             <div class="view-toggles"
                                 style="display: none; gap: 0.5rem; border-right: 1px solid var(--glass-border); padding-right: 1rem;">

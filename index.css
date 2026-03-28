@@ -393,6 +393,20 @@ h6 {
     border-bottom: 1px solid var(--glass-border);
 }
 
+.user-profile.profile-action-enabled {
+    cursor: pointer;
+    transition: background-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.user-profile.profile-action-enabled:hover {
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.user-profile.profile-action-enabled:focus-visible {
+    outline: none;
+    box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.22);
+}
+
 .avatar {
     width: 48px;
     height: 48px;

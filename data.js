@@ -1112,6 +1112,35 @@ async function updateProjectInSupabase(projectId, updates) {
 }
 
 /**
+ * Delete project row (also clears collaborators to avoid FK dependency issues).
+ */
+async function deleteProjectFromSupabase(projectId) {
+    if (!projectId) return false;
+
+    const { error: collabError } = await dbClient
+        .from('project_collaborators')
+        .delete()
+        .eq('project_id', projectId);
+
+    if (collabError) {
+        console.error('Error deleting project collaborators:', collabError);
+        return false;
+    }
+
+    const { error } = await dbClient
+        .from('projects')
+        .delete()
+        .eq('id', projectId);
+
+    if (error) {
+        console.error('Error deleting project:', error);
+        return false;
+    }
+
+    return true;
+}
+
+/**
  * Add project item out to project_items_out table
  */
 async function addProjectItemOutToSupabase(itemOut) {
@@ -1196,6 +1225,55 @@ async function updateProjectItemOutDueDateInSupabase(projectItemOutId, dueDate) 
         return null;
     }
     return data?.[0] || null;
+}
+
+/**
+ * Move an existing signed-out row to another project.
+ * Uses row id when available; falls back to composite delete + insert.
+ */
+async function moveProjectItemOutToProjectInSupabase({
+    projectItemOutId,
+    fromProjectId,
+    toProjectId,
+    itemId,
+    quantity,
+    signoutDate,
+    dueDate,
+    assignedToUserId,
+    signedOutByUserId
+}) {
+    if (!toProjectId) return null;
+
+    if (projectItemOutId) {
+        const { data, error } = await dbClient
+            .from('project_items_out')
+            .update({ project_id: toProjectId })
+            .eq('id', projectItemOutId)
+            .select();
+
+        if (!error) return data?.[0] || null;
+
+        console.error('Error moving project item by id, falling back to delete/insert:', error);
+    }
+
+    const removed = await returnItemByCompositeToSupabase({
+        projectId: fromProjectId,
+        itemId,
+        signoutDate,
+        quantity
+    });
+
+    if (!removed) return null;
+
+    return addProjectItemOutToSupabase({
+        projectId: toProjectId,
+        itemId,
+        quantity,
+        signoutDate,
+        dueDate,
+        assignedToUserId,
+        signedOutByUserId
+    });
 }
 
 /**

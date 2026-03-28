@@ -71,6 +71,7 @@ const submitHelpBtn = document.getElementById('submit-help-btn');
 // DOM Elements - Sidebar & Profile
 const userNameEl = document.getElementById('user-name');
 const userRoleEl = document.getElementById('user-role');
+const userProfileEl = document.querySelector('.user-profile');
 const navBtns = document.querySelectorAll('.nav-btn[data-target]');
 const logoutBtn = document.getElementById('logout-btn');
 const pageTitle = document.getElementById('page-title');
@@ -89,13 +90,7 @@ let ordersStudentViewEnabled = localStorage.getItem(ordersStudentViewStorageKey)
     : localStorage.getItem(ordersStudentViewStorageKey) === 'true';
 
 let inventorySmartSearchTerm = '';
-let inventorySelectedCategories = [];
-let inventorySelectedBrands = [];
-let inventorySelectedSuppliers = [];
 let inventorySearchDebounceTimer = null;
-let inventoryFiltersEnabled = false;
-let inventoryFilterPanelVisible = false;
-let inventoryActiveFilterType = 'category';
 let ordersTabMode = 'all';
 
 // Modals & Toasts
@@ -1927,6 +1922,20 @@ function applyOrdersNavVisibility() {
     else navOrders.classList.add('hidden');
 }
 
+function setProfilePrivilegedActionState(isEnabled) {
+    if (!userProfileEl) return;
+    userProfileEl.classList.toggle('profile-action-enabled', !!isEnabled);
+    if (isEnabled) {
+        userProfileEl.setAttribute('title', 'Change Privileged Password');
+        userProfileEl.setAttribute('role', 'button');
+        userProfileEl.setAttribute('tabindex', '0');
+    } else {
+        userProfileEl.removeAttribute('title');
+        userProfileEl.removeAttribute('role');
+        userProfileEl.removeAttribute('tabindex');
+    }
+}
+
 function login(user) {
     currentUser = user;
     privilegedSessionAuthenticated = false;
@@ -1975,7 +1984,7 @@ function login(user) {
         document.getElementById('manage-categories-btn')?.classList.add('hidden');
         document.getElementById('manage-visibility-tags-btn')?.classList.add('hidden');
         document.getElementById('bulk-import-items-btn')?.classList.add('hidden');
-        document.getElementById('change-privileged-password-btn')?.classList.add('hidden');
+        setProfilePrivilegedActionState(false);
     } else {
         navLogs.classList.remove('hidden');
         navUsers.classList.remove('hidden');
@@ -1985,7 +1994,7 @@ function login(user) {
         document.getElementById('manage-categories-btn')?.classList.remove('hidden');
         document.getElementById('manage-visibility-tags-btn')?.classList.remove('hidden');
         document.getElementById('bulk-import-items-btn')?.classList.remove('hidden');
-        document.getElementById('change-privileged-password-btn')?.classList.remove('hidden');
+        setProfilePrivilegedActionState(true);
     }
 
     // Role-based Add Item / Create Project UI logic
@@ -2121,7 +2130,7 @@ function runPrivilegedStartupAudit() {
     const privilegedHash = getUserPrivilegedPasswordHash(currentUser);
     if (privilegedHash) return;
 
-    showToast('No privileged password set for this account. Open Users > Change Privileged Password.', 'warning');
+    showToast('No privileged password set for this account. Click your profile in the sidebar to set one.', 'warning');
 }
 
 function getPrivilegedPasswordStorageKey(userId) {
@@ -3064,25 +3073,9 @@ function openItemPreviewModal(itemId) {
 function renderInventory() {
     const tbody = document.getElementById('inventory-table-body');
     const searchInput = document.getElementById('inventory-smart-search');
-    const categorySelect = document.getElementById('inventory-filter-category');
-    const brandSelect = document.getElementById('inventory-filter-brand');
-    const supplierSelect = document.getElementById('inventory-filter-supplier');
     const resultsMeta = document.getElementById('inventory-results-meta');
 
     if (searchInput) inventorySmartSearchTerm = String(searchInput.value || '').trim().toLowerCase();
-    if (inventoryFiltersEnabled) {
-        if (categorySelect) inventorySelectedCategories = Array.from(categorySelect.selectedOptions).map(option => option.value);
-        if (brandSelect) inventorySelectedBrands = Array.from(brandSelect.selectedOptions).map(option => option.value);
-        if (supplierSelect) inventorySelectedSuppliers = Array.from(supplierSelect.selectedOptions).map(option => option.value);
-    } else {
-        inventorySelectedCategories = [];
-        inventorySelectedBrands = [];
-        inventorySelectedSuppliers = [];
-    }
-
-    populateInventorySmartFilterOptions();
-    applyInventoryFilterUiState();
-    renderInventoryFilterChips();
 
     let filtered = currentUser.role === 'student'
         ? inventoryItems.filter(item => canUserSeeItem(currentUser, item))
@@ -3103,29 +3096,14 @@ function renderInventory() {
         });
     }
 
-    if (inventorySelectedCategories.length > 0) {
-        const selectedSet = new Set(inventorySelectedCategories);
-        filtered = filtered.filter(item => selectedSet.has(String(item.category || 'Uncategorized')));
-    }
-
-    if (inventorySelectedBrands.length > 0) {
-        const selectedSet = new Set(inventorySelectedBrands);
-        filtered = filtered.filter(item => selectedSet.has(String(item.brand || 'Unspecified')));
-    }
-
-    if (inventorySelectedSuppliers.length > 0) {
-        const selectedSet = new Set(inventorySelectedSuppliers);
-        filtered = filtered.filter(item => selectedSet.has(String(item.supplier || 'Unspecified')));
-    }
-
     if (resultsMeta) {
         resultsMeta.textContent = filtered.length === 0
-            ? 'No matching items found. Adjust search or clear filters.'
+            ? 'No matching items found. Adjust your search.'
             : `Showing ${filtered.length} item${filtered.length === 1 ? '' : 's'}.`;
     }
 
     if (filtered.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">No items match your current search/filters.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">No items match your current search.</td></tr>';
         return;
     }
 
@@ -3241,142 +3219,7 @@ function renderInventory() {
     });
 }
 
-function getUniqueInventoryValues(mapper) {
-    return [...new Set((inventoryItems || []).map(mapper))].sort((a, b) => a.localeCompare(b));
-}
-
-function syncSelectValues(selectEl, selectedValues) {
-    if (!selectEl) return;
-    const selectedSet = new Set(selectedValues || []);
-    Array.from(selectEl.options).forEach(option => {
-        option.selected = selectedSet.has(option.value);
-    });
-}
-
-function populateInventorySmartFilterOptions() {
-    const categorySelect = document.getElementById('inventory-filter-category');
-    const brandSelect = document.getElementById('inventory-filter-brand');
-    const supplierSelect = document.getElementById('inventory-filter-supplier');
-
-    if (!categorySelect || !brandSelect || !supplierSelect) return;
-
-    const categories = getUniqueInventoryValues(item => String(item.category || 'Uncategorized'));
-    const brands = getUniqueInventoryValues(item => String(item.brand || 'Unspecified'));
-    const suppliers = getUniqueInventoryValues(item => String(item.supplier || 'Unspecified'));
-
-    categorySelect.innerHTML = categories.map(value => `<option value="${escapeHtml(value)}">Category: ${escapeHtml(value)}</option>`).join('');
-    brandSelect.innerHTML = brands.map(value => `<option value="${escapeHtml(value)}">Brand: ${escapeHtml(value)}</option>`).join('');
-    supplierSelect.innerHTML = suppliers.map(value => `<option value="${escapeHtml(value)}">Supplier: ${escapeHtml(value)}</option>`).join('');
-
-    syncSelectValues(categorySelect, inventorySelectedCategories);
-    syncSelectValues(brandSelect, inventorySelectedBrands);
-    syncSelectValues(supplierSelect, inventorySelectedSuppliers);
-}
-
-function renderInventoryFilterChips() {
-    const chipsWrap = document.getElementById('inventory-active-filter-chips');
-    const clearBtn = document.getElementById('inventory-clear-filters-btn');
-    if (!chipsWrap || !clearBtn) return;
-
-    const chips = [];
-
-    inventorySelectedCategories.forEach(value => chips.push({ type: 'category', value, label: `Category: ${value}` }));
-    inventorySelectedBrands.forEach(value => chips.push({ type: 'brand', value, label: `Brand: ${value}` }));
-    inventorySelectedSuppliers.forEach(value => chips.push({ type: 'supplier', value, label: `Supplier: ${value}` }));
-
-    if (inventorySmartSearchTerm) {
-        chips.push({ type: 'search', value: inventorySmartSearchTerm, label: `Search: ${inventorySmartSearchTerm}` });
-    }
-
-    chipsWrap.innerHTML = chips.length === 0
-        ? '<span class="text-muted" style="font-size:0.82rem;">No active filters.</span>'
-        : chips.map(chip => `
-            <span class="inventory-filter-chip">
-                ${escapeHtml(chip.label)}
-                <button type="button" data-chip-type="${chip.type}" data-chip-value="${escapeHtml(chip.value)}" aria-label="Remove filter">
-                    <i class="ph ph-x"></i>
-                </button>
-            </span>
-        `).join('');
-
-    clearBtn.disabled = chips.length === 0;
-
-    chipsWrap.querySelectorAll('[data-chip-type]').forEach(btn => {
-        btn.addEventListener('click', () => {
-            const chipType = btn.getAttribute('data-chip-type');
-            const chipValue = btn.getAttribute('data-chip-value') || '';
-
-            if (chipType === 'search') {
-                inventorySmartSearchTerm = '';
-                const searchInput = document.getElementById('inventory-smart-search');
-                if (searchInput) searchInput.value = '';
-            }
-            if (chipType === 'category') inventorySelectedCategories = inventorySelectedCategories.filter(value => value !== chipValue);
-            if (chipType === 'brand') inventorySelectedBrands = inventorySelectedBrands.filter(value => value !== chipValue);
-            if (chipType === 'supplier') inventorySelectedSuppliers = inventorySelectedSuppliers.filter(value => value !== chipValue);
-
-            renderInventory();
-        });
-    });
-}
-
-function clearInventorySmartFilters() {
-    inventorySmartSearchTerm = '';
-    inventorySelectedCategories = [];
-    inventorySelectedBrands = [];
-    inventorySelectedSuppliers = [];
-    inventoryFilterPanelVisible = false;
-
-    const searchInput = document.getElementById('inventory-smart-search');
-    if (searchInput) searchInput.value = '';
-
-    applyInventoryFilterUiState();
-    renderInventory();
-}
-
-function setInventoryActiveFilterType(filterType) {
-    const allowed = new Set(['category', 'brand', 'supplier']);
-    if (!allowed.has(filterType)) return;
-
-    inventoryActiveFilterType = filterType;
-    applyInventoryFilterUiState();
-}
-
-function applyInventoryFilterUiState() {
-    const filterToggleBtn = document.getElementById('inventory-filter-toggle-btn');
-    const filterPanel = document.getElementById('inventory-filter-panel');
-    const filterSelects = {
-        category: document.getElementById('inventory-filter-category'),
-        brand: document.getElementById('inventory-filter-brand'),
-        supplier: document.getElementById('inventory-filter-supplier')
-    };
-
-    if (filterToggleBtn) {
-        filterToggleBtn.classList.toggle('hidden', !inventoryFiltersEnabled);
-        filterToggleBtn.setAttribute('aria-expanded', inventoryFiltersEnabled && inventoryFilterPanelVisible ? 'true' : 'false');
-    }
-
-    if (filterPanel) {
-        const showPanel = inventoryFiltersEnabled && inventoryFilterPanelVisible;
-        filterPanel.classList.toggle('hidden', !showPanel);
-        filterPanel.setAttribute('aria-hidden', showPanel ? 'false' : 'true');
-    }
-
-    Object.entries(filterSelects).forEach(([filterType, selectEl]) => {
-        if (!selectEl) return;
-        selectEl.classList.toggle('hidden', filterType !== inventoryActiveFilterType);
-    });
-
-    document.querySelectorAll('.inventory-filter-type-btn').forEach(btn => {
-        const isActive = btn.dataset.filterType === inventoryActiveFilterType;
-        btn.classList.toggle('is-active', isActive);
-        btn.setAttribute('aria-pressed', isActive ? 'true' : 'false');
-    });
-}
-
 function runInventorySearchAction() {
-    inventoryFiltersEnabled = true;
-    applyInventoryFilterUiState();
     renderInventory();
 }
 
@@ -3421,24 +3264,6 @@ document.getElementById('inventory-search-btn')?.addEventListener('click', () =>
     runInventorySearchAction();
 });
 
-document.getElementById('inventory-filter-toggle-btn')?.addEventListener('click', () => {
-    if (!inventoryFiltersEnabled) return;
-    inventoryFilterPanelVisible = !inventoryFilterPanelVisible;
-    applyInventoryFilterUiState();
-});
-
-document.querySelectorAll('.inventory-filter-type-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-        const filterType = String(btn.dataset.filterType || '').toLowerCase();
-        setInventoryActiveFilterType(filterType);
-    });
-});
-
-document.getElementById('inventory-filter-category')?.addEventListener('change', () => renderInventory());
-document.getElementById('inventory-filter-brand')?.addEventListener('change', () => renderInventory());
-document.getElementById('inventory-filter-supplier')?.addEventListener('change', () => renderInventory());
-document.getElementById('inventory-clear-filters-btn')?.addEventListener('click', clearInventorySmartFilters);
-
 document.getElementById('request-item-btn')?.addEventListener('click', () => {
     openOrderRequestModal({
         initialName: document.getElementById('inventory-smart-search')?.value || ''
@@ -3464,6 +3289,13 @@ function canCurrentUserManageProject(project) {
     if (!currentUser || !project) return false;
     if (currentUser.role !== 'student') return true;
     return project.ownerId === currentUser.id;
+}
+
+function canCurrentUserDeleteProject(project) {
+    if (!currentUser || !project) return false;
+    const role = String(currentUser.role || '').toLowerCase();
+    if (!['teacher', 'developer'].includes(role)) return false;
+    return !String(project.id || '').startsWith('PERS-');
 }
 
 function getProjectOwnerCandidates() {
@@ -3557,6 +3389,7 @@ function openProjectItemsModal(projectId) {
                 </li>
             `;
         }).join('');
+    const canManageProject = canCurrentUserManageProject(project);
 
     const html = `
         <div class="modal-header">
@@ -3569,17 +3402,182 @@ function openProjectItemsModal(projectId) {
         </div>
         <div class="modal-footer">
             <button class="btn btn-secondary" onclick="closeModal()">Close</button>
-            <button class="btn btn-primary" id="open-project-tab-btn" data-project-id="${project.id}">
-                <i class="ph ph-folder-open"></i> Open In Projects
-            </button>
+            ${canManageProject ? `
+            <button class="btn btn-primary" id="edit-project-from-details-btn" data-project-id="${project.id}">
+                <i class="ph ph-pencil-simple"></i> Edit Project
+            </button>` : ''}
         </div>
     `;
 
     openModal(html);
-    document.getElementById('open-project-tab-btn')?.addEventListener('click', async (e) => {
+    document.getElementById('edit-project-from-details-btn')?.addEventListener('click', (e) => {
         const id = e.currentTarget.getAttribute('data-project-id');
         closeModal();
-        await openProjectsPageAndFocusProject(id);
+        openEditProjectModal(id);
+    });
+}
+
+function getDeleteProjectMoveTargets(sourceProjectId) {
+    return (projects || []).filter(project => {
+        if (!project || project.id === sourceProjectId) return false;
+        if (String(project.id || '').startsWith('PERS-')) return false;
+        return canCurrentUserViewProject(project);
+    });
+}
+
+async function performProjectDeleteWithReturnAll(project) {
+    const itemsToReturn = Array.isArray(project.itemsOut) ? [...project.itemsOut] : [];
+
+    for (const io of itemsToReturn) {
+        const signoutId = io.id || `${io.itemId}-${io.signoutDate}-${io.quantity}`;
+        const returned = await returnProjectItem(project.id, signoutId, {
+            skipConfirmPrompt: true,
+            suppressFlag: true,
+            suppressToast: true
+        });
+        if (!returned) {
+            showToast('Failed to sign in one or more items. Project was not deleted.', 'error');
+            return false;
+        }
+    }
+
+    return true;
+}
+
+async function performProjectDeleteWithMove(project, targetProjectId) {
+    const target = projects.find(p => p.id === targetProjectId);
+    if (!target) {
+        showToast('Please choose a valid target project.', 'error');
+        return false;
+    }
+
+    const itemsToMove = Array.isArray(project.itemsOut) ? [...project.itemsOut] : [];
+    for (const io of itemsToMove) {
+        const moved = await moveProjectItemOutToProjectInSupabase({
+            projectItemOutId: io.id || null,
+            fromProjectId: project.id,
+            toProjectId: targetProjectId,
+            itemId: io.itemId,
+            quantity: io.quantity,
+            signoutDate: io.signoutDate,
+            dueDate: io.dueDate,
+            assignedToUserId: io.assignedToUserId || project.ownerId,
+            signedOutByUserId: io.signedOutByUserId || null
+        });
+        if (!moved) {
+            showToast('Failed to move one or more assigned items. Project was not deleted.', 'error');
+            return false;
+        }
+    }
+
+    addLog(currentUser.id, 'Move Project Items', `Moved ${itemsToMove.length} assigned item row(s) from ${project.name} to ${target.name} before delete.`);
+    return true;
+}
+
+async function deleteProjectAfterResolution(project, actionLabel) {
+    const deleted = await deleteProjectFromSupabase(project.id);
+    if (!deleted) {
+        showToast('Failed to delete project in Supabase.', 'error');
+        return false;
+    }
+
+    await Promise.all([
+        refreshProjectsFromSupabase(),
+        refreshInventoryFromSupabase()
+    ]);
+
+    renderProjects();
+    loadDashboard();
+    addLog(currentUser.id, 'Delete Project', `${project.name} deleted (${actionLabel}).`);
+    showToast(`Project deleted (${actionLabel}).`, 'success');
+    closeModal();
+    return true;
+}
+
+function openDeleteProjectModal(projectId) {
+    const project = projects.find(p => p.id === projectId);
+    if (!project) {
+        showToast('Project not found.', 'error');
+        return;
+    }
+
+    if (!canCurrentUserDeleteProject(project)) {
+        showToast('Only teachers and developers can delete projects.', 'error');
+        return;
+    }
+
+    const assignedRows = Array.isArray(project.itemsOut) ? project.itemsOut.length : 0;
+    const assignedQty = (project.itemsOut || []).reduce((total, io) => total + (parseInt(io.quantity, 10) || 0), 0);
+    const moveTargets = getDeleteProjectMoveTargets(project.id);
+    const moveOptionsHtml = moveTargets.map(target => `<option value="${target.id}">${target.name}</option>`).join('');
+
+    const hasAssignedItems = assignedRows > 0;
+    const html = `
+        <div class="modal-header">
+            <h3>Delete Project: ${project.name}</h3>
+            <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
+        </div>
+        <div class="modal-body">
+            ${hasAssignedItems ? `
+                <div class="glass-panel" style="padding:1rem;border:1px solid rgba(245,158,11,0.45);background:rgba(245,158,11,0.12);margin-bottom:1rem;">
+                    <strong class="text-warning">Warning:</strong>
+                    <div class="text-sm" style="margin-top:0.5rem;">
+                        This project has <strong>${assignedRows}</strong> signed-out row(s) totaling <strong>${assignedQty}</strong> item(s).
+                        Choose what to do with assigned items before deleting.
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Move assigned items to another project</label>
+                    <select id="delete-project-move-target" class="form-control">
+                        <option value="">Select target project...</option>
+                        ${moveOptionsHtml}
+                    </select>
+                </div>
+            ` : `
+                <p class="text-secondary">
+                    This project has no assigned items and can be deleted immediately.
+                </p>
+            `}
+        </div>
+        <div class="modal-footer" style="display:flex;gap:0.65rem;flex-wrap:wrap;justify-content:flex-end;">
+            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            ${hasAssignedItems ? `
+                <button class="btn btn-secondary" id="delete-project-return-btn" data-project-id="${project.id}">
+                    <i class="ph ph-arrow-counter-clockwise"></i> Sign In All Then Delete
+                </button>
+                <button class="btn btn-primary" id="delete-project-move-btn" data-project-id="${project.id}">
+                    <i class="ph ph-arrow-bend-up-right"></i> Move Items Then Delete
+                </button>
+            ` : `
+                <button class="btn btn-danger" id="delete-project-confirm-btn" data-project-id="${project.id}">
+                    <i class="ph ph-trash"></i> Delete Project
+                </button>
+            `}
+        </div>
+    `;
+
+    openModal(html);
+
+    document.getElementById('delete-project-confirm-btn')?.addEventListener('click', async () => {
+        await deleteProjectAfterResolution(project, 'no assigned items');
+    });
+
+    document.getElementById('delete-project-return-btn')?.addEventListener('click', async () => {
+        const resolved = await performProjectDeleteWithReturnAll(project);
+        if (!resolved) return;
+        await deleteProjectAfterResolution(project, 'items signed in');
+    });
+
+    document.getElementById('delete-project-move-btn')?.addEventListener('click', async () => {
+        const targetProjectId = document.getElementById('delete-project-move-target')?.value || '';
+        if (!targetProjectId) {
+            showToast('Select a target project first.', 'error');
+            return;
+        }
+
+        const resolved = await performProjectDeleteWithMove(project, targetProjectId);
+        if (!resolved) return;
+        await deleteProjectAfterResolution(project, `items moved to ${targetProjectId}`);
     });
 }
 
@@ -3686,6 +3684,49 @@ function findOpenSignoutRecordsByItemCode(scanCode) {
     return matches;
 }
 
+function normalizeUserIdToken(value) {
+    return String(value || '').trim().toUpperCase();
+}
+
+function getMatchAssignedUserId(match) {
+    if (!match || !match.io || !match.project) return '';
+    return normalizeUserIdToken(match.io.assignedToUserId || match.project.ownerId);
+}
+
+function splitMatchesForCurrentUser(matches) {
+    const currentUserId = normalizeUserIdToken(currentUser?.id);
+    const mine = [];
+    const others = [];
+
+    (matches || []).forEach(match => {
+        if (getMatchAssignedUserId(match) === currentUserId) mine.push(match);
+        else others.push(match);
+    });
+
+    return { mine, others };
+}
+
+function isGroupReturnExceptionForMatch(match) {
+    if (!match || !match.project || !currentUser) return false;
+    const actorId = normalizeUserIdToken(currentUser.id);
+    const assignedId = getMatchAssignedUserId(match);
+    if (!actorId || !assignedId) return false;
+    if (String(match.project.id || '').startsWith('PERS-')) return false;
+    return doesUserBelongToProject(actorId, match.project) && doesUserBelongToProject(assignedId, match.project);
+}
+
+function canCurrentUserSelectScannedMatch(match) {
+    if (!currentUser || !match) return false;
+    if (currentUser.role !== 'student') return true;
+
+    const actorId = normalizeUserIdToken(currentUser.id);
+    const assignedId = getMatchAssignedUserId(match);
+    if (actorId && assignedId && actorId === assignedId) return true;
+
+    // Student exception: allow on-behalf selection only within the same project group.
+    return isGroupReturnExceptionForMatch(match);
+}
+
 function getPreferredScannedSignout(matches) {
     if (!Array.isArray(matches) || matches.length === 0) return null;
 
@@ -3757,6 +3798,11 @@ async function handleBasketModeScan(scanCode) {
 }
 
 async function openScannedItemActionModal(match) {
+    if (!canCurrentUserSelectScannedMatch(match)) {
+        showToast('You can only sign in your own scanned items unless both users are in the same project group.', 'error');
+        return;
+    }
+
     const { project, io, item } = match;
     const assignedToUserId = io.assignedToUserId || project.ownerId;
     const assignedToUser = mockUsers.find(u => u.id === assignedToUserId);
@@ -3848,6 +3894,77 @@ async function openScannedItemActionModal(match) {
     });
 }
 
+function openScannedSignoutChooserModal(matches, options = {}) {
+    const list = Array.isArray(matches) ? matches : [];
+    if (list.length === 0) {
+        showToast('No active sign-out records to choose from.', 'error');
+        return;
+    }
+
+    const title = String(options.title || 'Choose Sign-out Record');
+    const subtitle = String(options.subtitle || 'Multiple active sign-outs match this scan. Select the correct record.');
+    const rowsHtml = list.map((match, idx) => {
+        const project = match.project;
+        const io = match.io;
+        const item = match.item;
+        const assignedToUserId = io.assignedToUserId || project.ownerId;
+        const assignedToUser = mockUsers.find(u => u.id === assignedToUserId);
+        const assignedName = assignedToUser ? assignedToUser.name : assignedToUserId;
+        const projectLabel = String(project.id || '').startsWith('PERS-') ? 'Personal' : project.name;
+        const signedOutAt = io.signoutDate ? new Date(io.signoutDate) : null;
+
+        return `
+            <li class="stock-item dashboard-project-summary" style="border-left-width:3px;">
+                <div>
+                    <strong>${item ? item.name : io.itemId} (x${io.quantity})</strong>
+                    <small class="text-muted block">Assigned To: ${assignedName}</small>
+                    <small class="text-muted block">Project: ${projectLabel}</small>
+                    <small class="text-muted block">Signed Out: ${signedOutAt ? signedOutAt.toLocaleString() : 'Unknown'}</small>
+                </div>
+                <button class="btn btn-secondary scan-choose-match-btn" data-idx="${idx}">
+                    Select
+                </button>
+            </li>
+        `;
+    }).join('');
+
+    const html = `
+        <div class="modal-header">
+            <h3>${title}</h3>
+            <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
+        </div>
+        <div class="modal-body" style="max-height:65vh;overflow-y:auto;">
+            <p class="text-muted mb-4">${subtitle}</p>
+            <ul class="stock-list">${rowsHtml}</ul>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+        </div>
+    `;
+
+    openModal(html);
+    document.querySelectorAll('.scan-choose-match-btn').forEach(btn => {
+        btn.addEventListener('click', async e => {
+            const idx = parseInt(e.currentTarget.getAttribute('data-idx'), 10);
+            const chosen = list[idx];
+            if (!chosen) return;
+            if (!canCurrentUserSelectScannedMatch(chosen)) {
+                showToast('You are not allowed to select that sign-out record.', 'error');
+                return;
+            }
+            await openScannedItemActionModal(chosen);
+        });
+    });
+}
+
+async function quickSignInScannedMatch(match) {
+    if (!match || !match.project || !match.io) return false;
+    const signoutId = match.io.id || `${match.io.itemId}-${match.io.signoutDate}-${match.io.quantity}`;
+    return returnProjectItem(match.project.id, signoutId, {
+        skipConfirmPrompt: true
+    });
+}
+
 async function handleInSessionBarcodeScan(rawCode) {
     const code = String(rawCode || '').trim().toUpperCase();
     if (!code || !currentUser) return;
@@ -3878,13 +3995,36 @@ async function handleInSessionBarcodeScan(rawCode) {
         return;
     }
 
-    const preferred = getPreferredScannedSignout(matches);
-    if (!preferred) {
-        showToast('No active sign-out record found for that item.', 'error');
+    const { mine, others } = splitMatchesForCurrentUser(matches);
+
+    if (mine.length === 1) {
+        await quickSignInScannedMatch(mine[0]);
         return;
     }
 
-    await openScannedItemActionModal(preferred);
+    if (mine.length > 1) {
+        openScannedSignoutChooserModal(mine, {
+            title: 'Choose Your Item',
+            subtitle: 'Multiple sign-out records are assigned to you for this scan. Select the one you are returning.'
+        });
+        return;
+    }
+
+    const eligibleOthers = currentUser.role === 'student'
+        ? others.filter(canCurrentUserSelectScannedMatch)
+        : others;
+
+    if (eligibleOthers.length === 0) {
+        showToast('No eligible sign-out record found for you. Students can only return non-self items for users in the same project group.', 'error');
+        return;
+    }
+
+    openScannedSignoutChooserModal(eligibleOthers, {
+        title: 'Select Assigned Record',
+        subtitle: currentUser.role === 'student'
+            ? 'This scan is not assigned to you. You may only select users in your same project group.'
+            : 'This scan is not currently assigned to you. Select the correct user/project before signing in.'
+    });
 }
 
 async function returnProjectItem(projectId, signoutId, options = {}) {
@@ -3955,7 +4095,9 @@ async function returnProjectItem(projectId, signoutId, options = {}) {
     if (currentUser.id !== assignedToUserId) {
         const assignedName = assignedToUser ? assignedToUser.name : assignedToUserId;
         addLog(currentUser.id, 'Return On Behalf', `Returned ${io.quantity}x ${item ? item.name : io.itemId} for ${assignedName} in ${project.name}`);
-        showToast(`Returned on behalf of ${assignedName}.`, 'warning');
+        if (!options.suppressToast) {
+            showToast(`Returned on behalf of ${assignedName}.`, 'warning');
+        }
 
         const shouldFlag = !options.suppressFlag && (
             options.forceFlagOnBehalf === true ||
@@ -3982,7 +4124,9 @@ async function returnProjectItem(projectId, signoutId, options = {}) {
         }
     } else {
         addLog(currentUser.id, 'Return Item', `Returned ${io.quantity}x ${item ? item.name : io.itemId} in ${project.name}`);
-        showToast('Item signed back in.', 'success');
+        if (!options.suppressToast) {
+            showToast('Item signed back in.', 'success');
+        }
     }
 
     renderProjects();
@@ -4109,6 +4253,9 @@ function renderProjects() {
                         ${canManage ? `<button class="btn btn-secondary text-sm edit-proj-btn" data-id="${proj.id}">
                             <i class="ph ph-pencil-simple"></i> Edit
                         </button>` : ''}
+                        ${canCurrentUserDeleteProject(proj) ? `<button class="btn btn-danger text-sm delete-proj-btn" data-id="${proj.id}">
+                            <i class="ph ph-trash"></i> Delete
+                        </button>` : ''}
                         <button class="btn btn-secondary text-sm view-proj-btn" data-id="${proj.id}">Details</button>
                     </div>
                 </div>
@@ -4127,6 +4274,13 @@ function renderProjects() {
         btn.addEventListener('click', (e) => {
             const id = e.currentTarget.getAttribute('data-id');
             openProjectItemsModal(id);
+        });
+    });
+
+    document.querySelectorAll('.delete-proj-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const id = e.currentTarget.getAttribute('data-id');
+            openDeleteProjectModal(id);
         });
     });
 
@@ -5551,14 +5705,23 @@ document.getElementById('view-requests-btn')?.addEventListener('click', () => {
     });
 });
 
-document.getElementById('change-privileged-password-btn')?.addEventListener('click', async () => {
+async function handleProfilePrivilegedPasswordAction() {
     if (!userCanPerformPrivilegedActions()) {
-        showToast('Only teacher/developer accounts can change the privileged password.', 'error');
         return;
     }
 
     const changed = await promptSetPrivilegedActionPassword('updating your privileged password');
     if (changed) privilegedStartupAuditShown = true;
+}
+
+userProfileEl?.addEventListener('click', async () => {
+    await handleProfilePrivilegedPasswordAction();
+});
+
+userProfileEl?.addEventListener('keydown', async e => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    e.preventDefault();
+    await handleProfilePrivilegedPasswordAction();
 });
 
 function normalizeImportText(value) {
