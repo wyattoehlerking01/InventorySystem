@@ -2008,6 +2008,7 @@ function login(user) {
         applyOrdersNavVisibility();
         document.getElementById('manage-categories-btn')?.classList.add('hidden');
         document.getElementById('manage-visibility-tags-btn')?.classList.add('hidden');
+        document.getElementById('bulk-manage-items-btn')?.classList.add('hidden');
         document.getElementById('bulk-import-items-btn')?.classList.add('hidden');
         setProfilePrivilegedActionState(false);
     } else {
@@ -2018,6 +2019,7 @@ function login(user) {
         applyOrdersNavVisibility();
         document.getElementById('manage-categories-btn')?.classList.remove('hidden');
         document.getElementById('manage-visibility-tags-btn')?.classList.remove('hidden');
+        document.getElementById('bulk-manage-items-btn')?.classList.remove('hidden');
         document.getElementById('bulk-import-items-btn')?.classList.remove('hidden');
         setProfilePrivilegedActionState(true);
     }
@@ -3158,7 +3160,8 @@ function renderInventory() {
     }
 
     if (filtered.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">No items match your current search.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No items match your current search.</td></tr>';
+        updateInventoryBulkSelectionState();
         return;
     }
 
@@ -3186,9 +3189,11 @@ function renderInventory() {
                 </td>
                 <td>${categoryLabel}<br><small class="text-muted">${brandLabel}</small></td>
                 <td class="text-muted font-mono" style="font-size:0.8rem">${item.sku}</td>
-                <td style="display:flex;align-items:center;gap:0.75rem;white-space:nowrap;">
-                    <strong>${Math.max(0, parseInt(item?.stock, 10) || 0)}/${getItemTotalQuantity(item)}</strong>
-                    <span class="status-badge ${statusClass}">${currentStatus}</span>
+                <td class="inventory-stock-status-cell">
+                    <div class="inventory-stock-status-content">
+                        <span class="inventory-stock-value">${Math.max(0, parseInt(item?.stock, 10) || 0)} of ${getItemTotalQuantity(item)}</span>
+                        <span class="status-badge ${statusClass}">${currentStatus}</span>
+                    </div>
                 </td>
                 <td>
                     <div class="flex inventory-item-actions" style="gap:0.65rem;flex-wrap:nowrap;">
@@ -3212,6 +3217,14 @@ function renderInventory() {
     // Select all items checkbox
     document.getElementById('select-all-items')?.addEventListener('change', (e) => {
         document.querySelectorAll('.item-select-cb').forEach(cb => { cb.checked = e.target.checked; });
+        updateInventoryBulkSelectionState();
+    });
+
+    document.querySelectorAll('.item-select-cb').forEach(cb => {
+        cb.addEventListener('change', () => {
+            syncInventorySelectAllState();
+            updateInventoryBulkSelectionState();
+        });
     });
 
     // Select all users checkbox
@@ -3274,6 +3287,43 @@ function renderInventory() {
             }
         });
     });
+
+    syncInventorySelectAllState();
+    updateInventoryBulkSelectionState();
+}
+
+function getSelectedInventoryItemIds() {
+    return Array.from(document.querySelectorAll('.item-select-cb:checked'))
+        .map(cb => String(cb.getAttribute('data-id') || '').trim())
+        .filter(Boolean);
+}
+
+function syncInventorySelectAllState() {
+    const selectAll = document.getElementById('select-all-items');
+    if (!selectAll) return;
+
+    const itemCbs = Array.from(document.querySelectorAll('.item-select-cb'));
+    if (itemCbs.length === 0) {
+        selectAll.checked = false;
+        selectAll.indeterminate = false;
+        return;
+    }
+
+    const checkedCount = itemCbs.filter(cb => cb.checked).length;
+    selectAll.checked = checkedCount > 0 && checkedCount === itemCbs.length;
+    selectAll.indeterminate = checkedCount > 0 && checkedCount < itemCbs.length;
+}
+
+function updateInventoryBulkSelectionState() {
+    const bulkBtn = document.getElementById('bulk-manage-items-btn');
+    if (!bulkBtn) return;
+
+    const selectedCount = getSelectedInventoryItemIds().length;
+    const label = selectedCount > 0
+        ? `Bulk Tags/Categories (${selectedCount})`
+        : 'Bulk Tags/Categories';
+
+    bulkBtn.innerHTML = `<i class="ph ph-stack"></i> ${label}`;
 }
 
 function runInventorySearchAction() {
@@ -3325,6 +3375,139 @@ document.getElementById('inventory-search-btn')?.addEventListener('click', () =>
 document.getElementById('request-item-btn')?.addEventListener('click', () => {
     openOrderRequestModal({
         initialName: document.getElementById('inventory-smart-search')?.value || ''
+    });
+});
+
+document.getElementById('bulk-manage-items-btn')?.addEventListener('click', async () => {
+    if (currentUser?.role === 'student') {
+        showToast('You do not have permission to bulk manage items.', 'error');
+        return;
+    }
+
+    const selectedIds = getSelectedInventoryItemIds();
+    if (selectedIds.length === 0) {
+        showToast('Select at least one inventory item using the checkboxes first.', 'error');
+        return;
+    }
+
+    const authOk = await ensurePrivilegedActionAuth('bulk managing inventory categories and visibility tags');
+    if (!authOk) return;
+
+    const categoryOptions = [
+        '<option value="__KEEP__">Keep existing categories</option>',
+        ...(categories.length > 0
+            ? categories.map(c => `<option value="${c}">${c}</option>`)
+            : ['<option value="Uncategorized">Uncategorized</option>'])
+    ].join('');
+
+    const tagOptions = visibilityTags.length > 0
+        ? visibilityTags.map(tag => `
+            <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;margin-bottom:0.4rem;">
+                <input type="checkbox" class="bulk-item-tag-cb" value="${tag}"> ${tag}
+            </label>
+        `).join('')
+        : '<p class="text-muted text-sm">No visibility tags defined. Use Visibility Tags to create some first.</p>';
+
+    const html = `
+        <div class="modal-header">
+            <h3>Bulk Apply Tags/Categories</h3>
+            <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
+        </div>
+        <div class="modal-body">
+            <p class="text-secondary mb-4">Applying changes to <strong>${selectedIds.length}</strong> selected item(s).</p>
+            <div class="form-group">
+                <label>Category</label>
+                <select id="bulk-item-category" class="form-control">
+                    ${categoryOptions}
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Visibility Tags</label>
+                <select id="bulk-tag-mode" class="form-control" style="margin-bottom:0.6rem;">
+                    <option value="keep">Keep existing tags</option>
+                    <option value="add">Add selected tags</option>
+                    <option value="replace">Replace with selected tags</option>
+                    <option value="remove">Remove selected tags</option>
+                </select>
+                <div class="glass-panel" style="padding:0.75rem;max-height:220px;overflow:auto;">
+                    ${tagOptions}
+                </div>
+            </div>
+            <small class="text-muted">Tip: choose "Replace" with no tags selected to clear all tags from selected items.</small>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            <button class="btn btn-primary" id="confirm-bulk-item-apply">Apply Changes</button>
+        </div>
+    `;
+
+    openModal(html);
+
+    const confirmBtn = document.getElementById('confirm-bulk-item-apply');
+    confirmBtn?.addEventListener('click', () => {
+        withButtonPending(confirmBtn, 'Applying...', async () => {
+            const categoryValue = document.getElementById('bulk-item-category')?.value || '__KEEP__';
+            const tagMode = document.getElementById('bulk-tag-mode')?.value || 'keep';
+            const selectedTags = Array.from(document.querySelectorAll('.bulk-item-tag-cb:checked')).map(cb => cb.value);
+
+            const shouldUpdateCategory = categoryValue !== '__KEEP__';
+            const shouldUpdateTags = tagMode !== 'keep';
+
+            if (!shouldUpdateCategory && !shouldUpdateTags) {
+                showToast('Choose at least one category or tag operation before applying.', 'error');
+                return;
+            }
+
+            let categoryUpdatedCount = 0;
+            let categoryFailedCount = 0;
+            let tagsUpdatedCount = 0;
+            let tagsFailedCount = 0;
+
+            for (const itemId of selectedIds) {
+                const item = inventoryItems.find(i => i.id === itemId);
+                if (!item) continue;
+
+                if (shouldUpdateCategory) {
+                    const categoryResult = await updateItemInSupabase(itemId, { category: categoryValue });
+                    if (categoryResult) categoryUpdatedCount++;
+                    else categoryFailedCount++;
+                }
+
+                if (shouldUpdateTags) {
+                    const existingTags = Array.isArray(item.visibilityTags) ? item.visibilityTags : [];
+                    let nextTags = existingTags;
+
+                    if (tagMode === 'replace') {
+                        nextTags = [...selectedTags];
+                    } else if (tagMode === 'add') {
+                        nextTags = Array.from(new Set([...existingTags, ...selectedTags]));
+                    } else if (tagMode === 'remove') {
+                        const removeSet = new Set(selectedTags);
+                        nextTags = existingTags.filter(tag => !removeSet.has(tag));
+                    }
+
+                    const tagsUpdated = await setItemVisibilityTagsInSupabase(itemId, nextTags);
+                    if (tagsUpdated) tagsUpdatedCount++;
+                    else tagsFailedCount++;
+                }
+            }
+
+            await refreshInventoryFromSupabase();
+            closeModal();
+            renderInventory();
+
+            const updates = [];
+            if (shouldUpdateCategory) updates.push(`category updated on ${categoryUpdatedCount}`);
+            if (shouldUpdateTags) updates.push(`tags updated on ${tagsUpdatedCount}`);
+
+            const failures = categoryFailedCount + tagsFailedCount;
+            const failureText = failures > 0
+                ? ` (${failures} update${failures === 1 ? '' : 's'} failed)`
+                : '';
+
+            showToast(`Bulk apply complete: ${updates.join(', ')} item(s)${failureText}.`, failures > 0 ? 'warning' : 'success');
+            addLog(currentUser.id, 'Bulk Item Update', `Bulk-applied category/tags to ${selectedIds.length} inventory items.`);
+        });
     });
 });
 

@@ -879,19 +879,9 @@ h6 {
     min-width: 220px;
 }
 
-.inventory-smart-search-wrap i {
-    position: absolute;
-    left: 0.85rem;
-    top: 50%;
-    transform: translateY(-50%);
-    color: var(--text-muted);
-    font-size: 1rem;
-    pointer-events: none;
-}
-
 .inventory-smart-search-input {
     min-height: 40px;
-    padding-left: 3rem;
+    padding-left: 0.9rem;
     font-size: 0.98rem;
 }
 
@@ -1150,6 +1140,23 @@ h6 {
 .data-table td {
     padding: 1rem 1.5rem;
     border-bottom: 1px solid var(--glass-border);
+    vertical-align: middle;
+}
+
+.inventory-stock-status-cell {
+    white-space: nowrap;
+}
+
+.inventory-stock-status-content {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.45rem;
+}
+
+.inventory-stock-value {
+    font-weight: 600;
+    line-height: 1.2;
 }
 
 .data-table th {
