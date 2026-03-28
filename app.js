@@ -1472,15 +1472,6 @@ async function checkoutBasket() {
     for (const basketItem of inventoryBasket) {
         const item = inventoryItems.find(i => i.id === basketItem.id);
         if (item) {
-            item.stock -= basketItem.qty;
-            
-            // Update stock in Supabase
-            await updateItemInSupabase(item.id, { stock: item.stock }).catch(err => {
-                console.error('Failed to update item stock in Supabase:', err);
-            });
-            
-            _trackItemSignout(item, basketItem.qty);
-
             const signoutData = {
                 id: generateId('OUT'),
                 itemId: item.id,
@@ -1491,9 +1482,6 @@ async function checkoutBasket() {
                 signedOutByUserId: currentUser.id
             };
 
-            project.itemsOut.push(signoutData);
-            
-            // Save project item out to Supabase
             const savedSignout = await addProjectItemOutToSupabase({
                 projectId: project.id,
                 itemId: item.id,
@@ -1502,14 +1490,42 @@ async function checkoutBasket() {
                 dueDate: signoutData.dueDate,
                 assignedToUserId: signoutData.assignedToUserId,
                 signedOutByUserId: signoutData.signedOutByUserId
-            }).catch(err => {
-                console.error('Failed to save project item out to Supabase:', err);
-                return null;
             });
 
-            if (savedSignout?.id) {
-                signoutData.id = savedSignout.id;
+            if (!savedSignout) {
+                showToast(`Checkout failed while creating sign-out for ${item.name}. No stock was changed for that item.`, 'error');
+                await Promise.all([refreshProjectsFromSupabase(), refreshInventoryFromSupabase()]);
+                renderInventory();
+                renderDashboard();
+                renderProjects();
+                return;
             }
+
+            const nextStock = item.stock - basketItem.qty;
+            const stockUpdated = await updateItemInSupabase(item.id, { stock: nextStock });
+            if (!stockUpdated) {
+                if (savedSignout?.id) {
+                    await returnItemToSupabase(savedSignout.id);
+                } else {
+                    await returnItemByCompositeToSupabase({
+                        projectId: project.id,
+                        itemId: item.id,
+                        signoutDate: signoutData.signoutDate,
+                        quantity: signoutData.quantity
+                    });
+                }
+                showToast(`Checkout failed while updating stock for ${item.name}. Sign-out was rolled back.`, 'error');
+                await Promise.all([refreshProjectsFromSupabase(), refreshInventoryFromSupabase()]);
+                renderInventory();
+                renderDashboard();
+                renderProjects();
+                return;
+            }
+
+            item.stock = nextStock;
+            signoutData.id = savedSignout?.id || signoutData.id;
+            project.itemsOut.push(signoutData);
+            _trackItemSignout(item, basketItem.qty);
 
             if (project.id.startsWith('PERS-')) {
                 addLog(currentUser.id, 'Personal Sign-out', `Bulk signed out ${basketItem.qty}x ${item.name} to self`);
@@ -1520,6 +1536,7 @@ async function checkoutBasket() {
     }
 
     inventoryBasket = [];
+    await Promise.all([refreshProjectsFromSupabase(), refreshInventoryFromSupabase()]);
     showToast('Bulk checkout complete!', 'success');
     toggleBasket(false);
     renderInventory();
@@ -3265,10 +3282,11 @@ function scheduleInventoryRender() {
 }
 
 function getItemOutQuantity(itemId) {
+    const normalizedItemId = String(itemId || '');
     return projects.reduce((total, project) => {
         const outItems = Array.isArray(project?.itemsOut) ? project.itemsOut : [];
         const qtyForItem = outItems
-            .filter(entry => entry.itemId === itemId)
+            .filter(entry => String(entry.itemId || '') === normalizedItemId)
             .reduce((sum, entry) => sum + (parseInt(entry.quantity, 10) || 0), 0);
 
         return total + qtyForItem;
@@ -4511,15 +4529,6 @@ function openSignOutModal(itemId) {
                 }
             }
 
-            // Update stock
-            item.stock -= qty;
-            await updateItemInSupabase(item.id, { stock: item.stock }).catch(err => {
-                console.error('Failed to update item stock in Supabase:', err);
-            });
-
-            // Update Project
-            // Ensure project is set (already selected above)
-
             // For students, assign to project owner; for teachers, use selected assignee
             const finalAssignedToUserId = assignedToUserId || project.ownerId;
 
@@ -4532,7 +4541,6 @@ function openSignOutModal(itemId) {
                 assignedToUserId: finalAssignedToUserId,
                 signedOutByUserId: currentUser.id
             };
-            project.itemsOut.push(signoutData);
 
             const savedSignout = await addProjectItemOutToSupabase({
                 projectId: project.id,
@@ -4542,24 +4550,47 @@ function openSignOutModal(itemId) {
                 dueDate: signoutData.dueDate,
                 assignedToUserId: signoutData.assignedToUserId,
                 signedOutByUserId: signoutData.signedOutByUserId
-            }).catch(err => {
-                console.error('Failed to save signout in Supabase:', err);
-                return null;
             });
 
-            if (savedSignout?.id) {
-                signoutData.id = savedSignout.id;
+            if (!savedSignout) {
+                showToast('Failed to save sign-out record. Item stock was not changed.', 'error');
+                return;
             }
+
+            const nextStock = item.stock - qty;
+            const stockUpdated = await updateItemInSupabase(item.id, { stock: nextStock });
+            if (!stockUpdated) {
+                if (savedSignout?.id) {
+                    await returnItemToSupabase(savedSignout.id);
+                } else {
+                    await returnItemByCompositeToSupabase({
+                        projectId: project.id,
+                        itemId: item.id,
+                        signoutDate: signoutData.signoutDate,
+                        quantity: signoutData.quantity
+                    });
+                }
+                showToast('Failed to update stock. Sign-out was rolled back.', 'error');
+                return;
+            }
+
+            item.stock = nextStock;
+            signoutData.id = savedSignout?.id || signoutData.id;
+            project.itemsOut.push(signoutData);
 
             _trackItemSignout(item, qty);
             // Log activity
             addLog(currentUser.id, 'Sign Out', `Signed out ${qty}x ${item.name} (SKU: ${item.sku}) for Project: ${String(project.id || '').startsWith('PERS-') ? 'My Items (Personal)' : project.name}`);
+
+            await Promise.all([refreshProjectsFromSupabase(), refreshInventoryFromSupabase()]);
 
             showToast(`Successfully signed out ${qty} items!`, 'success');
             closeModal();
 
             // Refresh current views
             renderInventory();
+            renderProjects();
+            loadDashboard();
         } else {
             showToast('Invalid quantity!', 'error');
         }
