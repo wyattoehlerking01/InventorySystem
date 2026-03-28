@@ -72,6 +72,7 @@ const submitHelpBtn = document.getElementById('submit-help-btn');
 const userNameEl = document.getElementById('user-name');
 const userRoleEl = document.getElementById('user-role');
 const userProfileEl = document.querySelector('.user-profile');
+const userAvatarEl = document.getElementById('user-avatar');
 const navBtns = document.querySelectorAll('.nav-btn[data-target]');
 const logoutBtn = document.getElementById('logout-btn');
 const pageTitle = document.getElementById('page-title');
@@ -2118,7 +2119,8 @@ function setActiveNavForTarget(targetId) {
 }
 
 function userCanPerformPrivilegedActions() {
-    return !!currentUser && ['teacher', 'developer'].includes(currentUser.role);
+    const normalizedRole = String(currentUser?.role || '').trim().toLowerCase();
+    return !!currentUser && ['teacher', 'developer'].includes(normalizedRole);
 }
 
 function runPrivilegedStartupAudit() {
@@ -2505,6 +2507,10 @@ async function switchPage(targetId, title) {
 
     if (isBasketOpen && targetId !== 'inventory') {
         toggleBasket(false);
+    }
+
+    if (targetId !== 'users') {
+        document.querySelector('#page-users .table-container')?.classList.remove('grid-view-active');
     }
 
     _trackPageVisit(targetId);
@@ -4253,9 +4259,6 @@ function renderProjects() {
                         ${canManage ? `<button class="btn btn-secondary text-sm edit-proj-btn" data-id="${proj.id}">
                             <i class="ph ph-pencil-simple"></i> Edit
                         </button>` : ''}
-                        ${canCurrentUserDeleteProject(proj) ? `<button class="btn btn-danger text-sm delete-proj-btn" data-id="${proj.id}">
-                            <i class="ph ph-trash"></i> Delete
-                        </button>` : ''}
                         <button class="btn btn-secondary text-sm view-proj-btn" data-id="${proj.id}">Details</button>
                     </div>
                 </div>
@@ -4274,13 +4277,6 @@ function renderProjects() {
         btn.addEventListener('click', (e) => {
             const id = e.currentTarget.getAttribute('data-id');
             openProjectItemsModal(id);
-        });
-    });
-
-    document.querySelectorAll('.delete-proj-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            const id = e.currentTarget.getAttribute('data-id');
-            openDeleteProjectModal(id);
         });
     });
 
@@ -5020,9 +5016,18 @@ function renderLogs() {
         const actions = [...new Set(activityLogs.map(log => log.action).filter(Boolean))]
             .sort((a, b) => a.localeCompare(b));
 
-        actionFilter.innerHTML =
-            '<option value="all">View All Actions</option>' +
-            actions.map(action => `<option value="${action}">${action}</option>`).join('');
+        actionFilter.innerHTML = '';
+        const allOption = document.createElement('option');
+        allOption.value = 'all';
+        allOption.textContent = 'View All Actions';
+        actionFilter.appendChild(allOption);
+
+        actions.forEach(action => {
+            const opt = document.createElement('option');
+            opt.value = String(action || '');
+            opt.textContent = String(action || '');
+            actionFilter.appendChild(opt);
+        });
 
         actionFilter.value = actions.includes(previousValue) || previousValue === 'all'
             ? previousValue
@@ -5707,6 +5712,7 @@ document.getElementById('view-requests-btn')?.addEventListener('click', () => {
 
 async function handleProfilePrivilegedPasswordAction() {
     if (!userCanPerformPrivilegedActions()) {
+        showToast('Only teacher/developer accounts can change the privileged password.', 'error');
         return;
     }
 
@@ -5714,9 +5720,17 @@ async function handleProfilePrivilegedPasswordAction() {
     if (changed) privilegedStartupAuditShown = true;
 }
 
-userProfileEl?.addEventListener('click', async () => {
-    await handleProfilePrivilegedPasswordAction();
-});
+function bindProfilePrivilegedActionTrigger(element) {
+    element?.addEventListener('click', async e => {
+        e.preventDefault();
+        e.stopPropagation();
+        await handleProfilePrivilegedPasswordAction();
+    });
+}
+
+bindProfilePrivilegedActionTrigger(userProfileEl);
+bindProfilePrivilegedActionTrigger(userNameEl);
+bindProfilePrivilegedActionTrigger(userAvatarEl);
 
 userProfileEl?.addEventListener('keydown', async e => {
     if (e.key !== 'Enter' && e.key !== ' ') return;
@@ -6400,6 +6414,10 @@ function openEditProjectModal(projectId) {
         </div>
         <div class="modal-footer">
             <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            ${canCurrentUserDeleteProject(project) ? `
+            <button class="btn btn-danger" id="edit-proj-delete">
+                <i class="ph ph-trash"></i> Delete Project
+            </button>` : ''}
             <button class="btn btn-primary" id="confirm-edit-proj">Save Changes</button>
         </div>
     `;
@@ -6414,6 +6432,11 @@ function openEditProjectModal(projectId) {
             selectedOwnerId: ownerSelect.value,
             selectedCollaborators: project.collaborators || []
         }) || '<p class="text-sm text-muted">No eligible student collaborators.</p>';
+    });
+
+    document.getElementById('edit-proj-delete')?.addEventListener('click', () => {
+        closeModal();
+        openDeleteProjectModal(project.id);
     });
 
     document.getElementById('confirm-edit-proj').addEventListener('click', async () => {

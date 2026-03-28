@@ -520,7 +520,7 @@ h6 {
 }
 
 /* User Grid View Overrides */
-.grid-view-active .data-table {
+#page-users .table-container.grid-view-active .data-table {
     display: flex;
     flex-wrap: wrap;
     gap: 1.5rem;
@@ -528,15 +528,15 @@ h6 {
     padding: 0;
 }
 
-.grid-view-active .data-table thead {
+#page-users .table-container.grid-view-active .data-table thead {
     display: none;
 }
 
-.grid-view-active .data-table tbody {
+#page-users .table-container.grid-view-active .data-table tbody {
     display: contents;
 }
 
-.grid-view-active .user-row-container {
+#page-users .table-container.grid-view-active .user-row-container {
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -550,33 +550,33 @@ h6 {
     transition: all var(--transition-fast);
 }
 
-.grid-view-active .user-row-container:hover {
+#page-users .table-container.grid-view-active .user-row-container:hover {
     background: rgba(255, 255, 255, 0.05);
     transform: translateY(-2px);
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
 }
 
-.grid-view-active .user-row-container td {
+#page-users .table-container.grid-view-active .user-row-container td {
     border: none;
     padding: 0.25rem 0;
     display: block;
     width: 100%;
 }
 
-.grid-view-active .user-row-container td:first-child .avatar {
+#page-users .table-container.grid-view-active .user-row-container td:first-child .avatar {
     width: 64px !important;
     height: 64px !important;
     font-size: 2rem !important;
     margin: 0 auto 0.5rem auto;
 }
 
-.grid-view-active .user-row-container td:nth-child(2) {
+#page-users .table-container.grid-view-active .user-row-container td:nth-child(2) {
     font-size: 0.8rem;
     color: var(--text-muted);
     order: 2;
 }
 
-.grid-view-active .user-row-container td:nth-child(3) {
+#page-users .table-container.grid-view-active .user-row-container td:nth-child(3) {
     font-size: 1.1rem;
     font-weight: 600;
     color: var(--text-primary);
@@ -584,7 +584,7 @@ h6 {
     margin-bottom: 0.25rem;
 }
 
-.grid-view-active .user-row-container td:nth-child(4) {
+#page-users .table-container.grid-view-active .user-row-container td:nth-child(4) {
     order: 3;
     margin-top: 0.5rem;
     padding-bottom: 1rem;
@@ -592,11 +592,30 @@ h6 {
     margin-bottom: 0.5rem;
 }
 
-.grid-view-active .user-row-container td:last-child {
+#page-users .table-container.grid-view-active .user-row-container td:last-child {
     order: 4;
     display: flex;
     justify-content: center;
     gap: 0.5rem;
+}
+
+#page-logs .data-table {
+    display: table;
+    table-layout: fixed;
+    width: 100%;
+}
+
+#page-logs .data-table thead {
+    display: table-header-group;
+}
+
+#page-logs .data-table tbody {
+    display: table-row-group;
+}
+
+#page-logs .data-table th,
+#page-logs .data-table td {
+    word-break: break-word;
 }
 
 /* Content Area */
