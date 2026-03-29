@@ -5,6 +5,20 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title id="app-page-title">LCHS Inventory System</title>
+    <script>
+        (function redirectGitHubPagesRootToKiosk() {
+            const pagesHost = 'wyattoehlerking01.github.io';
+            const projectRoot = '/InventorySystem';
+            const kioskTarget = `${projectRoot}/kiosk/`;
+            const host = String(window.location.hostname || '').toLowerCase();
+            const path = String(window.location.pathname || '').replace(/\/+$/, '');
+            const atProjectRoot = path === projectRoot || path === `${projectRoot}/index.html`;
+
+            if (host === pagesHost && atProjectRoot) {
+                window.location.replace(kioskTarget);
+            }
+        }());
+    </script>
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
