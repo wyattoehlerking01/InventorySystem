@@ -2619,6 +2619,28 @@ function returnToLoginView(options = {}) {
 
 logoutBtn.addEventListener('click', () => logout());
 
+function handleSidebarProfileAuthClick(event) {
+    if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+    }
+
+    if (!currentUser || !userCanPerformPrivilegedActions()) return;
+
+    const hasExistingPassword = !!getUserPrivilegedPasswordHash(currentUser);
+    const reason = hasExistingPassword
+        ? 'updating your authentication password'
+        : 'setting your authentication password';
+
+    promptSetPrivilegedActionPassword(reason, false);
+}
+
+userProfileEl?.addEventListener('click', handleSidebarProfileAuthClick);
+userProfileEl?.addEventListener('keydown', event => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    handleSidebarProfileAuthClick(event);
+});
+
 /* =======================================
    ROUTING
    ======================================= */
@@ -2653,20 +2675,12 @@ function getPrivilegedPasswordStorageKey(userId) {
 function getUserPrivilegedPasswordHash(user) {
     if (!user) return '';
 
-    const direct = String(
+    return String(
         user.privileged_password_hash
         || user.privileged_auth_password_hash
         || user.staff_password_hash
         || ''
     ).trim();
-    if (direct) return direct;
-
-    try {
-        const stored = localStorage.getItem(getPrivilegedPasswordStorageKey(user.id));
-        return String(stored || '').trim();
-    } catch {
-        return '';
-    }
 }
 
 function setUserPrivilegedPasswordHash(userId, hashValue) {
@@ -2712,16 +2726,9 @@ async function savePrivilegedPasswordHashForCurrentUser(hashValue) {
             if (!updated) continue;
             savedToSupabase = true;
             currentUser = { ...currentUser, ...updated, privileged_password_hash: normalizedHash };
+            setUserPrivilegedPasswordHash(currentUser.id, normalizedHash);
             break;
         }
-    }
-
-    setUserPrivilegedPasswordHash(currentUser.id, normalizedHash);
-
-    try {
-        localStorage.setItem(getPrivilegedPasswordStorageKey(currentUser.id), normalizedHash);
-    } catch {
-        // Ignore storage failures.
     }
 
     return savedToSupabase;
@@ -2821,13 +2828,13 @@ async function promptSetPrivilegedActionPassword(reason = 'this action', forcedR
             }
 
             const savedToSupabase = await savePrivilegedPasswordHashForCurrentUser(passwordHash);
-            privilegedSessionAuthenticated = true;
-
             if (!savedToSupabase) {
-                showToast('Password saved locally. Server update unavailable for this field.', 'warning');
-            } else {
-                showToast('Authentication password saved.', 'success');
+                showErr('Failed to save authentication password to server. Check your connection and permissions, then try again.');
+                return;
             }
+
+            privilegedSessionAuthenticated = true;
+            showToast('Authentication password saved.', 'success');
             addLog(currentUser.id, 'Privileged Password Updated', 'Updated authentication password for privileged actions.');
             finish(true);
         };
@@ -6315,7 +6322,7 @@ async function openUserModal(editId = null) {
 
     const html = `
         <div class="modal-header">
-            <h3>${isEdit ? 'Edit User' : 'Add New User'}${!isEdit ? ' <small style="font-size:0.8rem;color:var(--text-muted);font-weight:400;">Need many users? <button type="button" class="btn btn-secondary btn-sm" id="open-bulk-from-add-user" style="padding:0.1rem 0.45rem;margin-left:0.35rem;vertical-align:middle;">Add In Bulk</button></small>' : ''}</h3>
+            <h3>${isEdit ? 'Edit User' : 'Add New User'}</h3>
             <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
         </div>
         <div class="modal-body">
@@ -6373,11 +6380,6 @@ async function openUserModal(editId = null) {
     `;
 
     openModal(html);
-
-    document.getElementById('open-bulk-from-add-user')?.addEventListener('click', () => {
-        closeModal();
-        document.getElementById('bulk-users-btn')?.click();
-    });
 
     document.getElementById('user-role-input').addEventListener('change', (e) => {
         const permsContainer = document.getElementById('perms-container');
@@ -7188,6 +7190,9 @@ function sanitizeModalHtml(contentHtml) {
             const name = String(attr.name || '').toLowerCase();
             const value = String(attr.value || '').trim();
             if (name.startsWith('on')) {
+                if (name === 'onclick' && /\bcloseModal\s*\(/.test(value)) {
+                    node.setAttribute('data-modal-close', '1');
+                }
                 node.removeAttribute(attr.name);
                 return;
             }
@@ -7235,6 +7240,13 @@ modalContainer.addEventListener('click', (e) => {
 
 // Keep modal interactions isolated from global document/login click handlers.
 dynamicModal.addEventListener('click', (e) => {
+    const closeTrigger = e.target?.closest?.('[data-modal-close="1"], .close-btn');
+    if (closeTrigger) {
+        e.preventDefault();
+        e.stopPropagation();
+        closeModal();
+        return;
+    }
     e.stopPropagation();
 });
 dynamicModal.addEventListener('mousedown', (e) => {

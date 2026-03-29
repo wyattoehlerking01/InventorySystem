@@ -2255,20 +2255,12 @@ function getPrivilegedPasswordStorageKey(userId) {
 function getUserPrivilegedPasswordHash(user) {
     if (!user) return '';
 
-    const direct = String(
+    return String(
         user.privileged_password_hash
         || user.privileged_auth_password_hash
         || user.staff_password_hash
         || ''
     ).trim();
-    if (direct) return direct;
-
-    try {
-        const stored = localStorage.getItem(getPrivilegedPasswordStorageKey(user.id));
-        return String(stored || '').trim();
-    } catch {
-        return '';
-    }
 }
 
 function setUserPrivilegedPasswordHash(userId, hashValue) {
@@ -2320,16 +2312,9 @@ async function savePrivilegedPasswordHashForCurrentUser(hashValue) {
             if (!updated) continue;
             savedToSupabase = true;
             currentUser = { ...currentUser, ...updated, privileged_password_hash: normalizedHash };
+            setUserPrivilegedPasswordHash(currentUser.id, normalizedHash);
             break;
         }
-    }
-
-    setUserPrivilegedPasswordHash(currentUser.id, normalizedHash);
-
-    try {
-        localStorage.setItem(getPrivilegedPasswordStorageKey(currentUser.id), normalizedHash);
-    } catch {
-        // Ignore storage failures.
     }
 
     return savedToSupabase;
@@ -2429,13 +2414,13 @@ async function promptSetPrivilegedActionPassword(reason = 'this action', forcedR
             }
 
             const savedToSupabase = await savePrivilegedPasswordHashForCurrentUser(passwordHash);
-            privilegedSessionAuthenticated = true;
-
             if (!savedToSupabase) {
-                showToast('Password saved locally. Server update unavailable for this field.', 'warning');
-            } else {
-                showToast('Authentication password saved.', 'success');
+                showErr('Failed to save authentication password to server. Check your connection and permissions, then try again.');
+                return;
             }
+
+            privilegedSessionAuthenticated = true;
+            showToast('Authentication password saved.', 'success');
             finish(true);
         };
 

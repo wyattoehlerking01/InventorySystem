@@ -71,6 +71,18 @@ GitHub Pages usage:
 - Publish the repository as static files, then open `.../kiosk/` or `.../manage/` directly.
 - Root (`/`) behavior is unchanged in this first implementation step.
 
+How-To User Manuals
+
+Role-based how-to manuals are available at the repository root:
+
+- [Student User Guide](STUDENT_GUIDE.md)
+- [Teacher User Guide](TEACHER_GUIDE.md)
+
+Recommended usage:
+
+- Students should follow the Student User Guide for kiosk workflows (`/kiosk/`).
+- Teachers should follow the Teacher User Guide for management workflows (`/manage/`).
+
 Kiosk Listener Security Configuration
 
 The realtime kiosk listener now uses safe command execution for lock overlays.
