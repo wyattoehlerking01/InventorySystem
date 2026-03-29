@@ -108,6 +108,10 @@ function normalizeUserNameToken(value) {
     return String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
+function normalizeIdentityToken(value) {
+    return String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
 async function hashAuthPasswordValue(passwordValue) {
     const value = String(passwordValue || '').trim();
     if (!value) return '';
@@ -201,37 +205,68 @@ async function doesPasswordMatchUser(user, enteredPassword) {
     return { matched: false, configured: true };
 }
 
-async function fetchUserByNameFromSupabase(username) {
-    const client = requireSupabaseClient('fetchUserByNameFromSupabase');
-    const normalizedName = normalizeUserNameToken(username);
-    if (!normalizedName) return null;
+function findUserByIdentityLocal(identity) {
+    const normalizedIdentity = normalizeIdentityToken(identity);
+    if (!normalizedIdentity) return null;
 
-    const rawName = String(username || '').trim();
+    return (mockUsers || []).find(user => {
+        const tokens = [
+            normalizeIdentityToken(user?.name),
+            normalizeIdentityToken(user?.id),
+            normalizeIdentityToken(user?.email),
+            normalizeIdentityToken(user?.username)
+        ].filter(Boolean);
+        return tokens.includes(normalizedIdentity);
+    }) || null;
+}
 
-    const exactResult = await client
-        .from('users')
-        .select('*')
-        .eq('name', rawName);
+async function fetchUserByIdentityFromSupabase(identity) {
+    const client = requireSupabaseClient('fetchUserByIdentityFromSupabase');
+    const rawIdentity = String(identity || '').trim();
+    const normalizedIdentity = normalizeIdentityToken(rawIdentity);
+    if (!normalizedIdentity) return null;
 
-    if (exactResult.error) {
-        console.error('Error fetching user by exact name:', exactResult.error);
-        throw exactResult.error;
+    const queryPlans = [
+        { column: 'name', op: 'eq', value: rawIdentity },
+        { column: 'id', op: 'eq', value: rawIdentity },
+        { column: 'email', op: 'eq', value: rawIdentity },
+        { column: 'username', op: 'eq', value: rawIdentity },
+        { column: 'name', op: 'ilike', value: rawIdentity },
+        { column: 'email', op: 'ilike', value: rawIdentity },
+        { column: 'username', op: 'ilike', value: rawIdentity }
+    ];
+
+    for (const plan of queryPlans) {
+        const builder = client.from('users').select('*');
+        const result = plan.op === 'ilike'
+            ? await builder.ilike(plan.column, plan.value)
+            : await builder.eq(plan.column, plan.value);
+
+        if (result.error) {
+            const errorCode = String(result.error.code || '').trim();
+            const message = String(result.error.message || '').toLowerCase();
+            const missingColumnError = errorCode === '42703'
+                || (message.includes('column') && message.includes('does not exist'));
+            if (!missingColumnError) {
+                console.warn(`Identity lookup failed for users.${plan.column}:`, result.error);
+            }
+            continue;
+        }
+
+        const matched = (result.data || []).find(user => {
+            const tokens = [
+                normalizeIdentityToken(user?.name),
+                normalizeIdentityToken(user?.id),
+                normalizeIdentityToken(user?.email),
+                normalizeIdentityToken(user?.username)
+            ].filter(Boolean);
+            return tokens.includes(normalizedIdentity);
+        });
+
+        if (matched) return matched;
     }
 
-    const exactUser = (exactResult.data || []).find(user => normalizeUserNameToken(user?.name) === normalizedName);
-    if (exactUser) return exactUser;
-
-    const ilikeResult = await client
-        .from('users')
-        .select('*')
-        .ilike('name', rawName);
-
-    if (ilikeResult.error) {
-        console.error('Error fetching user by case-insensitive name:', ilikeResult.error);
-        throw ilikeResult.error;
-    }
-
-    return (ilikeResult.data || []).find(user => normalizeUserNameToken(user?.name) === normalizedName) || null;
+    return null;
 }
 
 async function loginWithUsernameAndPassword(username, password) {
@@ -243,7 +278,10 @@ async function loginWithUsernameAndPassword(username, password) {
             return { error: 'Username and password are required.' };
         }
 
-        const user = await fetchUserByNameFromSupabase(normalizedUsername);
+        let user = await fetchUserByIdentityFromSupabase(normalizedUsername);
+        if (!user) {
+            user = findUserByIdentityLocal(normalizedUsername);
+        }
         if (!user) {
             return { error: 'Invalid username or password.' };
         }

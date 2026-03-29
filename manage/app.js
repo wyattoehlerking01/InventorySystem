@@ -231,6 +231,41 @@ function clearFailedLoginAttempts() {
     loginRateLimit.attempts = [];
 }
 
+let loginRequestInFlight = false;
+
+async function completeAuthenticatedSession(user) {
+    if (!user) return false;
+
+    if (user.status === 'Suspended' && !isSuspensionBypassedUser(user)) {
+        showToast('Your account is suspended. Please contact a teacher.', 'error');
+        return false;
+    }
+
+    if (user.status === 'Suspended' && isSuspensionBypassedUser(user)) {
+        user.status = 'Active';
+        updateUserInSupabase(user.id, { status: 'Active' }).catch(err => {
+            console.warn('Failed to auto-reactivate suspension-bypassed developer user:', err);
+        });
+    }
+
+    clearFailedLoginAttempts();
+
+    try {
+        login(user);
+    } catch (loginError) {
+        console.error('Login transition failed:', loginError);
+        showToast('Login succeeded but dashboard failed to load.', 'error');
+        return false;
+    }
+
+    loadAllData().catch(loadError => {
+        console.error('Post-login load failed:', loadError);
+        showToast('Signed in, but data refresh failed.', 'warning');
+    });
+
+    return true;
+}
+
 function parseTimeToMinutes(timeString) {
     const [hours, minutes] = String(timeString || '').split(':').map(Number);
     if (Number.isNaN(hours) || Number.isNaN(minutes)) return null;
@@ -1846,6 +1881,7 @@ async function handleBarcodeLogin(rawId) {
 async function handleManageCredentialLogin(rawUsername, rawPassword) {
     if (!isManageMode) return;
     if (currentUser) return;
+    if (loginRequestInFlight) return;
 
     const username = String(rawUsername || '').trim();
     const password = String(rawPassword || '').trim();
@@ -1861,6 +1897,8 @@ async function handleManageCredentialLogin(rawUsername, rawPassword) {
     }
 
     if (!checkLoginRateLimit()) return;
+    loginRequestInFlight = true;
+    if (loginSubmitBtn) loginSubmitBtn.disabled = true;
 
     try {
         const loginResult = await loginWithUsernameAndPassword(username, password);
@@ -1876,37 +1914,15 @@ async function handleManageCredentialLogin(rawUsername, rawPassword) {
             showToast('Invalid username or password.', 'error');
             return;
         }
-
-        if (user.status === 'Suspended' && !isSuspensionBypassedUser(user)) {
-            showToast('Your account is suspended. Please contact a teacher.', 'error');
-            return;
-        }
-
-        if (user.status === 'Suspended' && isSuspensionBypassedUser(user)) {
-            user.status = 'Active';
-            updateUserInSupabase(user.id, { status: 'Active' }).catch(err => {
-                console.warn('Failed to auto-reactivate suspension-bypassed developer user:', err);
-            });
-        }
-
-        clearFailedLoginAttempts();
         if (passwordInput) passwordInput.value = '';
 
-        try {
-            login(user);
-        } catch (loginError) {
-            console.error('Login transition failed:', loginError);
-            showToast('Login succeeded but dashboard failed to load.', 'error');
-            return;
-        }
-
-        loadAllData().catch(loadError => {
-            console.error('Post-login load failed:', loadError);
-            showToast('Signed in, but data refresh failed.', 'warning');
-        });
+        await completeAuthenticatedSession(user);
     } catch (error) {
         console.error('Credential login lookup failed:', error);
         showToast('Database lookup failed during login.', 'error');
+    } finally {
+        loginRequestInFlight = false;
+        if (loginSubmitBtn) loginSubmitBtn.disabled = false;
     }
 }
 
