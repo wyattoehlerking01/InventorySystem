@@ -435,7 +435,7 @@ h6 {
     justify-content: center;
     font-size: 1.5rem;
     color: white;
-    box-shadow: 0 4px 10px rgba(139, 92, 246, 0.3);
+    box-shadow: 0 4px 10px rgba(5, 150, 105, 0.3);
 }
 
 .avatar-sm {
@@ -528,7 +528,7 @@ h6 {
 }
 
 .nav-btn.active {
-    background: rgba(139, 92, 246, 0.15);
+    background: rgba(5, 150, 105, 0.15);
     color: var(--accent-primary);
     border-right: 3px solid var(--accent-primary);
     border-radius: var(--radius-sm) 0 0 var(--radius-sm);
@@ -686,7 +686,7 @@ h6 {
 
 .search-bar:focus-within {
     border-color: var(--accent-primary);
-    box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.2);
+    box-shadow: 0 0 0 2px rgba(5, 150, 105, 0.2);
 }
 
 .search-bar i {
@@ -790,7 +790,7 @@ h6 {
 }
 
 .stat-icon.primary {
-    background: rgba(139, 92, 246, 0.15);
+    background: rgba(5, 150, 105, 0.15);
     color: var(--accent-primary);
 }
 
@@ -1415,7 +1415,7 @@ h6 {
 
 .project-card:hover {
     transform: translateY(-5px);
-    border-color: rgba(139, 92, 246, 0.5);
+    border-color: rgba(5, 150, 105, 0.5);
 }
 
 .project-card.active-highlight {
@@ -1473,6 +1473,44 @@ h6 {
 
 .avatars img:first-child {
     margin-left: 0;
+}
+
+/* =========================================
+   CLASS DISPLAY (CLASSROOM VIEW)
+   ========================================= */
+#page-class-display {
+    overflow-y: auto;
+    max-height: calc(100vh - 300px);
+}
+
+#class-display-container {
+    font-size: 1.1rem;
+    line-height: 1.6;
+}
+
+#class-display-container h2 {
+    margin: 0;
+    font-size: clamp(1.5rem, 5vw, 2.5rem);
+}
+
+#class-display-container h3 {
+    margin: 0;
+    font-size: clamp(1.2rem, 4vw, 1.8rem);
+}
+
+/* Optimize for large classroom displays */
+@media (min-height: 1080px) {
+    #class-display-container {
+        font-size: 1.3rem;
+    }
+    
+    #class-display-container h2 {
+        font-size: 2.2rem;
+    }
+    
+    #class-display-container h3 {
+        font-size: 1.6rem;
+    }
 }
 
 /* =========================================
@@ -1772,9 +1810,9 @@ h6 {
 .visibility-tag {
     display: inline-block;
     padding: 0.1rem 0.45rem;
-    background: rgba(139, 92, 246, 0.15);
-    color: #a78bfa;
-    border: 1px solid rgba(139, 92, 246, 0.3);
+    background: rgba(5, 150, 105, 0.15);
+    color: #10b981;
+    border: 1px solid rgba(5, 150, 105, 0.3);
     border-radius: 9999px;
     font-size: 0.68rem;
     font-weight: 600;
@@ -1802,8 +1840,8 @@ h6 {
 }
 
 .debug-modal-header {
-    background: rgba(139, 92, 246, 0.12);
-    border-bottom: 1px solid rgba(139, 92, 246, 0.3);
+    background: rgba(5, 150, 105, 0.12);
+    border-bottom: 1px solid rgba(5, 150, 105, 0.3);
     flex-shrink: 0;
     padding: 1rem 1.5rem;
     display: flex;
@@ -1837,7 +1875,7 @@ h6 {
     transition: color 0.15s;
 }
 .debug-tab:hover { color: var(--text-primary); }
-.debug-tab.active { color: #a78bfa; border-bottom-color: #a78bfa; }
+.debug-tab.active { color: #10b981; border-bottom-color: #10b981; }
 
 .debug-modal-body {
     overflow-y: auto;
@@ -1857,7 +1895,7 @@ h6 {
     font-size: 0.68rem;
     text-transform: uppercase;
     letter-spacing: 0.08em;
-    color: #a78bfa;
+    color: #10b981;
     font-weight: 700;
     margin-bottom: 0.75rem;
 }

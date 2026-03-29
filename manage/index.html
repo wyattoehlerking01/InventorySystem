@@ -170,6 +170,9 @@
                 <button class="nav-btn" data-target="projects">
                     <i class="ph ph-folder-open"></i> Projects
                 </button>
+                <button class="nav-btn restricted" id="nav-class-display" data-target="class-display">
+                    <i class="ph ph-monitor-play"></i> Class Display
+                </button>
                 <button class="nav-btn" id="nav-orders" data-target="orders">
                     <i class="ph ph-rows-plus-bottom"></i> Operations Hub
                 </button>
@@ -181,9 +184,11 @@
                 </button>
                 <button class="nav-btn restricted" id="nav-users" data-target="users">
                     <i class="ph ph-users"></i> Users
-                </button>                <button class=\"nav-btn restricted\" id=\"nav-kiosk-settings\" data-target=\"kiosk-settings\">
-                    <i class=\"ph ph-monitor-play\"></i> Kiosk Settings
-                </button>                <button class="nav-btn restricted hidden" id="nav-requests" data-target="requests">
+                </button>
+                <button class="nav-btn restricted" id="nav-kiosk-settings" data-target="kiosk-settings">
+                    <i class="ph ph-monitor-play"></i> Kiosk Settings
+                </button>
+                <button class="nav-btn restricted hidden" id="nav-requests" data-target="requests">
                     <i class="ph ph-envelope-open"></i> Requests
                 </button>
             </nav>
@@ -278,6 +283,9 @@
                             <button class="btn btn-secondary" id="bulk-import-items-btn">
                                 <i class="ph ph-upload"></i> Bulk Import
                             </button>
+                            <button class="btn btn-secondary" id="generate-barcode-labels-btn">
+                                <i class="ph ph-barcode"></i> Barcode Labels
+                            </button>
                             <button class="btn btn-secondary" id="open-basket-btn"
                                 style="background: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid rgba(10, 185, 129, 0.2)">
                                 <i class="ph ph-shopping-cart"></i> Basket (<span id="basket-count">0</span>)
@@ -319,6 +327,22 @@
 
                     <div class="projects-grid" id="projects-container">
                         <!-- Injected via JS -->
+                    </div>
+                </div>
+
+                <!-- Class Display Page (for classroom view of items out) -->
+                <div id="page-class-display" class="page hidden">
+                    <div class="action-bar">
+                        <h3>Class Display - Items Not Returned</h3>
+                        <div class="text-muted text-sm" style="font-weight: normal; margin-left: 1rem;">
+                            <i class="ph ph-info"></i> Display live status of items checked out to students
+                        </div>
+                    </div>
+                    <div id="class-display-container" class="glass-panel" style="padding: 2rem; min-height: 400px;">
+                        <div class="text-muted text-center py-8">
+                            <i class="ph ph-hourglass" style="font-size: 3rem;"></i>
+                            <p>Loading class display...</p>
+                        </div>
                     </div>
                 </div>
 

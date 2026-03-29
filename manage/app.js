@@ -148,6 +148,7 @@ const pageTitle = document.getElementById('page-title');
 const navLogs = document.getElementById('nav-logs');
 const navUsers = document.getElementById('nav-users');
 const navClasses = document.getElementById('nav-classes');
+const navClassDisplay = document.getElementById('nav-class-display');
 const navOrders = document.getElementById('nav-orders');
 
 // DOM Elements - Pages
@@ -1942,6 +1943,9 @@ document.getElementById('open-basket-btn')?.addEventListener('click', () => togg
 document.getElementById('close-basket-btn')?.addEventListener('click', () => toggleBasket(false));
 document.getElementById('checkout-basket-btn')?.addEventListener('click', openCheckoutReviewModal);
 
+// Event Listener for Barcode Labels
+document.getElementById('generate-barcode-labels-btn')?.addEventListener('click', showBarcodeLabelModal);
+
 // Init application
 document.addEventListener('DOMContentLoaded', async () => {
     loadPolicyConfig();
@@ -2493,6 +2497,7 @@ function login(user) {
         navLogs.classList.add('hidden');
         navUsers.classList.add('hidden');
         navClasses.classList.add('hidden');
+        navClassDisplay?.classList.add('hidden');
         navRequests?.classList.add('hidden');
         applyOrdersNavVisibility();
         document.getElementById('manage-categories-btn')?.classList.add('hidden');
@@ -2505,6 +2510,7 @@ function login(user) {
         navLogs.classList.remove('hidden');
         navUsers.classList.remove('hidden');
         navClasses.classList.remove('hidden');
+        navClassDisplay?.classList.remove('hidden');
         navRequests?.classList.add('hidden');
         applyOrdersNavVisibility();
         document.getElementById('manage-categories-btn')?.classList.remove('hidden');
@@ -3080,8 +3086,8 @@ async function switchPage(targetId, title) {
             showToast('You do not have access to that page.', 'error');
             return;
         }
-        const authOk = await ensurePrivilegedActionAuth(`${title || targetId} page`);
-        if (!authOk) return;
+        // No longer require privilege auth just for viewing restricted pages
+        // Auth is only needed for bulk operations and modifications
     }
 
     if (isBasketOpen && targetId !== 'inventory') {
@@ -3120,6 +3126,7 @@ async function switchPage(targetId, title) {
     if (targetId === 'dashboard') loadDashboard();
     if (targetId === 'inventory') renderInventory();
     if (targetId === 'projects') renderProjects();
+    if (targetId === 'class-display') renderClassDisplay();
     if (targetId === 'logs') renderLogs();
     if (targetId === 'users') renderUsers();
     if (targetId === 'classes') renderClasses();
@@ -6209,6 +6216,198 @@ document.getElementById('create-class-btn')?.addEventListener('click', async () 
 
 
 /* =======================================
+   CLASS DISPLAY LOGIC (for classroom visibility)
+   ======================================= */
+function renderClassDisplay() {
+    const container = document.getElementById('class-display-container');
+    if (!container) return;
+
+    // Collect all items out from non-personal projects, grouped by user
+    const itemsByUser = {};
+    const now = new Date();
+
+    projects.forEach(proj => {
+        // Skip personal projects (PERS-*)
+        if (String(proj.id || '').startsWith('PERS-')) return;
+
+        proj.itemsOut.forEach(outItem => {
+            const assignedUserId = outItem.assignedToUserId || proj.ownerId;
+            const assignedUser = mockUsers.find(u => u.id === assignedUserId);
+            const userName = assignedUser ? assignedUser.name : assignedUserId;
+
+            if (!itemsByUser[assignedUserId]) {
+                itemsByUser[assignedUserId] = {
+                    name: userName,
+                    items: []
+                };
+            }
+
+            const item = inventoryItems.find(i => i.id === outItem.itemId);
+            const dueDate = new Date(outItem.dueDate);
+            const isOverdue = dueDate < now;
+            const signoutId = outItem.id || `${outItem.itemId}-${outItem.signoutDate}-${outItem.quantity}`;
+
+            itemsByUser[assignedUserId].items.push({
+                quantity: outItem.quantity,
+                itemName: item ? item.name : 'Unknown Item',
+                itemSku: item ? item.sku : 'N/A',
+                category: item ? item.category : 'N/A',
+                dueDate,
+                isOverdue,
+                signoutDate: new Date(outItem.signoutDate),
+                projectId: proj.id,
+                signoutId,
+                outItem
+            });
+        });
+    });
+
+    // Sort users alphabetically
+    const sortedUserIds = Object.keys(itemsByUser).sort((a, b) => {
+        return itemsByUser[a].name.localeCompare(itemsByUser[b].name);
+    });
+
+    if (sortedUserIds.length === 0) {
+        container.innerHTML = `
+            <div class="text-center py-12">
+                <i class="ph ph-check-circle" style="font-size: 4rem; color: #10b981; margin-bottom: 1rem;"></i>
+                <h3 style="font-size: 1.5rem; margin-bottom: 0.5rem;">All Clear!</h3>
+                <p class="text-muted" style="font-size: 1.1rem;">All students have returned their required items.</p>
+            </div>
+        `;
+        return;
+    }
+
+    // Build display HTML with large text for classroom visibility
+    const displayHtml = sortedUserIds.map(userId => {
+        const userData = itemsByUser[userId];
+        const overdueCount = userData.items.filter(i => i.isOverdue).length;
+        const hasOverdue = overdueCount > 0;
+
+        const itemsHtml = userData.items.map(itemData => {
+            const statusClass = itemData.isOverdue ? 'text-danger' : 'text-warning';
+            const statusIcon = itemData.isOverdue ? 'ph-clock-countdown' : 'ph-hourglass';
+            const dueText = itemData.isOverdue 
+                ? `Overdue since ${itemData.dueDate.toLocaleDateString()}`
+                : `Due: ${itemData.dueDate.toLocaleDateString()}`;
+
+            return `
+                <div style="background: rgba(0,0,0,0.2); padding: 1rem; border-radius: 0.5rem; margin-bottom: 0.75rem; border-left: 4px solid ${itemData.isOverdue ? '#ff0000' : '#fbbf24'}">
+                    <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 0.5rem;">
+                        <div>
+                            <div style="font-size: 1.3rem; font-weight: bold;">
+                                ${escapeHtml(itemData.itemName)}
+                            </div>
+                            <div style="font-size: 0.95rem; color: #d1d5db; margin-top: 0.25rem;">
+                                <span class="badge" style="background: rgba(107, 114, 128, 0.3); padding: 0.25rem 0.5rem; border-radius: 0.25rem;">
+                                    ${escapeHtml(itemData.category)}
+                                </span>
+                                <span style="margin-left: 0.5rem;">SKU: ${escapeHtml(itemData.itemSku)}</span>
+                            </div>
+                        </div>
+                        <div style="text-align: right;">
+                            <div style="font-size: 1.5rem; font-weight: bold; color: #10b981;">
+                                ${itemData.quantity}x
+                            </div>
+                            <div style="font-size: 0.85rem; color: #d1d5db;">
+                                qty
+                            </div>
+                        </div>
+                    </div>
+                    <div style="font-size: 0.95rem; ${statusClass}">
+                        <i class="ph ${statusIcon}" style="margin-right: 0.25rem;"></i> ${dueText}
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        return `
+            <div style="margin-bottom: 2rem; padding-bottom: 2rem; border-bottom: 2px solid rgba(5, 150, 105, 0.3);">
+                <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem;">
+                    <div style="width: 60px; height: 60px; border-radius: 50%; background: linear-gradient(135deg, #059669, #10b981); display: flex; align-items: center; justify-content: center; color: white; font-size: 1.5rem; font-weight: bold;">
+                        ${escapeHtml(userData.name.charAt(0).toUpperCase())}
+                    </div>
+                    <div>
+                        <h2 style="font-size: 1.8rem; margin: 0; font-weight: bold;">
+                            ${escapeHtml(userData.name)}
+                        </h2>
+                        <div style="font-size: 1rem; color: #d1d5db; margin-top: 0.25rem;">
+                            ${userData.items.length} item${userData.items.length !== 1 ? 's' : ''} checked out
+                            ${hasOverdue ? `<span style="color: #ff0000; font-weight: bold; margin-left: 0.5rem;"><i class="ph ph-warning"></i> ${overdueCount} overdue</span>` : ''}
+                        </div>
+                    </div>
+                </div>
+                <div style="margin-left: 0;">
+                    ${itemsHtml}
+                </div>
+            </div>
+        `;
+    }).join('');
+
+    container.innerHTML = `
+        <div style="background: linear-gradient(135deg, rgba(5, 150, 105, 0.1), rgba(16, 185, 129, 0.05)); padding: 2rem; border-radius: 0.75rem;">
+            <div style="margin-bottom: 2rem;">
+                <h3 style="font-size: 1.5rem; margin: 0 0 0.5rem 0;">
+                    <i class="ph ph-warning"></i> Items Not Returned
+                </h3>
+                <p style="color: #d1d5db; margin: 0; font-size: 1rem;">
+                    Ensure all students return their required items before dismissal
+                </p>
+            </div>
+            ${displayHtml}
+        </div>
+    `;
+
+    // Set up real-time updates for this display
+    startClassDisplayRealtimeListener();
+}
+
+let classDisplayChannel = null;
+
+/**
+ * Start real-time listener for items_out updates to auto-refresh class display
+ */
+function startClassDisplayRealtimeListener() {
+    const client = getSupabaseClientForCurrentPage();
+    if (!client || !document.getElementById('page-class-display')?.classList.contains('active')) return;
+
+    // Clean up previous channel
+    if (classDisplayChannel) {
+        client.removeChannel(classDisplayChannel);
+        classDisplayChannel = null;
+    }
+
+    // Subscribe to changes in project_items_out table
+    classDisplayChannel = client
+        .channel('class-display-items-out')
+        .on('postgres_changes', {
+            event: '*',
+            schema: 'public',
+            table: 'project_items_out'
+        }, async payload => {
+            // Refresh data and re-render
+            await refreshProjectsFromSupabase();
+            renderClassDisplay();
+        })
+        .subscribe(status => {
+            if (status === 'CHANNEL_ERROR') {
+                console.warn('Class Display real-time channel error');
+            }
+        });
+}
+
+function getSupabaseClientForCurrentPage() {
+    // If we have a user, use their session; otherwise use service role from env
+    if (typeof dbClient !== 'undefined') return dbClient;
+    try {
+        return window.supabase.createClient(window.APP_ENV.SUPABASE_URL, window.APP_ENV.SUPABASE_ANON_KEY);
+    } catch (err) {
+        console.error('Failed to create Supabase client:', err);
+        return null;
+    }
+}
+
+/* =======================================
    LOGS LOGIC
    ======================================= */
 function renderLogs() {
@@ -6951,7 +7150,7 @@ document.getElementById('add-user-btn')?.addEventListener('click', async () => {
         showToast('You do not have permission to manage users.', 'error');
         return;
     }
-    const authOk = await ensurePrivilegedActionAuth('adding users');
+    const authOk = await ensureBulkDeletionAuth('adding users');
     if (!authOk) return;
     openUserModal();
 });
@@ -6961,7 +7160,7 @@ document.getElementById('bulk-import-users-btn')?.addEventListener('click', asyn
         showToast('You do not have permission to manage users.', 'error');
         return;
     }
-    const authOk = await ensurePrivilegedActionAuth('bulk importing users');
+    const authOk = await ensureBulkDeletionAuth('bulk importing users');
     if (!authOk) return;
     showBulkUserImportModal();
 });
@@ -7548,7 +7747,7 @@ async function openAddItemModal() {
         return;
     }
 
-    const authOk = await ensurePrivilegedActionAuth('adding inventory items');
+    const authOk = await ensureBulkDeletionAuth('adding inventory items');
     if (!authOk) return;
 
     const categoryOptions = categories.length > 0
@@ -9678,7 +9877,7 @@ document.getElementById('bulk-import-items-btn')?.addEventListener('click', asyn
         return;
     }
 
-    const authOk = await ensurePrivilegedActionAuth('bulk importing items');
+    const authOk = await ensureBulkDeletionAuth('bulk importing items');
     if (!authOk) return;
 
     const html = `
@@ -10196,12 +10395,9 @@ async function processBulkUserImport() {
         return;
     }
 
-    // Verify auth if importing teachers/developers
-    const hasPrivilegedRoles = users.some(u => ['teacher', 'developer'].includes(u.role));
-    if (hasPrivilegedRoles && !privilegedSessionAuthenticated) {
-        showToast('Privileged password required to import teacher/developer accounts.', 'error');
-        return;
-    }
+    // Verify auth if importing any users
+    const authOk = await ensureBulkDeletionAuth('bulk importing users');
+    if (!authOk) return;
 
     // Import users
     let imported = 0;
@@ -10998,5 +11194,219 @@ function renderDebugSettings(el) {
     document.getElementById('dbg-admin-flag')?.addEventListener('change', e => {
         debugConfig.adminFeaturesVisible = e.target.checked;
     });
+}
+
+/* =========================================
+   BARCODE LABEL GENERATION
+   ========================================= */
+
+/**
+ * Show modal for generating barcode labels from selected inventory items
+ */
+async function showBarcodeLabelModal() {
+    // Get selected item IDs
+    const selectedIds = getSelectedInventoryItemIds();
+    
+    if (selectedIds.length === 0) {
+        showToast('Please select items to generate barcode labels.', 'warning');
+        return;
+    }
+
+    // Get the selected items from inventory
+    const selectedItems = inventoryItems.filter(item => selectedIds.includes(item.id));
+
+    // Create form HTML for quantity inputs
+    const itemsFormHtml = selectedItems.map(item => `
+        <div class="form-group" style="display:grid;grid-template-columns:1fr 100px;gap:1rem;align-items:center;padding:0.5rem;border-bottom:1px solid rgba(0,0,0,0.1)">
+            <div>
+                <strong>${escapeHtml(item.name)}</strong>
+                <div style="font-size:0.85rem;color:#666">SKU: ${escapeHtml(item.sku || 'N/A')} | Stock: ${item.stock || 0}</div>
+            </div>
+            <input type="number" class="barcode-qty-input form-control" data-item-id="${item.id}" value="1" min="1" max="20">
+        </div>
+    `).join('');
+
+    const modalHtml = `
+        <div class="modal-header">
+            <h3><i class="ph ph-barcode"></i> Generate Barcode Labels</h3>
+            <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
+        </div>
+        <div class="modal-body" style="max-height:500px;overflow-y:auto">
+            <p class="text-secondary mb-3">Specify the quantity of labels to print for each selected item:</p>
+            <div class="inventory-items-qty-list">
+                ${itemsFormHtml}
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            <button class="btn btn-primary" id="generate-labels-btn">
+                <i class="ph ph-printer"></i> Generate & Print
+            </button>
+        </div>
+    `;
+
+    openModal(modalHtml);
+
+    // Set up event listener for generate button
+    document.getElementById('generate-labels-btn')?.addEventListener('click', () => {
+        const quantities = {};
+        document.querySelectorAll('.barcode-qty-input').forEach(input => {
+            const itemId = input.dataset.itemId;
+            const qty = parseInt(input.value, 10) || 1;
+            quantities[itemId] = qty;
+        });
+
+        generateAndPrintBarcodeLabels(selectedItems, quantities);
+    });
+}
+
+/**
+ * Generate and print barcode labels as HTML
+ */
+function generateAndPrintBarcodeLabels(items, quantities) {
+    // Create a print-ready HTML document with barcode labels
+    const labelStyles = `
+        <style>
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+            body {
+                font-family: Arial, sans-serif;
+                padding: 0.5in;
+                background: white;
+            }
+            .label-sheet {
+                width: 8.5in;
+                height: 11in;
+                display: grid;
+                grid-template-columns: repeat(4, 1.75in);
+                grid-template-rows: repeat(10, 1.05in);
+                gap: 0.1in;
+                page-break-after: always;
+            }
+            .label {
+                border: 1px solid #ccc;
+                padding: 0.15in;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: space-between;
+                font-size: 10px;
+                page-break-inside: avoid;
+                background: white;
+            }
+            .label-barcode {
+                width: 100%;
+                height: 1.2in;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                margin: 0.05in 0;
+                font-family: 'Courier New', monospace;
+                font-size: 28px;
+                font-weight: bold;
+                letter-spacing: 2px;
+            }
+            .label-name {
+                font-weight: bold;
+                text-align: center;
+                font-size: 9px;
+                width: 100%;
+                word-wrap: break-word;
+                max-height: 0.4in;
+                overflow: hidden;
+            }
+            .label-sku {
+                text-align: center;
+                font-size: 8px;
+                color: #666;
+                width: 100%;
+            }
+            @media print {
+                body {
+                    padding: 0;
+                    margin: 0;
+                }
+                .label-sheet {
+                    gap: 0;
+                    padding: 0;
+                }
+            }
+        </style>
+    `;
+
+    // Generate label HTML for each item with specified quantities
+    let labelCount = 0;
+    const labelHtmlArray = [];
+
+    items.forEach(item => {
+        const qty = quantities[item.id] || 1;
+        const barcode = item.barcode || item.sku || item.id;
+        const itemName = item.name || 'Unknown Item';
+        const itemSku = item.sku || 'N/A';
+
+        for (let i = 0; i < qty; i++) {
+            labelHtmlArray.push(`
+                <div class="label">
+                    <div class="label-name">${escapeHtml(itemName)}</div>
+                    <div class="label-barcode">${escapeHtml(barcode)}</div>
+                    <div class="label-sku">SKU: ${escapeHtml(itemSku)}</div>
+                </div>
+            `);
+            labelCount++;
+        }
+    });
+
+    // Calculate number of sheets needed (40 labels per sheet: 4 columns x 10 rows)
+    const labelsPerSheet = 40;
+    const sheetsNeeded = Math.ceil(labelCount / labelsPerSheet);
+    let sheetLabelIndex = 0;
+    const sheets = [];
+
+    for (let sheet = 0; sheet < sheetsNeeded; sheet++) {
+        const sheetLabels = [];
+        for (let i = 0; i < labelsPerSheet && sheetLabelIndex < labelHtmlArray.length; i++) {
+            sheetLabels.push(labelHtmlArray[sheetLabelIndex++]);
+        }
+        
+        // Pad with empty labels to complete the sheet
+        while (sheetLabels.length < labelsPerSheet) {
+            sheetLabels.push('<div class="label"></div>');
+        }
+
+        sheets.push(`<div class="label-sheet">${sheetLabels.join('')}</div>`);
+    }
+
+    const fullHtml = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <title>Barcode Labels</title>
+            ${labelStyles}
+        </head>
+        <body>
+            ${sheets.join('')}
+        </body>
+        </html>
+    `;
+
+    // Open print window
+    closeModal();
+    const printWindow = window.open('', '_blank');
+    printWindow.document.write(fullHtml);
+    printWindow.document.close();
+    printWindow.focus();
+
+    // Auto-open print dialog on load
+    printWindow.addEventListener('load', () => {
+        setTimeout(() => {
+            printWindow.print();
+        }, 250);
+    });
+
+    showToast(`Generated ${labelCount} barcode labels across ${sheetsNeeded} sheet(s) ready to print.`, 'success');
 }
 
