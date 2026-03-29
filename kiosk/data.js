@@ -920,6 +920,12 @@ async function deleteStudentClassInSupabase(classId) {
  * Add a new user to the users table
  */
 async function addUserToSupabase(user) {
+    const isMissingGradeColumnError = (err) => {
+        const msg = String(err?.message || '').toLowerCase();
+        return /column .*grade|grade.*does not exist/i.test(String(err?.message || ''))
+            || (msg.includes('could not find') && msg.includes('grade') && msg.includes('schema cache'));
+    };
+
     const payload = {
         id: user.id,
         name: user.name,
@@ -930,7 +936,7 @@ async function addUserToSupabase(user) {
 
     let { data, error } = await dbClient.from('users').insert([payload]).select();
 
-    if (error && /column .*grade|grade.*does not exist/i.test(String(error.message || ''))) {
+    if (error && isMissingGradeColumnError(error)) {
         const fallbackPayload = {
             id: user.id,
             name: user.name,
@@ -951,11 +957,17 @@ async function addUserToSupabase(user) {
  * Update user in the users table
  */
 async function updateUserInSupabase(userId, updates) {
+    const isMissingGradeColumnError = (err) => {
+        const msg = String(err?.message || '').toLowerCase();
+        return /column .*grade|grade.*does not exist/i.test(String(err?.message || ''))
+            || (msg.includes('could not find') && msg.includes('grade') && msg.includes('schema cache'));
+    };
+
     let { data, error } = await dbClient.from('users')
         .update(updates)
         .eq('id', userId).select();
 
-    if (error && Object.prototype.hasOwnProperty.call(updates || {}, 'grade') && /column .*grade|grade.*does not exist/i.test(String(error.message || ''))) {
+    if (error && Object.prototype.hasOwnProperty.call(updates || {}, 'grade') && isMissingGradeColumnError(error)) {
         const { grade, ...fallbackUpdates } = updates || {};
         ({ data, error } = await dbClient.from('users')
             .update(fallbackUpdates)

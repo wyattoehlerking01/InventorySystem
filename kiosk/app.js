@@ -3624,7 +3624,7 @@ function renderInventory() {
     }
 
     if (filtered.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No items match your current search.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No items match your current search.</td></tr>';
         updateInventoryBulkSelectionState();
         return;
     }
@@ -3643,7 +3643,6 @@ function renderInventory() {
 
         return `
             <tr>
-                <td><input type="checkbox" class="item-select-cb" data-id="${safeItemId}"></td>
                 <td>
                     <div class="font-bold">
                         ${currentUser.role !== 'student'
@@ -3683,24 +3682,6 @@ function renderInventory() {
             </tr>
         `;
     }).join('');
-
-    // Select all items checkbox
-    document.getElementById('select-all-items')?.addEventListener('change', (e) => {
-        document.querySelectorAll('.item-select-cb').forEach(cb => { cb.checked = e.target.checked; });
-        updateInventoryBulkSelectionState();
-    });
-
-    document.querySelectorAll('.item-select-cb').forEach(cb => {
-        cb.addEventListener('change', () => {
-            syncInventorySelectAllState();
-            updateInventoryBulkSelectionState();
-        });
-    });
-
-    // Select all users checkbox
-    document.getElementById('select-all-users')?.addEventListener('change', (e) => {
-        document.querySelectorAll('.user-select-cb').forEach(cb => { cb.checked = e.target.checked; });
-    });
 
     // Attach listeners for actions
     // Attach basket listeners
@@ -5909,9 +5890,6 @@ function renderUsers() {
         return `
             <tr class="${isSuspended ? 'opacity-60' : ''}">
                 <td>
-                    <input type="checkbox" class="user-select-cb" data-id="${safeUserId}">
-                </td>
-                <td>
                     <div class="flex items-center user-row-identity">
                         <div class="avatar-sm">${getRoleIcon(user.role)}</div>
                         <div>
@@ -5948,7 +5926,7 @@ function renderUsers() {
     }).join('');
 
     if (filteredUsers.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No users match your search.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">No users match your search.</td></tr>';
         return;
     }
 

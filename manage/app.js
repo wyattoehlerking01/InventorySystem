@@ -2175,7 +2175,8 @@ async function handleBarcodeLogin(rawId) {
 }
 
 async function handleManageCredentialLogin(rawUsername, rawPassword) {
-    if (!isManageMode) return;
+    const hasCredentialInputs = !!(usernameInput && passwordInput);
+    if (!isManageMode && !hasCredentialInputs) return;
     if (currentUser) return;
     if (loginRequestInFlight) return;
 
@@ -2286,7 +2287,8 @@ if (barcodeInput && !isManageMode) {
     });
 }
 
-if (isManageMode) {
+const canUseCredentialLogin = !!(usernameInput && passwordInput && loginSubmitBtn);
+if (isManageMode || canUseCredentialLogin) {
     loginSubmitBtn?.addEventListener('click', async () => {
         await handleManageCredentialLogin(usernameInput?.value || '', passwordInput?.value || '');
     });
@@ -6000,7 +6002,7 @@ function openEditClassModal(classId) {
             </div>
         </div>
         <div class="modal-footer">
-            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            <button class="btn btn-secondary" id="edit-class-cancel" onclick="closeModal()">Cancel</button>
             <button class="btn btn-primary" id="confirm-edit-class">Save Changes</button>
         </div>
     `;
@@ -6017,6 +6019,10 @@ function openEditClassModal(classId) {
     });
 
     attachPeriodRowHandlers('edit-class-period-rows', 'edit-class-add-period-btn');
+
+    document.getElementById('edit-class-cancel')?.addEventListener('click', () => {
+        closeModal();
+    });
 
     document.getElementById('confirm-edit-class').addEventListener('click', async () => {
         const name = document.getElementById('edit-class-name').value.trim();
@@ -6058,9 +6064,6 @@ function openEditClassModal(classId) {
 }
 
 document.getElementById('create-class-btn')?.addEventListener('click', async () => {
-    const authOk = await ensurePrivilegedActionAuth('creating classes');
-    if (!authOk) return;
-
     if (!currentUser || !['teacher', 'developer'].includes(currentUser.role)) {
         showToast('Only teachers can create classes.', 'error');
         return;
@@ -6516,7 +6519,7 @@ function updateUsersBulkSelectionState() {
     const defaultSuspendLabel = '<i class="ph ph-user-minus"></i> Bulk Suspend';
 
     if (bulkDeleteBtn) {
-        bulkDeleteBtn.classList.toggle('hidden', selectedCount === 0);
+        bulkDeleteBtn.classList.remove('hidden');
         bulkDeleteBtn.disabled = selectedCount === 0;
         bulkDeleteBtn.innerHTML = selectedCount > 0
             ? `<i class="ph ph-trash"></i> Bulk Delete (${selectedCount})`
@@ -6773,9 +6776,6 @@ async function openUserModal(editId = null) {
         return;
     }
 
-    const authOk = await ensurePrivilegedActionAuth(editId ? 'editing users' : 'adding users');
-    if (!authOk) return;
-
     const isEdit = !!editId;
     const userToEdit = isEdit ? mockUsers.find(u => u.id === editId) : null;
     const canEditBarcode = isEdit && (currentUser.role === 'teacher' || currentUser.role === 'developer');
@@ -6836,7 +6836,7 @@ async function openUserModal(editId = null) {
                 </div>
             </div>
         <div class="modal-footer">
-            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                <button class="btn btn-secondary" id="user-modal-cancel" onclick="closeModal()">Cancel</button>
             ${(currentUser.role === 'teacher' && isEdit && userToEdit.role === 'developer') ?
             `<span class="text-danger text-sm" style="margin-right:1rem">Teacher role locked</span>` :
             `<button class="btn btn-primary" id="confirm-user-btn">${isEdit ? 'Save Changes' : 'Add User'}</button>`
@@ -6846,7 +6846,11 @@ async function openUserModal(editId = null) {
 
     openModal(html);
 
-    document.getElementById('user-role-input').addEventListener('change', (e) => {
+    document.getElementById('user-modal-cancel')?.addEventListener('click', () => {
+        closeModal();
+    });
+
+    document.getElementById('user-role-input')?.addEventListener('change', (e) => {
         const permsContainer = document.getElementById('perms-container');
         const classContainer = document.getElementById('class-assign-container');
         if (e.target.value === 'student') {
@@ -6859,7 +6863,7 @@ async function openUserModal(editId = null) {
     });
 
     // Auto-update permissions based on class selection
-    document.getElementById('user-class-assign').addEventListener('change', (e) => {
+    document.getElementById('user-class-assign')?.addEventListener('change', (e) => {
         const classId = e.target.value;
         const targetClass = studentClasses.find(c => c.id === classId);
         if (targetClass && targetClass.defaultPermissions) {
@@ -6872,7 +6876,7 @@ async function openUserModal(editId = null) {
         }
     });
 
-    document.getElementById('confirm-user-btn').addEventListener('click', async () => {
+    document.getElementById('confirm-user-btn')?.addEventListener('click', async () => {
         const id = document.getElementById('user-id').value.trim().toUpperCase();
         const name = document.getElementById('user-name-input').value.trim();
         const grade = document.getElementById('user-grade-input').value.trim();
