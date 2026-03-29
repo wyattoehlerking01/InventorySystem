@@ -1787,13 +1787,6 @@ async function handleBarcodeLogin(rawId) {
             return;
         }
 
-        try {
-            await loadAllData();
-        } catch (loadError) {
-            console.error('Post-login load failed:', loadError);
-            showToast('Login succeeded, but data refresh failed.', 'error');
-        }
-
         const user = loginResult.user || null;
         if (user) {
             if (user.status === 'Suspended' && !isSuspensionBypassedUser(user)) {
@@ -1813,7 +1806,13 @@ async function handleBarcodeLogin(rawId) {
             } catch (loginError) {
                 console.error('Login transition failed:', loginError);
                 showToast('Login succeeded but dashboard failed to load.', 'error');
+                return;
             }
+
+            loadAllData().catch(loadError => {
+                console.error('Post-login load failed:', loadError);
+                showToast('Signed in, but data refresh failed.', 'warning');
+            });
             return;
         }
 

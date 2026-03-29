@@ -1800,13 +1800,6 @@ async function handleBarcodeLogin(rawId) {
             return;
         }
 
-        try {
-            await loadAllData();
-        } catch (loadError) {
-            console.error('Post-login load failed:', loadError);
-            showToast('Login succeeded, but data refresh failed.', 'error');
-        }
-
         const user = loginResult.user || null;
         if (user) {
             const appMode = String(window.APP_ENV?.APP_MODE || '').trim().toLowerCase();
@@ -1832,7 +1825,13 @@ async function handleBarcodeLogin(rawId) {
             } catch (loginError) {
                 console.error('Login transition failed:', loginError);
                 showToast('Login succeeded but dashboard failed to load.', 'error');
+                return;
             }
+
+            loadAllData().catch(loadError => {
+                console.error('Post-login load failed:', loadError);
+                showToast('Signed in, but data refresh failed.', 'warning');
+            });
             return;
         }
 
@@ -1871,13 +1870,6 @@ async function handleManageCredentialLogin(rawUsername, rawPassword) {
             return;
         }
 
-        try {
-            await loadAllData();
-        } catch (loadError) {
-            console.error('Post-login load failed:', loadError);
-            showToast('Login succeeded, but data refresh failed.', 'error');
-        }
-
         const user = loginResult.user || null;
         if (!user) {
             recordFailedLoginAttempt();
@@ -1905,7 +1897,13 @@ async function handleManageCredentialLogin(rawUsername, rawPassword) {
         } catch (loginError) {
             console.error('Login transition failed:', loginError);
             showToast('Login succeeded but dashboard failed to load.', 'error');
+            return;
         }
+
+        loadAllData().catch(loadError => {
+            console.error('Post-login load failed:', loadError);
+            showToast('Signed in, but data refresh failed.', 'warning');
+        });
     } catch (error) {
         console.error('Credential login lookup failed:', error);
         showToast('Database lookup failed during login.', 'error');
