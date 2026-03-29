@@ -137,9 +137,68 @@ function getStoredAuthPasswordHash(user) {
     return String(
         user.privileged_password_hash
         || user.privileged_auth_password_hash
+        || user.auth_password_hash
+        || user.authentication_password_hash
+        || user.password_hash
         || user.staff_password_hash
         || ''
     ).trim();
+}
+
+function getAuthPasswordCandidates(user) {
+    if (!user) return [];
+
+    const fields = [
+        user.privileged_password_hash,
+        user.privileged_auth_password_hash,
+        user.staff_password_hash,
+        user.auth_password_hash,
+        user.authentication_password_hash,
+        user.password_hash,
+        user.auth_password,
+        user.authentication_password,
+        user.password
+    ];
+
+    return fields
+        .map(value => String(value || '').trim())
+        .filter(Boolean);
+}
+
+function looksLikeSha256Hex(value) {
+    return /^[a-f0-9]{64}$/i.test(String(value || '').trim());
+}
+
+async function doesPasswordMatchUser(user, enteredPassword) {
+    const candidates = getAuthPasswordCandidates(user);
+    if (candidates.length === 0) {
+        return { matched: false, configured: false };
+    }
+
+    const rawPassword = String(enteredPassword || '').trim();
+    if (!rawPassword) {
+        return { matched: false, configured: true };
+    }
+
+    const hashedPassword = await hashAuthPasswordValue(rawPassword);
+    const hashedLower = String(hashedPassword || '').toLowerCase();
+    const rawLower = rawPassword.toLowerCase();
+
+    for (const storedValue of candidates) {
+        const normalizedStored = storedValue.toLowerCase();
+
+        // Preferred secure path: SHA-256 hash compare.
+        if (looksLikeSha256Hex(storedValue) && normalizedStored === hashedLower) {
+            return { matched: true, configured: true };
+        }
+
+        // Compatibility path for legacy environments where plaintext was stored.
+        if (!looksLikeSha256Hex(storedValue) && normalizedStored === rawLower) {
+            return { matched: true, configured: true };
+        }
+    }
+
+    return { matched: false, configured: true };
 }
 
 async function fetchUserByNameFromSupabase(username) {
@@ -190,12 +249,16 @@ async function loginWithUsernameAndPassword(username, password) {
         }
 
         const expectedHash = getStoredAuthPasswordHash(user);
-        if (!expectedHash) {
+        if (!expectedHash && getAuthPasswordCandidates(user).length === 0) {
             return { error: 'Authentication password is not configured for this account.' };
         }
 
-        const providedHash = await hashAuthPasswordValue(normalizedPassword);
-        if (!providedHash || providedHash !== expectedHash) {
+        const matchResult = await doesPasswordMatchUser(user, normalizedPassword);
+        if (!matchResult.configured) {
+            return { error: 'Authentication password is not configured for this account.' };
+        }
+
+        if (!matchResult.matched) {
             return { error: 'Invalid username or password.' };
         }
 
