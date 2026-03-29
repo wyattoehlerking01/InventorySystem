@@ -1,8 +1,8 @@
 // Runtime environment configuration
 window.APP_ENV = {
     APP_MODE: 'manage',
-    APP_NAME: 'LCHS Electro-Tech',
-    APP_SUBTITLE: 'Inventory Management Console',
+    APP_NAME: 'LCHS Management Console',
+    APP_SUBTITLE: 'System Management Console',
     APP_LOGO_URL: '',
     APP_SIDEBAR_LOGO_URL: '',
     APP_VERSION: 'Version',

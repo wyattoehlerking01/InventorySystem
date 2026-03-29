@@ -5425,9 +5425,11 @@ document.getElementById('create-class-btn')?.addEventListener('click', async () 
         showToast('Only teachers can create classes.', 'error');
         return;
     }
-
-    // Only show students
-    const availableStudents = mockUsers.filter(u => u.role === 'student');
+    document.getElementById('create-class-btn')?.addEventListener('click', async () => {
+        if (!currentUser || !['teacher', 'developer'].includes(currentUser.role)) {
+            showToast('Only teachers can create classes.', 'error');
+            return;
+        }
     const studentOptions = availableStudents.map(s =>
         `<div class="class-list-option" data-label="${`${s.name} ${s.id}`.toLowerCase()}" style="margin-bottom:0.5rem">
             <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">
@@ -6338,10 +6340,8 @@ async function handleProfilePrivilegedPasswordAction() {
         showToast('Only teacher/developer accounts can change the authentication password.', 'error');
         return;
     }
-
-    const changed = await promptSetPrivilegedActionPassword('updating your authentication password');
-    if (changed) privilegedStartupAuditShown = true;
 }
+        openUserModal();
 
 function bindProfilePrivilegedActionTrigger(element) {
     element?.addEventListener('click', async e => {
@@ -6821,6 +6821,9 @@ function sanitizeModalHtml(contentHtml) {
             const name = String(attr.name || '').toLowerCase();
             const value = String(attr.value || '').trim();
             if (name.startsWith('on')) {
+                if (name === 'onclick' && /\bcloseModal\s*\(/.test(value)) {
+                    node.setAttribute('data-modal-close', '1');
+                }
                 node.removeAttribute(attr.name);
                 return;
             }
@@ -6861,13 +6864,19 @@ function showToast(message, type = 'success') {
 // Close Modal on outside click
 modalContainer.addEventListener('click', (e) => {
     if (e.target === modalContainer) {
-        if (isEditingInsideOpenModal()) return;
         closeModal();
     }
 });
 
 // Keep modal interactions isolated from global document/login click handlers.
 dynamicModal.addEventListener('click', (e) => {
+    const closeTrigger = e.target?.closest?.('[data-modal-close="1"], .close-btn');
+    if (closeTrigger) {
+        e.preventDefault();
+        e.stopPropagation();
+        closeModal();
+        return;
+    }
     e.stopPropagation();
 });
 dynamicModal.addEventListener('mousedown', (e) => {
@@ -7144,13 +7153,13 @@ function openEditProjectModal(projectId) {
             <button class="btn btn-primary" id="confirm-edit-proj">Save Changes</button>
         </div>
     `;
+                <div class="form-group">
+                    <label>Collaborators</label>
+                    <div id="edit-proj-collaborators-wrap" class="glass-panel" style="padding:1rem; max-height:200px; overflow-y:auto">
+                        ${buildSearchableProjectCollaborators({ selectedOwnerId: project.ownerId, selectedCollaborators: project.collaborators || [] }) || '<p class="text-sm text-muted">No eligible student collaborators.</p>'}
+                    </div>
+                </div>
 
-    openModal(html);
-
-    const ownerSelect = document.getElementById('edit-proj-owner');
-    ownerSelect?.addEventListener('change', () => {
-        const wrapper = document.getElementById('edit-proj-collaborators-wrap');
-        if (!wrapper) return;
         wrapper.innerHTML = buildProjectCollaboratorOptions({
             selectedOwnerId: ownerSelect.value,
             selectedCollaborators: project.collaborators || []
@@ -7253,13 +7262,13 @@ document.getElementById('create-project-btn')?.addEventListener('click', () => {
             <button class="btn btn-primary" id="confirm-add-proj">Create Project</button>
         </div>
     `;
+                <div class="form-group">
+                    <label>Add Collaborators (Optional)</label>
+                    <div id="add-proj-collaborators-wrap" class="glass-panel" style="padding:1rem; max-height:200px; overflow-y:auto">
+                        ${buildSearchableProjectCollaborators({ selectedOwnerId: defaultOwnerId }) || '<p class="text-sm text-muted">No available student collaborators.</p>'}
+                    </div>
+                </div>
 
-    openModal(html);
-
-    const ownerSelect = document.getElementById('add-proj-owner');
-    ownerSelect?.addEventListener('change', () => {
-        const wrap = document.getElementById('add-proj-collaborators-wrap');
-        if (!wrap) return;
         wrap.innerHTML = buildProjectCollaboratorOptions({ selectedOwnerId: ownerSelect.value })
             || '<p class="text-sm text-muted">No available student collaborators.</p>';
     });
@@ -7278,8 +7287,8 @@ document.getElementById('create-project-btn')?.addEventListener('click', () => {
                 showToast('Please select a project owner.', 'error');
                 return;
             }
-
             if (name) {
+                            <small class="text-muted">Teachers can create projects for eligible users.</small>
                 const newProject = {
                     id: generateId('PRJ'),
                     name: name,
@@ -7290,21 +7299,33 @@ document.getElementById('create-project-btn')?.addEventListener('click', () => {
                     itemsOut: []
                 };
 
-                const created = await addProjectToSupabase(newProject);
-                if (!created) {
-                    showToast('Failed to create project in database.', 'error');
-                    return;
-                }
+                    // Setup initial search functionality
+                    setTimeout(() => {
+                        setupProjectCollaboratorSearch();
+                    }, 10);
+    
+                    ownerSelect?.addEventListener('change', () => {
+                        const wrap = document.getElementById('add-proj-collaborators-wrap');
+                        if (!wrap) return;
+                        wrap.innerHTML = buildSearchableProjectCollaborators({ selectedOwnerId: ownerSelect.value })
+                            || '<p class="text-sm text-muted">No available student collaborators.</p>';
+                        setupProjectCollaboratorSearch();
+                    });
+                        // Setup initial search functionality
+                        setTimeout(() => {
+                            setupProjectCollaboratorSearch();
+                        }, 10);
 
-                for (const collaboratorId of collaborators) {
-                    await addProjectCollaboratorToSupabase(newProject.id, collaboratorId);
-                }
-
-                await refreshProjectsFromSupabase();
-
-                addLog(currentUser.id, 'Create Project', `Created new project: ${name} for ${ownerId} with ${collaborators.length} collaborators.`);
-                showToast(`Project ${name} created.`, 'success');
                 closeModal();
+                        ownerSelect?.addEventListener('change', () => {
+                            const wrapper = document.getElementById('edit-proj-collaborators-wrap');
+                            if (!wrapper) return;
+                            wrapper.innerHTML = buildSearchableProjectCollaborators({
+                                selectedOwnerId: ownerSelect.value,
+                                selectedCollaborators: project.collaborators || []
+                            }) || '<p class="text-sm text-muted">No eligible student collaborators.</p>';
+                            setupProjectCollaboratorSearch();
+                        });
                 if (document.getElementById('page-projects').classList.contains('active')) {
                     renderProjects();
                 }
@@ -9828,6 +9849,93 @@ function renderDebugSettings(el) {
     });
     document.getElementById('dbg-admin-flag')?.addEventListener('change', e => {
         debugConfig.adminFeaturesVisible = e.target.checked;
+    });
+}
+
+
+function buildSearchableProjectCollaborators({ selectedOwnerId = '', selectedCollaborators = [], containerId = 'proj-collab-search-wrap' } = {}) {
+    const candidates = getProjectOwnerCandidates().filter(user => user.id !== selectedOwnerId);
+    const selectedSet = new Set(selectedCollaborators || []);
+    
+    const listHtml = candidates.map(user => `
+        <div style="margin-bottom:0.5rem" class="proj-collab-item" data-search="${`${user.name} ${user.id}`.toLowerCase()}">
+            <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">
+                <input type="checkbox" value="${user.id}" class="proj-student-checkbox" ${selectedSet.has(user.id) ? 'checked' : ''}>
+                ${user.name} (${user.id})
+            </label>
+        </div>
+    `).join('');
+    
+    return `
+        <input type="text" class="proj-collab-search" placeholder="Search collaborators..." style="width:100%;margin-bottom:0.75rem;padding:0.5rem;border:1px solid var(--glass-border);border-radius:4px;background:rgba(255,255,255,0.05);color:inherit;">
+        <div class="proj-collab-list" style="max-height:150px;overflow-y:auto;">
+            ${listHtml || '<p class="text-sm text-muted">No available collaborators.</p>'}
+        </div>
+    `;
+}
+
+function setupProjectCollaboratorSearch() {
+    const searchInput = document.querySelector('.proj-collab-search');
+    if (!searchInput) return;
+    
+    searchInput.addEventListener('input', (e) => {
+        const term = e.target.value.toLowerCase();
+        document.querySelectorAll('.proj-collab-item').forEach(item => {
+            const searchText = item.getAttribute('data-search');
+            item.style.display = searchText.includes(term) ? '' : 'none';
+        });
+    });
+}
+
+function buildSearchableProjectOwners({ selectedOwnerId = '', showSearch = true } = {}) {
+    const candidates = getProjectOwnerCandidates();
+    
+    const listHtml = candidates.map(user => `
+        <div style="padding:0.5rem;cursor:pointer;border-radius:4px;transition:background 0.2s;" 
+             class="proj-owner-item" data-id="${user.id}" data-search="${`${user.name} ${user.id}`.toLowerCase()}"
+             onmouseover="this.style.background='rgba(255,255,255,0.08)'" 
+             onmouseout="this.style.background=''">
+            ${user.name} (${user.id})
+        </div>
+    `).join('');
+    
+    const searchHtml = showSearch ? `<input type="text" class="proj-owner-search" placeholder="Search owners..." style="width:100%;margin-bottom:0.5rem;padding:0.5rem;border:1px solid var(--glass-border);border-radius:4px;background:rgba(255,255,255,0.05);color:inherit;">` : '';
+    
+    return `
+        ${searchHtml}
+        <div class="proj-owner-list" style="max-height:180px;overflow-y:auto;border:1px solid var(--glass-border);border-radius:4px;background:rgba(0,0,0,0.2);">
+            ${listHtml || '<p class="text-sm text-muted" style="padding:0.5rem;">No available owners.</p>'}
+        </div>
+    `;
+}
+
+function setupProjectOwnerSearch(selectElementId) {
+    const searchInput = document.querySelector('.proj-owner-search');
+    if (!searchInput) return;
+    
+    const hiddenSelect = document.getElementById(selectElementId);
+    
+    searchInput.addEventListener('input', (e) => {
+        const term = e.target.value.toLowerCase();
+        document.querySelectorAll('.proj-owner-item').forEach(item => {
+            const searchText = item.getAttribute('data-search');
+            item.style.display = searchText.includes(term) ? '' : 'none';
+        });
+    });
+    
+    document.querySelectorAll('.proj-owner-item').forEach(item => {
+        item.addEventListener('click', () => {
+            const userId = item.getAttribute('data-id');
+            if (hiddenSelect) {
+                hiddenSelect.value = userId;
+                hiddenSelect.dispatchEvent(new Event('change'));
+            }
+            // Update visual selection
+            document.querySelectorAll('.proj-owner-item').forEach(i => {
+                i.style.borderLeft = i === item ? '3px solid var(--accent-primary)' : 'none';
+                i.style.paddingLeft = i === item ? 'calc(0.5rem - 3px)' : '0.5rem';
+            });
+        });
     });
 }
 

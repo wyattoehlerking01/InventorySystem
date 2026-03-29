@@ -2291,6 +2291,18 @@ if (isManageMode) {
         await handleManageCredentialLogin(usernameInput?.value || '', passwordInput?.value || '');
     });
 
+    usernameInput?.addEventListener('keydown', (e) => {
+        if (e.key !== 'Tab' || e.shiftKey) return;
+        e.preventDefault();
+        passwordInput?.focus();
+    });
+
+    passwordInput?.addEventListener('keydown', (e) => {
+        if (e.key !== 'Tab' || !e.shiftKey) return;
+        e.preventDefault();
+        usernameInput?.focus();
+    });
+
     usernameInput?.addEventListener('keydown', async (e) => {
         if (e.key !== 'Enter' && e.key !== 'NumpadEnter') return;
         e.preventDefault();
@@ -3715,8 +3727,8 @@ function loadDashboard() {
                     t.style.color = 'var(--text-secondary)';
                 });
                 tab.classList.add('active');
-                tab.style.borderBottomColor = 'var(--accent-primary)';
-                tab.style.color = 'var(--text-primary)';
+                tab.style.borderBottomColor = 'var(--text-secondary)';
+                tab.style.color = 'var(--text-secondary)';
                 renderAdminTab(tab.getAttribute('data-tab'));
             });
         });
@@ -3724,8 +3736,8 @@ function loadDashboard() {
         // Set initial active tab styling
         const firstTab = document.querySelector('.widget-tab.active');
         if (firstTab) {
-            firstTab.style.borderBottomColor = 'var(--accent-primary)';
-            firstTab.style.color = 'var(--text-primary)';
+            firstTab.style.borderBottomColor = 'var(--text-secondary)';
+            firstTab.style.color = 'var(--text-secondary)';
         }
     }
 }
@@ -3960,7 +3972,7 @@ function renderInventory() {
                                 <i class="ph ph-pencil-simple"></i>
                             </button>` : ''}
                         <button class="btn btn-secondary btn-sm inventory-item-action-btn add-basket-btn" data-id="${safeItemId}" title="Add to Basket" 
-                            style="background: rgba(16, 185, 129, 0.1); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.2)">
+                            style="background: rgba(148, 163, 184, 0.08); color: var(--text-secondary); border: 1px solid var(--glass-border)">
                             <i class="ph ph-shopping-cart-simple"></i>
                         </button>
                         <button class="btn btn-primary btn-sm inventory-item-action-btn signout-btn" data-id="${safeItemId}" title="Sign out to Project">
@@ -6053,9 +6065,11 @@ document.getElementById('create-class-btn')?.addEventListener('click', async () 
         showToast('Only teachers can create classes.', 'error');
         return;
     }
-
-    // Only show students
-    const availableStudents = mockUsers.filter(u => u.role === 'student');
+    document.getElementById('create-class-btn')?.addEventListener('click', async () => {
+        if (!currentUser || !['teacher', 'developer'].includes(currentUser.role)) {
+            showToast('Only teachers can create classes.', 'error');
+            return;
+        }
     const studentOptions = availableStudents.map(s =>
         `<div class="class-list-option" data-label="${`${s.name} ${s.id}`.toLowerCase()}" style="margin-bottom:0.5rem">
             <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">
@@ -6085,20 +6099,12 @@ document.getElementById('create-class-btn')?.addEventListener('click', async () 
             </div>
         `
         : '';
-
-    const html = `
-        <div class="modal-header">
-            <h3>Create New Class</h3>
-            <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
-        </div>
-        <div class="modal-body">
-            <div class="form-group">
-                <label>Class Name</label>
-                <input type="text" id="add-class-name" class="form-control" placeholder="e.g. Adv. Electronics">
-            </div>
-            ${teacherFieldHtml}
-            <div class="form-group">
                 <label>Select Students</label>
+        document.getElementById('create-class-btn')?.addEventListener('click', async () => {
+            if (!currentUser || !['teacher', 'developer'].includes(currentUser.role)) {
+                showToast('Only teachers can create classes.', 'error');
+                return;
+            }
                 <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.5rem;flex-wrap:wrap;">
                     <input type="text" id="add-class-student-search" class="form-control" placeholder="Search students by name or ID" style="flex:1;min-width:220px;">
                     <button type="button" class="btn btn-secondary" id="add-class-student-select-all">Select Visible</button>
@@ -7737,7 +7743,6 @@ function showToast(message, type = 'success') {
 // Close Modal on outside click
 modalContainer.addEventListener('click', (e) => {
     if (e.target === modalContainer) {
-        if (isEditingInsideOpenModal()) return;
         closeModal();
     }
 });
@@ -8039,15 +8044,21 @@ function openEditProjectModal(projectId) {
             selectedCollaborators: project.collaborators || []
         }) || '<p class="text-sm text-muted">No eligible student collaborators.</p>';
     });
+        // Setup initial search functionality
+        setTimeout(() => {
+            setupProjectCollaboratorSearch();
+        }, 10);
 
-    document.getElementById('edit-proj-delete')?.addEventListener('click', () => {
-        closeModal();
-        openDeleteProjectModal(project.id);
-    });
-
-    document.getElementById('confirm-edit-proj').addEventListener('click', async () => {
-        const name = document.getElementById('edit-proj-name').value.trim();
         const desc = document.getElementById('edit-proj-desc').value.trim();
+        ownerSelect?.addEventListener('change', () => {
+            const wrapper = document.getElementById('edit-proj-collaborators-wrap');
+            if (!wrapper) return;
+            wrapper.innerHTML = buildSearchableProjectCollaborators({
+                selectedOwnerId: ownerSelect.value,
+                selectedCollaborators: project.collaborators || []
+            }) || '<p class="text-sm text-muted">No eligible student collaborators.</p>';
+            setupProjectCollaboratorSearch();
+        });
         const status = document.getElementById('edit-proj-status').value;
         const selectedOwnerId = canAssignOwner
             ? (document.getElementById('edit-proj-owner')?.value || project.ownerId)
@@ -8161,8 +8172,8 @@ document.getElementById('create-project-btn')?.addEventListener('click', () => {
                 showToast('Please select a project owner.', 'error');
                 return;
             }
-
             if (name) {
+                            <small class="text-muted">Teachers can create projects for eligible users.</small>
                 const newProject = {
                     id: generateId('PRJ'),
                     name: name,
@@ -8173,12 +8184,18 @@ document.getElementById('create-project-btn')?.addEventListener('click', () => {
                     itemsOut: []
                 };
 
-                const created = await addProjectToSupabase(newProject);
-                if (!created) {
-                    showToast('Failed to create project in database.', 'error');
-                    return;
-                }
-
+                    // Setup initial search functionality
+                    setTimeout(() => {
+                        setupProjectCollaboratorSearch();
+                    }, 10);
+    
+                    ownerSelect?.addEventListener('change', () => {
+                        const wrap = document.getElementById('add-proj-collaborators-wrap');
+                        if (!wrap) return;
+                        wrap.innerHTML = buildSearchableProjectCollaborators({ selectedOwnerId: ownerSelect.value })
+                            || '<p class="text-sm text-muted">No available student collaborators.</p>';
+                        setupProjectCollaboratorSearch();
+                    });
                 for (const collaboratorId of collaborators) {
                     await addProjectCollaboratorToSupabase(newProject.id, collaboratorId);
                 }
@@ -11443,5 +11460,92 @@ function generateAndPrintBarcodeLabels(items, quantities) {
     });
 
     showToast(`Generated ${labelCount} barcode labels across ${sheetsNeeded} sheet(s) ready to print.`, 'success');
+}
+
+
+function buildSearchableProjectCollaborators({ selectedOwnerId = '', selectedCollaborators = [], containerId = 'proj-collab-search-wrap' } = {}) {
+    const candidates = getProjectOwnerCandidates().filter(user => user.id !== selectedOwnerId);
+    const selectedSet = new Set(selectedCollaborators || []);
+    
+    const listHtml = candidates.map(user => `
+        <div style="margin-bottom:0.5rem" class="proj-collab-item" data-search="${`${user.name} ${user.id}`.toLowerCase()}">
+            <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">
+                <input type="checkbox" value="${user.id}" class="proj-student-checkbox" ${selectedSet.has(user.id) ? 'checked' : ''}>
+                ${user.name} (${user.id})
+            </label>
+        </div>
+    `).join('');
+    
+    return `
+        <input type="text" class="proj-collab-search" placeholder="Search collaborators..." style="width:100%;margin-bottom:0.75rem;padding:0.5rem;border:1px solid var(--glass-border);border-radius:4px;background:rgba(255,255,255,0.05);color:inherit;">
+        <div class="proj-collab-list" style="max-height:150px;overflow-y:auto;">
+            ${listHtml || '<p class="text-sm text-muted">No available collaborators.</p>'}
+        </div>
+    `;
+}
+
+function setupProjectCollaboratorSearch() {
+    const searchInput = document.querySelector('.proj-collab-search');
+    if (!searchInput) return;
+    
+    searchInput.addEventListener('input', (e) => {
+        const term = e.target.value.toLowerCase();
+        document.querySelectorAll('.proj-collab-item').forEach(item => {
+            const searchText = item.getAttribute('data-search');
+            item.style.display = searchText.includes(term) ? '' : 'none';
+        });
+    });
+}
+
+function buildSearchableProjectOwners({ selectedOwnerId = '', showSearch = true } = {}) {
+    const candidates = getProjectOwnerCandidates();
+    
+    const listHtml = candidates.map(user => `
+        <div style="padding:0.5rem;cursor:pointer;border-radius:4px;transition:background 0.2s;" 
+             class="proj-owner-item" data-id="${user.id}" data-search="${`${user.name} ${user.id}`.toLowerCase()}"
+             onmouseover="this.style.background='rgba(255,255,255,0.08)'" 
+             onmouseout="this.style.background=''">
+            ${user.name} (${user.id})
+        </div>
+    `).join('');
+    
+    const searchHtml = showSearch ? `<input type="text" class="proj-owner-search" placeholder="Search owners..." style="width:100%;margin-bottom:0.5rem;padding:0.5rem;border:1px solid var(--glass-border);border-radius:4px;background:rgba(255,255,255,0.05);color:inherit;">` : '';
+    
+    return `
+        ${searchHtml}
+        <div class="proj-owner-list" style="max-height:180px;overflow-y:auto;border:1px solid var(--glass-border);border-radius:4px;background:rgba(0,0,0,0.2);">
+            ${listHtml || '<p class="text-sm text-muted" style="padding:0.5rem;">No available owners.</p>'}
+        </div>
+    `;
+}
+
+function setupProjectOwnerSearch(selectElementId) {
+    const searchInput = document.querySelector('.proj-owner-search');
+    if (!searchInput) return;
+    
+    const hiddenSelect = document.getElementById(selectElementId);
+    
+    searchInput.addEventListener('input', (e) => {
+        const term = e.target.value.toLowerCase();
+        document.querySelectorAll('.proj-owner-item').forEach(item => {
+            const searchText = item.getAttribute('data-search');
+            item.style.display = searchText.includes(term) ? '' : 'none';
+        });
+    });
+    
+    document.querySelectorAll('.proj-owner-item').forEach(item => {
+        item.addEventListener('click', () => {
+            const userId = item.getAttribute('data-id');
+            if (hiddenSelect) {
+                hiddenSelect.value = userId;
+                hiddenSelect.dispatchEvent(new Event('change'));
+            }
+            // Update visual selection
+            document.querySelectorAll('.proj-owner-item').forEach(i => {
+                i.style.borderLeft = i === item ? '3px solid var(--text-secondary)' : 'none';
+                i.style.paddingLeft = i === item ? 'calc(0.5rem - 3px)' : '0.5rem';
+            });
+        });
+    });
 }
 
