@@ -1429,6 +1429,34 @@ async function requestDoorUnlockAndLogAccess({ actionType, item, quantity = 1, p
     }
 }
 
+async function requestManualDoorUnlockAndLogAccess(reason = 'manual debug control') {
+    const actorId = currentUser?.id || 'SYSTEM';
+    const actorRole = currentUser?.role || 'system';
+
+    try {
+        await fetch('http://localhost:8080/unlock', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                itemId: 'MANUAL',
+                itemName: 'Manual Door Open',
+                category: 'system',
+                actionType: 'manualDoorOpen',
+                userId: actorId,
+                reason
+            })
+        });
+
+        addLog(actorId, 'Door Access', `Manual door open approved by ${actorId} [role=${actorRole}] (${reason}).`);
+        showToast('Door unlock triggered.', 'success');
+        return true;
+    } catch (err) {
+        addLog(actorId, 'Door Access Failed', `Manual door open failed for ${actorId}. Error: ${err.message || err}`);
+        showToast('Warning: Hardware unlock script unreachable.', 'warning');
+        return false;
+    }
+}
+
 function openCheckoutReviewModal() {
     if (inventoryBasket.length === 0) {
         showToast('Your basket is empty.', 'error');
@@ -4221,6 +4249,109 @@ async function flagUnauthorizedScan(item, scanCode) {
     await refreshRequestsFromSupabase();
 }
 
+async function resolveElevatedUserByBarcode(rawCode) {
+    const code = String(rawCode || '').trim();
+    if (!code) return null;
+
+    if (typeof loginWithBarcode === 'function') {
+        try {
+            const loginResult = await loginWithBarcode(code);
+            if (loginResult?.user) return loginResult.user;
+        } catch (error) {
+            console.warn('Elevated lookup via loginWithBarcode failed:', error);
+        }
+    }
+
+    const normalized = code.toUpperCase();
+    return (mockUsers || []).find(user => String(user?.id || '').trim().toUpperCase() === normalized) || null;
+}
+
+async function requestElevatedVisibilitySignoutApproval(item, scanCode = '') {
+    if (!currentUser || currentUser.role !== 'student') return true;
+
+    return new Promise(resolve => {
+        const safeItemName = escapeHtml(String(item?.name || scanCode || 'item'));
+        const html = `
+            <div class="modal-header">
+                <h3><i class="ph ph-shield-check"></i> Elevated Credentials Required</h3>
+                <button class="close-btn" id="elev-cred-close"><i class="ph ph-x"></i></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-secondary mb-4">${safeItemName} requires elevated credentials before sign-out.</p>
+                <div class="form-group">
+                    <label>Teacher/Developer Barcode</label>
+                    <input type="text" id="elev-cred-barcode" class="form-control" autocomplete="off" placeholder="Scan or enter staff barcode" autofocus>
+                </div>
+                <small id="elev-cred-error" class="text-danger" style="display:none;"></small>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="elev-cred-cancel">Cancel</button>
+                <button class="btn btn-primary" id="elev-cred-approve">Approve Sign-out</button>
+            </div>
+        `;
+
+        openModal(html);
+
+        const finish = (approved) => {
+            closeModal();
+            resolve(approved);
+        };
+
+        const showError = (message) => {
+            const errorEl = document.getElementById('elev-cred-error');
+            if (!errorEl) return;
+            errorEl.textContent = message;
+            errorEl.style.display = '';
+        };
+
+        const approve = async () => {
+            const barcode = String(document.getElementById('elev-cred-barcode')?.value || '').trim();
+            if (!barcode) {
+                showError('Enter a teacher/developer barcode to continue.');
+                return;
+            }
+
+            const supervisor = await resolveElevatedUserByBarcode(barcode);
+            if (!supervisor) {
+                showError('Barcode not recognized.');
+                return;
+            }
+
+            const role = String(supervisor.role || '').trim().toLowerCase();
+            if (!['teacher', 'developer'].includes(role)) {
+                showError('Only teacher/developer credentials can approve this sign-out.');
+                return;
+            }
+
+            if (supervisor.status === 'Suspended' && !isSuspensionBypassedUser(supervisor)) {
+                showError('Supervisor account is suspended.');
+                return;
+            }
+
+            addLog(currentUser.id, 'Elevated Sign-out Override', `${supervisor.name} (${supervisor.id}) approved visibility override for ${item?.name || scanCode || 'item'}.`);
+            showToast('Elevated credentials accepted.', 'success');
+            finish(true);
+        };
+
+        document.getElementById('elev-cred-approve')?.addEventListener('click', () => {
+            approve().catch(error => {
+                console.error('Failed to validate elevated credentials:', error);
+                showError('Unable to validate credentials right now.');
+            });
+        });
+        document.getElementById('elev-cred-cancel')?.addEventListener('click', () => finish(false));
+        document.getElementById('elev-cred-close')?.addEventListener('click', () => finish(false));
+        document.getElementById('elev-cred-barcode')?.addEventListener('keydown', (event) => {
+            if (event.key !== 'Enter') return;
+            event.preventDefault();
+            approve().catch(error => {
+                console.error('Failed to validate elevated credentials:', error);
+                showError('Unable to validate credentials right now.');
+            });
+        });
+    });
+}
+
 async function handleBasketModeScan(scanCode) {
     const item = findInventoryItemByScanCode(scanCode);
     if (!item) {
@@ -4229,9 +4360,12 @@ async function handleBasketModeScan(scanCode) {
     }
 
     if (currentUser.role === 'student' && !canUserSeeItem(currentUser, item)) {
-        await flagUnauthorizedScan(item, scanCode);
-        showToast('That item is not visible to your class.', 'error');
-        return;
+        showToast('Item requires elevated credentials.', 'warning');
+        const approved = await requestElevatedVisibilitySignoutApproval(item, scanCode);
+        if (!approved) {
+            await flagUnauthorizedScan(item, scanCode);
+            return;
+        }
     }
 
     addToBasket(item.id);
@@ -4414,6 +4548,19 @@ async function handleInSessionBarcodeScan(rawCode) {
 
     const scannedItem = findInventoryItemByScanCode(code);
     if (currentUser.role === 'student' && scannedItem && !canUserSeeItem(currentUser, scannedItem)) {
+        const isSignoutFlow = inventoryPageActive || isBasketOpen;
+        if (isSignoutFlow) {
+            showToast('Item requires elevated credentials.', 'warning');
+            const approved = await requestElevatedVisibilitySignoutApproval(scannedItem, code);
+            if (!approved) {
+                await flagUnauthorizedScan(scannedItem, code);
+                return;
+            }
+            addToBasket(scannedItem.id);
+            if (!isBasketOpen) toggleBasket(true);
+            return;
+        }
+
         await flagUnauthorizedScan(scannedItem, code);
         showToast('That item is not visible to your class.', 'error');
         return;
@@ -4745,7 +4892,7 @@ function renderProjects() {
 
 }
 
-function openSignOutModal(itemId) {
+async function openSignOutModal(itemId) {
     if (currentUser.role === 'student' && !currentUser.perms?.canSignOut) {
         showToast('You do not have permission to sign out items.', 'error');
         return;
@@ -4755,8 +4902,12 @@ function openSignOutModal(itemId) {
     if (!item) return;
 
     if (currentUser.role === 'student' && !canUserSeeItem(currentUser, item)) {
-        showToast('Your class level cannot access this item.', 'error');
-        return;
+        showToast('Item requires elevated credentials.', 'warning');
+        const approved = await requestElevatedVisibilitySignoutApproval(item, item.sku || item.id);
+        if (!approved) {
+            await flagUnauthorizedScan(item, item.sku || item.id);
+            return;
+        }
     }
 
     if (item.stock <= 0) {
@@ -9420,6 +9571,9 @@ function renderDebugSession(el) {
             <div class="debug-actions">
                 ${user ? `<button class="dbg-btn btn btn-secondary" id="dbg-force-logout"><i class="ph ph-sign-out"></i> Force Logout</button>` : ''}
                 <button class="dbg-btn btn btn-secondary" id="dbg-clear-rl"><i class="ph ph-shield-slash"></i> Reset Rate Limit</button>
+                <button class="dbg-btn btn btn-secondary" id="dbg-door-open">
+                    <i class="ph ph-door-open"></i> Open Door (3s)
+                </button>
                 <button class="dbg-btn btn btn-secondary" id="dbg-kiosk-preview">
                     <i class="ph ph-device-mobile-camera"></i> Preview Lock Screens
                 </button>
@@ -9451,6 +9605,13 @@ function renderDebugSession(el) {
     document.getElementById('dbg-clear-rl')?.addEventListener('click', () => {
         loginRateLimit.attempts = []; loginRateLimit.lockedUntil = null;
         showToast('Rate limit cleared.', 'success'); renderDebugTab('session');
+    });
+    document.getElementById('dbg-door-open')?.addEventListener('click', async () => {
+        if (!userCanPerformPrivilegedActions()) {
+            showToast('Only teacher/developer accounts can open the door from kiosk controls.', 'error');
+            return;
+        }
+        await requestManualDoorUnlockAndLogAccess('kiosk debug session control');
     });
     document.getElementById('dbg-kiosk-preview')?.addEventListener('click', () => {
         openKioskLockPreview(debugConfig.kioskLockScreen);

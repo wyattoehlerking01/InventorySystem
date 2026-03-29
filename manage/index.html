@@ -317,27 +317,47 @@
                 <!-- Orders Page -->
                 <div id="page-orders" class="page hidden">
                     <div class="action-bar operations-hub-header">
-                        <h3>Operations Hub</h3>
-                        <div class="operations-hub-toolbar">
-                            <div class="operations-hub-mode-group">
-                                <button class="btn btn-secondary orders-mode-btn active" data-mode="all">All Activity</button>
-                                <button class="btn btn-secondary orders-mode-btn" data-mode="orders">Orders</button>
-                                <button class="btn btn-secondary orders-mode-btn" data-mode="requests">Requests</button>
-                                <button class="btn btn-secondary orders-mode-btn" data-mode="flags">System Flags</button>
-                                <button class="btn btn-secondary orders-mode-btn" data-mode="kiosk">Kiosk Control</button>
-                                <button class="btn btn-secondary orders-mode-btn" data-mode="policy">Policy</button>
-                                <button class="btn btn-secondary orders-mode-btn" data-mode="audit">Audit Center</button>
-                                <button class="btn btn-secondary orders-mode-btn" data-mode="health">Health Alerts</button>
-                                <button class="btn btn-secondary orders-mode-btn" data-mode="recovery">Recovery</button>
+                        <div class="operations-hub-control-center glass-panel">
+                            <div class="operations-hub-heading-row">
+                                <div class="operations-hub-heading-copy">
+                                    <h3>Operations Hub</h3>
+                                    <p class="operations-hub-subtitle">Use Queue Views for daily flow and Admin Views for system controls.</p>
+                                </div>
                             </div>
+
+                            <div class="operations-hub-nav-grid">
+                                <div class="operations-hub-nav-group">
+                                    <span class="operations-hub-group-title">Queue Views</span>
+                                    <div class="operations-hub-mode-group">
+                                        <button class="btn btn-secondary orders-mode-btn active" data-mode="all">All Activity</button>
+                                        <button class="btn btn-secondary orders-mode-btn" data-mode="orders">Orders</button>
+                                        <button class="btn btn-secondary orders-mode-btn" data-mode="requests">Requests</button>
+                                        <button class="btn btn-secondary orders-mode-btn" data-mode="flags">System Flags</button>
+                                    </div>
+                                </div>
+                                <div class="operations-hub-nav-group">
+                                    <span class="operations-hub-group-title">Admin Views</span>
+                                    <div class="operations-hub-mode-group">
+                                        <button class="btn btn-secondary orders-mode-btn" data-mode="kiosk">Kiosk Control</button>
+                                        <button class="btn btn-secondary orders-mode-btn" data-mode="policy">Policy</button>
+                                        <button class="btn btn-secondary orders-mode-btn" data-mode="audit">Audit Center</button>
+                                        <button class="btn btn-secondary orders-mode-btn" data-mode="health">Health Alerts</button>
+                                        <button class="btn btn-secondary orders-mode-btn" data-mode="recovery">Recovery</button>
+                                    </div>
+                                </div>
+                            </div>
+
                             <div class="operations-hub-action-group">
-                                <select id="orders-status-filter" class="form-control operations-hub-status-filter">
-                                    <option value="all">All Statuses</option>
-                                    <option value="Pending">Pending</option>
-                                    <option value="Approved">Approved</option>
-                                    <option value="Denied">Denied</option>
-                                    <option value="Ordered">Ordered</option>
-                                </select>
+                                <div class="operations-hub-filter-wrap">
+                                    <label for="orders-status-filter" class="text-sm text-muted">Orders Status Filter</label>
+                                    <select id="orders-status-filter" class="form-control operations-hub-status-filter">
+                                        <option value="all">All Statuses</option>
+                                        <option value="Pending">Pending</option>
+                                        <option value="Approved">Approved</option>
+                                        <option value="Denied">Denied</option>
+                                        <option value="Ordered">Ordered</option>
+                                    </select>
+                                </div>
                                 <button class="btn btn-secondary hidden" id="configure-order-form-btn">
                                     <i class="ph ph-sliders-horizontal"></i> Customize Form
                                 </button>
@@ -423,11 +443,11 @@
 
                 <!-- Users Page -->
                 <div id="page-users" class="page hidden">
-                    <div class="action-bar">
+                    <div class="action-bar users-action-bar">
+                        <input type="text" class="form-control users-search-input" id="users-search-input"
+                            placeholder="Search users...">
                         <h3>System Users</h3>
                         <div class="users-toolbar">
-                            <input type="text" class="form-control users-search-input" id="users-search-input"
-                                placeholder="Search users...">
                             <button class="btn btn-secondary" id="view-requests-btn">
                                 <i class="ph ph-lifebuoy"></i> Requests
                             </button>
