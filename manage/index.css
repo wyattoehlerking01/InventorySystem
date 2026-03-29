@@ -53,6 +53,15 @@ body {
     background-attachment: fixed;
 }
 
+body.modal-open {
+    overflow: hidden;
+}
+
+body.modal-open .sidebar-nav,
+body.modal-open .page-content {
+    overflow: hidden;
+}
+
 h1,
 h2,
 h3,
@@ -343,6 +352,7 @@ h6 {
     display: flex;
     height: 100vh;
     overflow: hidden;
+    min-width: 1024px;
 }
 
 /* Sidebar */
@@ -647,12 +657,14 @@ h6 {
     border-top: none;
     border-left: none;
     border-right: none;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
     z-index: 5;
 }
 
 .app-header h2 {
     font-size: 1.5rem;
-    font-weight: 500;
+    font-weight: 600;
+    letter-spacing: 0.01em;
 }
 
 .header-actions {
@@ -862,7 +874,7 @@ h6 {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     gap: 0.75rem;
     margin-bottom: 1.5rem;
 }
@@ -878,7 +890,7 @@ h6 {
     display: flex;
     flex-direction: column;
     gap: 0.95rem;
-    background: linear-gradient(135deg, rgba(5, 150, 105, 0.14), rgba(17, 24, 39, 0.72));
+    background: linear-gradient(180deg, rgba(11, 18, 32, 0.9), rgba(7, 12, 24, 0.9));
 }
 
 .operations-hub-heading-row {
@@ -960,19 +972,28 @@ h6 {
     display: flex;
     align-items: center;
     justify-content: flex-end;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     gap: 0.75rem;
 }
 
-.users-action-bar h3 {
+.users-heading-search {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
     margin-right: auto;
+    flex: 1 1 460px;
+}
+
+.users-action-bar h3 {
+    margin: 0;
+    white-space: nowrap;
 }
 
 .users-search-input {
-    flex: 1 1 280px;
+    flex: 1 1 320px;
     min-width: 240px;
     max-width: 420px;
-    margin-right: 0;
 }
 
 .inventory-action-bar {
@@ -1209,12 +1230,11 @@ h6 {
 .btn-primary {
     background: linear-gradient(135deg, var(--accent-primary), var(--accent-primary-hover));
     color: white;
-    box-shadow: 0 4px 15px rgba(139, 92, 246, 0.3);
+    box-shadow: 0 2px 8px rgba(5, 150, 105, 0.24);
 }
 
 .btn-primary:hover {
-    box-shadow: 0 6px 20px rgba(139, 92, 246, 0.4);
-    transform: translateY(-2px);
+    box-shadow: 0 3px 10px rgba(5, 150, 105, 0.3);
 }
 
 .btn-secondary {
@@ -1245,6 +1265,11 @@ h6 {
 }
 
 .table-container {
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-md);
+    background: rgba(5, 10, 20, 0.42);
+    max-height: calc(100vh - 250px);
+    overflow-y: auto;
     overflow-x: auto;
 }
 
@@ -1256,7 +1281,7 @@ h6 {
 
 .data-table th,
 .data-table td {
-    padding: 1rem 1.5rem;
+    padding: 0.8rem 1rem;
     border-bottom: 1px solid var(--glass-border);
     vertical-align: middle;
 }
@@ -1283,7 +1308,10 @@ h6 {
     font-size: 0.85rem;
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    background: rgba(0, 0, 0, 0.2);
+    background: rgba(7, 12, 22, 0.95);
+    position: sticky;
+    top: 0;
+    z-index: 2;
 }
 
 .data-table tbody tr {
@@ -1291,7 +1319,11 @@ h6 {
 }
 
 .data-table tbody tr:hover {
-    background: rgba(255, 255, 255, 0.03);
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.data-table tbody tr:nth-child(even) {
+    background: rgba(255, 255, 255, 0.015);
 }
 
 .status-badge {
@@ -2009,6 +2041,7 @@ kbd {
     .operations-hub-nav-group,
     .operations-hub-mode-group,
     .operations-hub-action-group,
+    .users-heading-search,
     .users-toolbar {
         width: 100%;
         justify-content: flex-start;
@@ -2102,6 +2135,35 @@ kbd {
         width: 100%;
         text-align: center;
         order: -1;
+    }
+}
+
+@media (min-width: 1200px) {
+    :root {
+        --sidebar-width: 296px;
+    }
+
+    .page-content {
+        padding: 2rem 2.75rem;
+    }
+
+    .operations-hub-nav-grid {
+        grid-template-columns: minmax(420px, 1.2fr) minmax(320px, 1fr);
+    }
+
+    .inventory-secondary-controls {
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        padding-bottom: 0.2rem;
+    }
+
+    .inventory-secondary-controls .btn {
+        white-space: nowrap;
+    }
+
+    .order-request-modal {
+        width: min(920px, calc(100vw - 3rem));
+        max-width: 920px;
     }
 }
 

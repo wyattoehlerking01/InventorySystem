@@ -1042,6 +1042,43 @@ async function deleteUserFromSupabase(userId) {
 }
 
 /**
+ * Delete one inventory item and related references.
+ */
+async function deleteInventoryItemFromSupabase(itemId) {
+    if (!itemId) return false;
+
+    const relations = [
+        { table: 'project_items_out', column: 'item_id' },
+        { table: 'inventory_item_visibility', column: 'item_id' },
+        { table: 'class_visible_items', column: 'item_id' }
+    ];
+
+    for (const relation of relations) {
+        const { error } = await dbClient
+            .from(relation.table)
+            .delete()
+            .eq(relation.column, itemId);
+
+        if (error) {
+            console.error(`Error deleting ${relation.table} links for item ${itemId}:`, error);
+            return false;
+        }
+    }
+
+    const { error } = await dbClient
+        .from('inventory_items')
+        .delete()
+        .eq('id', itemId);
+
+    if (error) {
+        console.error('Error deleting inventory item:', error);
+        return false;
+    }
+
+    return true;
+}
+
+/**
  * Add inventory item to inventory_items table
  */
 async function addItemToSupabase(item) {

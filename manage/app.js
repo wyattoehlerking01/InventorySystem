@@ -85,7 +85,8 @@ const defaultKioskManageConfig = {
         allowUnlockPulse: true,
         allowEmergencyLockout: true,
         enableAuditCsvExport: true,
-        enforcePrivilegedAuditFocus: true
+        enforcePrivilegedAuditFocus: true,
+        showLoginHelpRequest: true
     }
 };
 
@@ -515,6 +516,12 @@ function applyKioskManageBranding() {
     if (subtitleEl) {
         subtitleEl.textContent = kioskManageConfig.brandingText || appSubtitle;
     }
+}
+
+function applyLoginHelpVisibility() {
+    if (!showHelpBtn) return;
+    const isVisible = !!kioskManageConfig.featureFlags?.showLoginHelpRequest;
+    showHelpBtn.classList.toggle('hidden', !isVisible);
 }
 
 function exceedsCheckoutConstraints({ distinctItems = 0, totalQuantity = 0 }) {
@@ -1941,6 +1948,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     loadKioskManageConfig();
     applyBranding();
     applyKioskManageBranding();
+    applyLoginHelpVisibility();
     bindAppInfoTriggers();
     updateAppInfoOverlayVisibility();
 
@@ -2430,7 +2438,9 @@ function setProfilePrivilegedActionState(isEnabled) {
     if (!userProfileEl) return;
     userProfileEl.classList.toggle('profile-action-enabled', !!isEnabled);
     if (isEnabled) {
-        userProfileEl.setAttribute('title', 'Change Authentication Password');
+        const hasExistingPassword = !!(currentUser && getUserPrivilegedPasswordHash(currentUser));
+        const profileActionLabel = hasExistingPassword ? 'Reset Authorization Password' : 'Set Authorization Password';
+        userProfileEl.setAttribute('title', profileActionLabel);
         userProfileEl.setAttribute('role', 'button');
         userProfileEl.setAttribute('tabindex', '0');
     } else {
@@ -2488,6 +2498,7 @@ function login(user) {
         document.getElementById('manage-categories-btn')?.classList.add('hidden');
         document.getElementById('manage-visibility-tags-btn')?.classList.add('hidden');
         document.getElementById('bulk-manage-items-btn')?.classList.add('hidden');
+        document.getElementById('bulk-delete-items-btn')?.classList.add('hidden');
         document.getElementById('bulk-import-items-btn')?.classList.add('hidden');
         setProfilePrivilegedActionState(false);
     } else {
@@ -2499,6 +2510,7 @@ function login(user) {
         document.getElementById('manage-categories-btn')?.classList.remove('hidden');
         document.getElementById('manage-visibility-tags-btn')?.classList.remove('hidden');
         document.getElementById('bulk-manage-items-btn')?.classList.remove('hidden');
+        document.getElementById('bulk-delete-items-btn')?.classList.remove('hidden');
         document.getElementById('bulk-import-items-btn')?.classList.remove('hidden');
         setProfilePrivilegedActionState(true);
     }
@@ -2769,13 +2781,17 @@ async function promptSetPrivilegedActionPassword(reason = 'this action', forcedR
     if (!currentUser || !userCanPerformPrivilegedActions()) return false;
 
     return new Promise(resolve => {
+        const hasExistingPassword = !!getUserPrivilegedPasswordHash(currentUser);
         const resetHint = forcedReset
             ? 'Your current authentication password matches the debug PIN. Create a different password now.'
-            : `Set an authentication password for ${escapeHtml(currentUser.name)} to continue with ${escapeHtml(reason)}.`;
+            : hasExistingPassword
+                ? 'You are updating your Authentication Password.'
+                : `Set an authentication password for ${escapeHtml(currentUser.name)} to continue with ${escapeHtml(reason)}.`;
+        const modalTitle = hasExistingPassword ? 'Reset Authorization Password' : 'Set Authentication Password';
 
         const html = `
             <div class="modal-header debug-modal-header">
-                <h3 style="color:#a78bfa"><i class="ph ph-lock-key"></i> Set Authentication Password</h3>
+                <h3 style="color:#a78bfa"><i class="ph ph-lock-key"></i> ${modalTitle}</h3>
                 <button class="close-btn" id="priv-pass-close"><i class="ph ph-x"></i></button>
             </div>
             <div class="modal-body">
@@ -3051,7 +3067,7 @@ async function switchPage(targetId, title) {
     if (targetId === 'requests') {
         targetId = 'orders';
         title = 'Operations Hub';
-        ordersTabMode = 'requests';
+        ordersTabMode = 'all';
     }
 
     if (targetId === 'orders' && !canCurrentUserViewOrders()) {
@@ -3108,6 +3124,7 @@ async function switchPage(targetId, title) {
     if (targetId === 'users') renderUsers();
     if (targetId === 'classes') renderClasses();
     if (targetId === 'orders') renderOrders();
+    if (targetId === 'kiosk-settings') renderKioskSettings();
 }
 
 /* =======================================
@@ -4045,6 +4062,7 @@ function syncInventorySelectAllState() {
 
 function updateInventoryBulkSelectionState() {
     const bulkBtn = document.getElementById('bulk-manage-items-btn');
+    const bulkDeleteBtn = document.getElementById('bulk-delete-items-btn');
     if (!bulkBtn) return;
 
     const selectedCount = getSelectedInventoryItemIds().length;
@@ -4053,6 +4071,12 @@ function updateInventoryBulkSelectionState() {
         : 'Bulk Tags/Categories';
 
     bulkBtn.innerHTML = `<i class="ph ph-stack"></i> ${label}`;
+    if (bulkDeleteBtn) {
+        const deleteLabel = selectedCount > 0
+            ? `Bulk Delete (${selectedCount})`
+            : 'Bulk Delete';
+        bulkDeleteBtn.innerHTML = `<i class="ph ph-trash"></i> ${deleteLabel}`;
+    }
 }
 
 function runInventorySearchAction() {
@@ -4234,6 +4258,44 @@ document.getElementById('bulk-manage-items-btn')?.addEventListener('click', asyn
             addLog(currentUser.id, 'Bulk Item Update', `Bulk-applied category/tags to ${selectedIds.length} inventory items.`);
         });
     });
+});
+
+document.getElementById('bulk-delete-items-btn')?.addEventListener('click', async () => {
+    if (currentUser?.role === 'student') {
+        showToast('You do not have permission to bulk delete items.', 'error');
+        return;
+    }
+
+    const selectedIds = getSelectedInventoryItemIds();
+    if (selectedIds.length === 0) {
+        showToast('Select at least one inventory item using the checkboxes first.', 'error');
+        return;
+    }
+
+    const authOk = await ensureBulkDeletionAuth('bulk deleting inventory items');
+    if (!authOk) return;
+
+    if (!confirm(`Are you absolutely sure you want to PERMANENTLY delete ${selectedIds.length} selected item(s)? This cannot be undone.`)) {
+        return;
+    }
+
+    let deletedCount = 0;
+    for (const itemId of selectedIds) {
+        const deleted = await deleteInventoryItemFromSupabase(itemId);
+        if (deleted) deletedCount++;
+    }
+
+    await refreshInventoryFromSupabase();
+    renderInventory();
+
+    const failedCount = selectedIds.length - deletedCount;
+    showToast(
+        failedCount > 0
+            ? `Deleted ${deletedCount} item(s). ${failedCount} item(s) failed.`
+            : `Deleted ${deletedCount} item(s).`,
+        failedCount > 0 ? 'warning' : 'success'
+    );
+    addLog(currentUser.id, 'Bulk Delete Items', `Deleted ${deletedCount}/${selectedIds.length} inventory items via selection.`);
 });
 
 /* =======================================
@@ -6544,22 +6606,21 @@ async function openUserModal(editId = null) {
                     ${studentClasses.map(cls => `<option value="${cls.id}" ${isEdit && cls.students.includes(userToEdit.id) ? 'selected' : ''}>${cls.name}</option>`).join('')}
                 </select>
             </div>
-            <div id="perms-container" class="form-group" style="padding-top: 1rem; border-top: 1px solid var(--glass-border); display: ${(!isEdit || userToEdit.role === 'student') ? 'block' : 'none'};">
-                <div class="flex justify-between items-center mb-2">
-                    <label>Granular Permissions</label>
-                    <small class="text-muted" id="perms-source-hint">Manual Overrides</small>
+            <div id="perms-container" class="form-group" style="padding-top: 1.5rem; border-top: 1px solid var(--glass-border); display: ${(!isEdit || userToEdit.role === 'student') ? 'block' : 'none'};">
+                <div style="margin-bottom: 1rem;">
+                    <label style="display: block; margin-bottom: 0.3rem; font-weight: 500;">Granular Permissions</label>
+                    <small class="text-muted" id="perms-source-hint" style="display: block; font-size: 0.85rem;">Manual Overrides</small>
                 </div>
-                <div style="display:flex; flex-direction:column; gap:0.5rem; margin-top:1.5rem">
-                    <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer">
+                <div style="display:flex; flex-direction:column; gap:0.75rem; margin-top:1.25rem; padding: 1rem; background: rgba(255, 255, 255, 0.02); border-radius: 8px;">
+                    <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer; margin: 0;">
                         <input type="checkbox" id="perm-create-proj" ${cProjects ? 'checked' : ''}> Can Create Projects
                     </label>
-                    <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer">
+                    <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer; margin: 0;">
                         <input type="checkbox" id="perm-join-proj" ${cJoin ? 'checked' : ''}> Can Join Projects
                     </label>
-                    <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer">
+                    <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer; margin: 0;">
                         <input type="checkbox" id="perm-signout" ${cSignOut ? 'checked' : ''}> Can Sign Out Items
                     </label>
-                </div>
                 </div>
             </div>
         <div class="modal-footer">
@@ -6895,17 +6956,37 @@ document.getElementById('add-user-btn')?.addEventListener('click', async () => {
     openUserModal();
 });
 
+document.getElementById('bulk-import-users-btn')?.addEventListener('click', async () => {
+    if (currentUser?.role === 'student') {
+        showToast('You do not have permission to manage users.', 'error');
+        return;
+    }
+    const authOk = await ensurePrivilegedActionAuth('bulk importing users');
+    if (!authOk) return;
+    showBulkUserImportModal();
+});
+
 document.getElementById('users-search-input')?.addEventListener('input', () => {
     renderUsers();
 });
 
 document.getElementById('view-requests-btn')?.addEventListener('click', () => {
-    ordersTabMode = 'requests';
+    ordersTabMode = 'all';
     switchPage('orders', 'Operations Hub').catch(err => {
         console.error('Failed to open Orders/Requests view:', err);
-        showToast('Unable to open requests tab.', 'error');
+        showToast('Unable to open operations hub.', 'error');
     });
 });
+
+async function ensureBulkDeletionAuth(reason = 'bulk deletion') {
+    if (!currentUser || !userCanPerformPrivilegedActions()) {
+        showToast('Only teacher/developer accounts can perform bulk deletions.', 'error');
+        return false;
+    }
+
+    if (privilegedSessionAuthenticated) return true;
+    return requestPrivilegedActionAuth(reason);
+}
 
 async function handleProfilePrivilegedPasswordAction() {
     if (!userCanPerformPrivilegedActions()) {
@@ -7235,6 +7316,9 @@ document.getElementById('bulk-delete-users-btn')?.addEventListener('click', asyn
         }
     }
 
+    const authOk = await ensureBulkDeletionAuth('bulk deleting users');
+    if (!authOk) return;
+
     if (confirm(`Are you absolutely sure you want to PERMANENTLY delete ${targetUsers.length} selected user(s)? This cannot be undone.`)) {
         let deleteCount = 0;
         const deletingCurrentUser = targetUsers.some(u => u.id === currentUser?.id);
@@ -7315,6 +7399,7 @@ function openModal(contentHtml) {
     const safeFragment = sanitizeModalHtml(contentHtml);
     dynamicModal.replaceChildren(safeFragment);
     modalContainer.classList.remove('hidden');
+    document.body.classList.add('modal-open');
     focusModalPrimaryInput();
 }
 
@@ -7322,6 +7407,7 @@ function closeModal() {
     modalContainer.classList.add('hidden');
     dynamicModal.replaceChildren();
     dynamicModal.classList.remove('debug-modal', 'class-modal', 'order-request-modal');
+    document.body.classList.remove('modal-open');
 }
 
 function focusModalPrimaryInput() {
@@ -8764,6 +8850,7 @@ function renderOrders() {
     const filter = document.getElementById('orders-status-filter');
     const toggleWrap = document.getElementById('orders-student-toggle-wrap');
     const toggle = document.getElementById('orders-student-visible-toggle');
+    const loginHelpToggle = document.getElementById('login-help-visible-toggle');
     const newOrderBtn = document.getElementById('new-order-request-btn');
     const configureFormBtn = document.getElementById('configure-order-form-btn');
     const ordersModeButtons = document.querySelectorAll('.orders-mode-btn');
@@ -8773,10 +8860,9 @@ function renderOrders() {
 
     ordersModeButtons.forEach(btn => {
         const mode = btn.getAttribute('data-mode') || '';
-        const restrictedModes = ['kiosk', 'policy', 'audit', 'health', 'recovery'];
-        if (currentUser.role === 'student' && restrictedModes.includes(mode)) {
+        if (currentUser.role === 'student' && mode === 'kiosk') {
             btn.classList.add('hidden');
-            if (ordersTabMode === mode) ordersTabMode = 'orders';
+            if (ordersTabMode === mode) ordersTabMode = 'all';
         } else {
             btn.classList.remove('hidden');
         }
@@ -8784,7 +8870,7 @@ function renderOrders() {
         btn.classList.toggle('active', btn.getAttribute('data-mode') === ordersTabMode);
         if (!btn.dataset.bound) {
             btn.addEventListener('click', () => {
-                ordersTabMode = btn.getAttribute('data-mode') || 'orders';
+                ordersTabMode = btn.getAttribute('data-mode') || 'all';
                 renderOrders();
             });
             btn.dataset.bound = '1';
@@ -8796,18 +8882,11 @@ function renderOrders() {
         while (ordersHeaderRow.firstChild) {
             ordersHeaderRow.removeChild(ordersHeaderRow.firstChild);
         }
-        const headers = [];
-        if (ordersTabMode === 'all') {
-            headers = ['Date', 'Kind', 'From', 'Summary', 'Status', 'Actions', '', ''];
-        } else if (ordersTabMode === 'orders') {
-            headers = ['Date', 'Requested By', 'Part Name', 'Qty', 'Priority', 'Est. Total', 'Status', 'Actions'];
-        } else if (ordersTabMode === 'requests') {
-            headers = ['Date', 'Type', 'From', 'Details', 'Status', 'Actions', '', ''];
-        } else if (ordersTabMode === 'kiosk' || ordersTabMode === 'policy' || ordersTabMode === 'audit' || ordersTabMode === 'health' || ordersTabMode === 'recovery') {
-            headers = ['Operations Hub Control Center', '', '', '', '', '', '', ''];
-        } else {
-            headers = ['Date', 'Flag Type', 'Actor', 'Details', 'Status', 'Actions', '', ''];
-        }
+        const headers = ordersTabMode === 'kiosk'
+            ? ['Operations Hub Control Center', '', '', '', '', '', '', '']
+            : ordersTabMode === 'flags'
+                ? ['Date', 'Flag Type', 'Actor', 'Details', 'Status', 'Actions', '', '']
+                : ['Date', 'Kind', 'From', 'Summary', 'Status', 'Actions', '', ''];
         headers.forEach(headerText => {
             const th = document.createElement('th');
             th.textContent = headerText;
@@ -8815,12 +8894,10 @@ function renderOrders() {
         });
     }
 
-    if (filter) {
-        filter.style.display = ordersTabMode === 'orders' ? '' : 'none';
-    }
+    if (filter) filter.style.display = 'none';
 
     if (toggleWrap) {
-        toggleWrap.style.display = (currentUser.role === 'student' || ordersTabMode !== 'orders') ? 'none' : '';
+        toggleWrap.style.display = (currentUser.role === 'student' || ordersTabMode !== 'all') ? 'none' : '';
     }
 
     if (toggle) {
@@ -8836,17 +8913,37 @@ function renderOrders() {
         }
     }
 
+    if (loginHelpToggle) {
+        loginHelpToggle.checked = !!kioskManageConfig.featureFlags?.showLoginHelpRequest;
+        if (!loginHelpToggle.dataset.bound) {
+            loginHelpToggle.addEventListener('change', async () => {
+                saveKioskManageConfig({
+                    ...kioskManageConfig,
+                    featureFlags: {
+                        ...kioskManageConfig.featureFlags,
+                        showLoginHelpRequest: !!loginHelpToggle.checked
+                    }
+                });
+                applyLoginHelpVisibility();
+                await saveKioskManageConfigToSupabase();
+                addLog(currentUser.id, 'Login Help Visibility', `Login help button ${loginHelpToggle.checked ? 'enabled' : 'disabled'} from Operations Hub.`);
+                showToast(`Login help button ${loginHelpToggle.checked ? 'enabled' : 'disabled'}.`, 'success');
+            });
+            loginHelpToggle.dataset.bound = '1';
+        }
+    }
+
     if (newOrderBtn && !newOrderBtn.dataset.bound) {
         newOrderBtn.addEventListener('click', () => openOrderRequestModal());
         newOrderBtn.dataset.bound = '1';
     }
 
     if (newOrderBtn) {
-        newOrderBtn.style.display = ordersTabMode === 'orders' ? '' : 'none';
+        newOrderBtn.style.display = ordersTabMode === 'all' ? '' : 'none';
     }
 
     if (configureFormBtn) {
-        configureFormBtn.classList.toggle('hidden', currentUser.role === 'student' || ordersTabMode !== 'orders');
+        configureFormBtn.classList.toggle('hidden', currentUser.role === 'student' || ordersTabMode !== 'all');
         if (!configureFormBtn.dataset.bound) {
             configureFormBtn.addEventListener('click', () => openOrderFormSettingsModal());
             configureFormBtn.dataset.bound = '1';
@@ -8867,29 +8964,6 @@ function renderOrders() {
 
     if (ordersTabMode === 'kiosk') {
         renderOrdersKioskMode(tbody);
-        return;
-    }
-
-    if (ordersTabMode === 'policy') {
-        renderOrdersPolicyMode(tbody);
-        return;
-    }
-
-    if (ordersTabMode === 'audit') {
-        renderOrdersAuditMode(tbody);
-        return;
-    }
-
-    if (ordersTabMode === 'health') {
-        renderOrdersHealthMode(tbody).catch(err => {
-            console.error('Failed to render health alerts:', err);
-            setOrdersPanelBody(tbody, '<div class="glass-panel" style="padding:1rem;">Unable to load health alerts.</div>');
-        });
-        return;
-    }
-
-    if (ordersTabMode === 'recovery') {
-        renderOrdersRecoveryMode(tbody);
         return;
     }
 
@@ -9018,217 +9092,6 @@ function renderOrders() {
                 tbody.appendChild(tr);
             });
         }
-
-        return;
-    }
-
-    if (ordersTabMode === 'requests') {
-        const allRequests = [];
-
-        helpRequests.forEach(r => {
-            allRequests.push({
-                id: r.id,
-                type: 'Credential',
-                from: r.name,
-                details: r.description,
-                status: r.status,
-                timestamp: r.timestamp,
-                sourceArray: 'help',
-                sourceObj: r
-            });
-        });
-
-        extensionRequests.forEach(r => {
-            allRequests.push({
-                id: r.id,
-                type: 'Extension',
-                from: r.userName,
-                details: `${r.itemName} in ${r.projectName} - Due: ${new Date(r.currentDue).toLocaleDateString()} -> ${new Date(r.requestedDue).toLocaleDateString()}`,
-                status: r.status,
-                timestamp: r.timestamp,
-                sourceArray: 'extension',
-                sourceObj: r
-            });
-        });
-
-        allRequests.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-
-        // Clear tbody and build DOM-safe rows
-        while (tbody.firstChild) {
-            tbody.removeChild(tbody.firstChild);
-        }
-
-        if (allRequests.length === 0) {
-            const tr = document.createElement('tr');
-            const td = document.createElement('td');
-            td.colSpan = 8;
-            td.className = 'text-center text-muted';
-            td.textContent = 'No requests found.';
-            tr.appendChild(td);
-            tbody.appendChild(tr);
-        } else {
-            allRequests.forEach(r => {
-                const tr = document.createElement('tr');
-                
-                const statusStyle = r.status === 'Approved' ? 'background:rgba(16,185,129,0.2);color:var(--success)' :
-                    r.status === 'Denied' ? 'background:rgba(239,68,68,0.2);color:var(--danger)' :
-                        r.status === 'Resolved' ? 'background:rgba(16,185,129,0.2);color:var(--success)' :
-                            'background:rgba(255,255,255,0.1)';
-                
-                const typeLabel = escapeHtml(String(r.type || '-'));
-                const fromLabel = escapeHtml(String(r.from || '-'));
-                const detailsLabel = escapeHtml(String(r.details || '-'));
-                const statusLabel = escapeHtml(String(r.status || '-'));
-                const reqId = escapeHtml(String(r.id || ''));
-                
-                // Date column
-                const tdDate = document.createElement('td');
-                const smallDate = document.createElement('small');
-                smallDate.className = 'text-muted';
-                smallDate.textContent = new Date(r.timestamp).toLocaleDateString();
-                tdDate.appendChild(smallDate);
-                tr.appendChild(tdDate);
-                
-                // Type badge column
-                const tdType = document.createElement('td');
-                const typeBadge = document.createElement('span');
-                typeBadge.className = 'badge';
-                typeBadge.style.cssText = 'background: rgba(139,92,246,0.15); color: var(--accent-primary)';
-                typeBadge.textContent = typeLabel;
-                tdType.appendChild(typeBadge);
-                tr.appendChild(tdType);
-                
-                // From column
-                const tdFrom = document.createElement('td');
-                const strongFrom = document.createElement('strong');
-                strongFrom.textContent = fromLabel;
-                tdFrom.appendChild(strongFrom);
-                tr.appendChild(tdFrom);
-                
-                // Details column
-                const tdDetails = document.createElement('td');
-                tdDetails.textContent = detailsLabel;
-                tr.appendChild(tdDetails);
-                
-                // Status column
-                const tdStatus = document.createElement('td');
-                const statusBadge = document.createElement('span');
-                statusBadge.className = 'badge';
-                statusBadge.style.cssText = statusStyle;
-                statusBadge.textContent = statusLabel;
-                tdStatus.appendChild(statusBadge);
-                tr.appendChild(tdStatus);
-                
-                // Actions column
-                const tdActions = document.createElement('td');
-                if (r.status === 'Pending' && currentUser.role !== 'student') {
-                    if (r.sourceArray === 'extension') {
-                        const approveBtn = document.createElement('button');
-                        approveBtn.className = 'btn btn-secondary text-sm approve-req-btn';
-                        approveBtn.style.cssText = 'padding:0.3rem 0.6rem;font-size:0.75rem;margin-right:0.25rem;';
-                        approveBtn.textContent = 'Approve';
-                        approveBtn.setAttribute('data-id', reqId);
-                        
-                        const denyBtn = document.createElement('button');
-                        denyBtn.className = 'btn btn-danger text-sm deny-req-btn';
-                        denyBtn.style.cssText = 'padding:0.3rem 0.6rem;font-size:0.75rem;';
-                        denyBtn.textContent = 'Deny';
-                        denyBtn.setAttribute('data-id', reqId);
-                        
-                        tdActions.appendChild(approveBtn);
-                        tdActions.appendChild(denyBtn);
-                    } else {
-                        const resolveBtn = document.createElement('button');
-                        resolveBtn.className = 'btn btn-secondary text-sm resolve-req-btn2';
-                        resolveBtn.style.cssText = 'padding:0.3rem 0.6rem;font-size:0.75rem;';
-                        resolveBtn.textContent = 'Resolve';
-                        resolveBtn.setAttribute('data-id', reqId);
-                        tdActions.appendChild(resolveBtn);
-                    }
-                } else {
-                    tdActions.textContent = '-';
-                }
-                tr.appendChild(tdActions);
-                
-                // Spacer columns
-                const tdSpacer1 = document.createElement('td');
-                tdSpacer1.textContent = '';
-                tr.appendChild(tdSpacer1);
-                
-                const tdSpacer2 = document.createElement('td');
-                tdSpacer2.textContent = '';
-                tr.appendChild(tdSpacer2);
-                
-                tbody.appendChild(tr);
-            });
-        }
-
-        document.querySelectorAll('.resolve-req-btn2').forEach(btn => {
-            btn.addEventListener('click', async (e) => {
-                const reqId = e.currentTarget.getAttribute('data-id');
-                const req = helpRequests.find(r => r.id === reqId);
-                if (!req) return;
-                const updated = await updateHelpRequestInSupabase(req.id, 'Resolved');
-                if (!updated) {
-                    showToast('Failed to resolve help request in database.', 'error');
-                    return;
-                }
-                await refreshRequestsFromSupabase();
-                showToast('Help request resolved.', 'success');
-                addLog(currentUser.id, 'Resolve Request', `Resolved credential request from ${req.name}`);
-                renderOrders();
-            });
-        });
-
-        document.querySelectorAll('.approve-req-btn').forEach(btn => {
-            btn.addEventListener('click', async (e) => {
-                const reqId = e.currentTarget.getAttribute('data-id');
-                const req = extensionRequests.find(r => r.id === reqId);
-                if (!req) return;
-
-                const updated = await updateExtensionRequestInSupabase(req.id, 'Approved');
-                if (!updated) {
-                    showToast('Failed to approve extension request in database.', 'error');
-                    return;
-                }
-
-                const dueUpdatePromises = [];
-                projects.forEach(p => {
-                    p.itemsOut.forEach(io => {
-                        if (io.itemId === req.itemId && io.dueDate === req.currentDue) {
-                            io.dueDate = req.requestedDue;
-                            if (io.id) dueUpdatePromises.push(updateProjectItemOutDueDateInSupabase(io.id, req.requestedDue));
-                        }
-                    });
-                });
-
-                await Promise.all(dueUpdatePromises);
-                await Promise.all([refreshRequestsFromSupabase(), refreshProjectsFromSupabase()]);
-
-                showToast(`Extension approved for ${req.itemName}.`, 'success');
-                addLog(currentUser.id, 'Approve Extension', `Approved extension for ${req.itemName} requested by ${req.userName}`);
-                renderOrders();
-            });
-        });
-
-        document.querySelectorAll('.deny-req-btn').forEach(btn => {
-            btn.addEventListener('click', async (e) => {
-                const reqId = e.currentTarget.getAttribute('data-id');
-                const req = extensionRequests.find(r => r.id === reqId);
-                if (!req) return;
-
-                const updated = await updateExtensionRequestInSupabase(req.id, 'Denied');
-                if (!updated) {
-                    showToast('Failed to deny extension request in database.', 'error');
-                    return;
-                }
-
-                await refreshRequestsFromSupabase();
-                showToast(`Extension denied for ${req.itemName}.`, 'success');
-                addLog(currentUser.id, 'Deny Extension', `Denied extension for ${req.itemName} requested by ${req.userName}`);
-                renderOrders();
-            });
-        });
 
         return;
     }
@@ -10106,6 +9969,261 @@ document.getElementById('manage-visibility-tags-btn')?.addEventListener('click',
 /* =======================================
    ADD ITEM MODAL
    ======================================= */
+
+/* =======================================
+   KIOSK SETTINGS PAGE
+   ======================================= */
+function getDefaultKioskSettings() {
+    return {
+        sessionTimeout: 30,
+        noActivityExpiry: 3,
+        enforcePrivilegeUnlock: true,
+        showOrderForm: true,
+        showCredentialRequest: true,
+        brandingText: '',
+        startTime: '08:00',
+        endTime: '16:00',
+        enforceHours: true
+    };
+}
+
+function loadKioskSettings() {
+    const stored = localStorage.getItem(KIOSK_CONFIG_STORAGE_KEY);
+    if (stored) {
+        try {
+            const config = JSON.parse(stored);
+            return { ...getDefaultKioskSettings(), ...config };
+        } catch (e) {
+            console.error('Failed to load kiosk settings:', e);
+        }
+    }
+    return getDefaultKioskSettings();
+}
+
+function saveKioskSettings(settings) {
+    try {
+        localStorage.setItem(KIOSK_CONFIG_STORAGE_KEY, JSON.stringify(settings));
+        return true;
+    } catch (e) {
+        console.error('Failed to save kiosk settings:', e);
+        return false;
+    }
+}
+
+function renderKioskSettings() {
+    const settings = loadKioskSettings();
+    
+    // Populate form fields
+    document.getElementById('kiosk-session-timeout').value = settings.sessionTimeout;
+    document.getElementById('kiosk-no-activity-expiry').value = settings.noActivityExpiry;
+    document.getElementById('kiosk-enforce-privilege-unlock').checked = settings.enforcePrivilegeUnlock;
+    document.getElementById('kiosk-show-order-form').checked = settings.showOrderForm;
+    document.getElementById('kiosk-show-credential-request').checked = settings.showCredentialRequest;
+    document.getElementById('kiosk-branding-text').value = settings.brandingText;
+    document.getElementById('kiosk-start-time').value = settings.startTime;
+    document.getElementById('kiosk-end-time').value = settings.endTime;
+    document.getElementById('kiosk-enforce-hours').checked = settings.enforceHours;
+
+    // Set up save button
+    const saveBtn = document.getElementById('save-kiosk-settings-btn');
+    if (saveBtn) {
+        saveBtn.removeEventListener('click', handleSaveKioskSettings);
+        saveBtn.addEventListener('click', handleSaveKioskSettings);
+    }
+}
+
+async function handleSaveKioskSettings() {
+    const settings = {
+        sessionTimeout: parseInt(document.getElementById('kiosk-session-timeout').value) || 30,
+        noActivityExpiry: parseInt(document.getElementById('kiosk-no-activity-expiry').value) || 3,
+        enforcePrivilegeUnlock: document.getElementById('kiosk-enforce-privilege-unlock').checked,
+        showOrderForm: document.getElementById('kiosk-show-order-form').checked,
+        showCredentialRequest: document.getElementById('kiosk-show-credential-request').checked,
+        brandingText: document.getElementById('kiosk-branding-text').value.trim(),
+        startTime: document.getElementById('kiosk-start-time').value,
+        endTime: document.getElementById('kiosk-end-time').value,
+        enforceHours: document.getElementById('kiosk-enforce-hours').checked
+    };
+
+    // Validation
+    if (settings.sessionTimeout < 5 || settings.sessionTimeout > 480) {
+        showToast('Session timeout must be between 5 and 480 minutes.', 'error');
+        return;
+    }
+
+    if (settings.noActivityExpiry < 1 || settings.noActivityExpiry > 60) {
+        showToast('No activity expiry must be between 1 and 60 minutes.', 'error');
+        return;
+    }
+
+    if (settings.enforceHours) {
+        const startHour = parseInt(settings.startTime.split(':')[0]);
+        const endHour = parseInt(settings.endTime.split(':')[0]);
+        if (startHour >= endHour) {
+            showToast('End time must be after start time.', 'error');
+            return;
+        }
+    }
+
+    if (saveKioskSettings(settings)) {
+        showToast('Kiosk settings saved successfully.', 'success');
+    } else {
+        showToast('Failed to save kiosk settings.', 'error');
+    }
+}
+
+/* =======================================
+   BULK USER IMPORT
+   ======================================= */
+function setupBulkUserImport() {
+    const importBtn = document.getElementById('bulk-import-users-btn');
+    if (!importBtn) return;
+
+    importBtn.addEventListener('click', () => {
+        showBulkUserImportModal();
+    });
+}
+
+function showBulkUserImportModal() {
+    const html = `
+        <div class="modal-header">
+            <h3>Bulk Import Users</h3>
+            <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
+        </div>
+        <div class="modal-body">
+            <div class="form-group">
+                <label>CSV Format</label>
+                <p class="text-muted" style="font-size: 0.9rem; margin-bottom: 1rem;">
+                    Import users from CSV. Use columns: <code>ID, Name, Grade, Role, Permissions</code><br>
+                    Role: <code>student</code>, <code>teacher</code>, <code>developer</code><br>
+                    Permissions: <code>create_project,join_project,signout</code> (comma-separated, student only)
+                </p>
+                <textarea id="bulk-import-csv" class="form-control" style="height: 240px; font-family: monospace; font-size: 0.9rem;" placeholder="STU-001,John Doe,10,student,join_project,signout&#10;STU-002,Jane Smith,11,student,create_project,join_project,signout&#10;TEA-001,Mr. Teacher,0,teacher&#10;DEV-001,Admin User,0,developer"></textarea>
+                <small class="text-muted" style="display: block; margin-top: 0.5rem;">Paste CSV data directly or upload a file below.</small>
+            </div>
+            <div class="form-group">
+                <label>or Import from File</label>
+                <input type="file" id="bulk-import-file" class="form-control" accept=".csv,.txt" style="padding: 0.5rem;">
+                <small class="text-muted" style="display: block; margin-top: 0.5rem;">Supported: CSV, TXT files</small>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            <button class="btn btn-primary" id="confirm-bulk-import-btn">Import Users</button>
+        </div>
+    `;
+    openModal(html);
+
+    // Set up file input handler
+    const fileInput = document.getElementById('bulk-import-file');
+    if (fileInput) {
+        fileInput.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                const text = await file.text();
+                document.getElementById('bulk-import-csv').value = text;
+            }
+        });
+    }
+
+    // Set up import button handler
+    const importBtn = document.getElementById('confirm-bulk-import-btn');
+    if (importBtn) {
+        importBtn.addEventListener('click', () => {
+            processBulkUserImport();
+        });
+    }
+}
+
+async function processBulkUserImport() {
+    const csvText = document.getElementById('bulk-import-csv').value.trim();
+    if (!csvText) {
+        showToast('Please provide CSV data.', 'error');
+        return;
+    }
+
+    const lines = csvText.split('\\n').filter(l => l.trim());
+    const users = [];
+    const errors = [];
+
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) continue;
+
+        const parts = line.split(',').map(p => p.trim());
+        if (parts.length < 4) {
+            errors.push(`Row ${i + 1}: Incomplete data (need at least ID, Name, Grade, Role)`);
+            continue;
+        }
+
+        const [id, name, grade, role, ...permsParts] = parts;
+        
+        if (!id || !name || !role) {
+            errors.push(`Row ${i + 1}: Missing required fields (ID, Name, or Role)`);
+            continue;
+        }
+
+        if (!['student', 'teacher', 'developer'].includes(role)) {
+            errors.push(`Row ${i + 1}: Invalid role '${role}'. Use student, teacher, or developer.`);
+            continue;
+        }
+
+        const user = {
+            id: id.toUpperCase(),
+            name,
+            grade: grade || '0',
+            role,
+            permissions: role === 'student' ? {
+                canCreateProjects: permsParts.includes('create_project'),
+                canJoinProjects: permsParts.includes('join_project'),
+                canSignOut: permsParts.includes('signout')
+            } : {
+                canCreateProjects: true,
+                canJoinProjects: true,
+                canSignOut: true
+            }
+        };
+
+        users.push(user);
+    }
+
+    if (errors.length > 0) {
+        showToast(`${errors.length} row(s) had errors:\\n${errors.slice(0, 3).join('\\n')}${errors.length > 3 ? '\\n...' : ''}`, 'error');
+    }
+
+    if (users.length === 0) {
+        showToast('No valid users to import.', 'error');
+        return;
+    }
+
+    // Verify auth if importing teachers/developers
+    const hasPrivilegedRoles = users.some(u => ['teacher', 'developer'].includes(u.role));
+    if (hasPrivilegedRoles && !privilegedSessionAuthenticated) {
+        showToast('Privileged password required to import teacher/developer accounts.', 'error');
+        return;
+    }
+
+    // Import users
+    let imported = 0;
+    let skipped = 0;
+
+    for (const user of users) {
+        if (mockUsers.find(u => u.id === user.id)) {
+            skipped++;
+            continue;
+        }
+
+        mockUsers.push({
+            ...user,
+            createdAt: new Date().toISOString()
+        });
+        imported++;
+    }
+
+    closeModal();
+    showToast(`${imported} user(s) imported successfully${skipped > 0 ? `, ${skipped} skipped (already exist)` : ''}.`, 'success');
+    renderUsers();
+}
 
 /* =======================================
    SECRET DEBUG SYSTEM

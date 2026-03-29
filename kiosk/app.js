@@ -2383,13 +2383,17 @@ async function promptSetPrivilegedActionPassword(reason = 'this action', forcedR
     if (!currentUser || !userCanPerformPrivilegedActions()) return false;
 
     return new Promise(resolve => {
+        const hasExistingPassword = !!getUserPrivilegedPasswordHash(currentUser);
         const resetHint = forcedReset
             ? 'Your current authentication password matches the debug PIN. Create a different password now.'
-            : `Set an authentication password for ${escapeHtml(currentUser.name)} to continue with ${escapeHtml(reason)}.`;
+            : hasExistingPassword
+                ? 'You are updating your Authentication Password.'
+                : `Set an authentication password for ${escapeHtml(currentUser.name)} to continue with ${escapeHtml(reason)}.`;
+        const modalTitle = hasExistingPassword ? 'Reset Authorization Password' : 'Set Authentication Password';
 
         const html = `
             <div class="modal-header debug-modal-header">
-                <h3 style="color:#a78bfa"><i class="ph ph-lock-key"></i> Set Authentication Password</h3>
+                <h3 style="color:#a78bfa"><i class="ph ph-lock-key"></i> ${modalTitle}</h3>
                 <button class="close-btn" id="priv-pass-close"><i class="ph ph-x"></i></button>
             </div>
             <div class="modal-body">
@@ -3554,6 +3558,9 @@ function renderInventory() {
                         ${currentUser.role !== 'student' ? `
                             <button class="btn btn-secondary btn-sm inventory-item-action-btn edit-item-btn" data-id="${safeItemId}" title="Edit Item">
                                 <i class="ph ph-pencil-simple"></i>
+                            </button>
+                            <button class="btn btn-danger btn-sm inventory-item-action-btn delete-item-btn" data-id="${safeItemId}" title="Delete Item">
+                                <i class="ph ph-trash"></i>
                             </button>` : ''}
                         <button class="btn btn-secondary btn-sm inventory-item-action-btn add-basket-btn" data-id="${safeItemId}" title="Add to Basket" 
                             style="background: rgba(16, 185, 129, 0.1); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.2)">
@@ -3607,6 +3614,30 @@ function renderInventory() {
         btn.addEventListener('click', (e) => {
             const id = e.currentTarget.getAttribute('data-id');
             openEditItemModal(id);
+        });
+    });
+
+    document.querySelectorAll('.delete-item-btn').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+            const id = e.currentTarget.getAttribute('data-id');
+            const item = inventoryItems.find(i => i.id === id);
+            if (!item) return;
+
+            const authOk = await ensurePrivilegedActionAuth('deleting inventory items');
+            if (!authOk) return;
+
+            if (!confirm(`Delete ${item.name}? This cannot be undone.`)) return;
+
+            const deleted = await deleteInventoryItemFromSupabase(id);
+            if (!deleted) {
+                showToast('Failed to delete item from database.', 'error');
+                return;
+            }
+
+            await refreshInventoryFromSupabase();
+            showToast(`${item.name} deleted.`, 'success');
+            addLog(currentUser.id, 'Delete Inventory Item', `Deleted ${item.name} (${item.id}).`);
+            renderInventory();
         });
     });
 

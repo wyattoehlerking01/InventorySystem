@@ -92,6 +92,10 @@
                 <i class="ph ph-sign-in"></i> Sign In
             </button>
 
+            <button class="btn btn-secondary mt-2 w-full" id="show-help-btn" style="margin-top: 0.6rem;">
+                <i class="ph ph-lifebuoy"></i> Need Help / Request Credentials
+            </button>
+
             <!-- Keep a hidden scanner field to avoid breaking shared scanner utilities -->
             <input type="password" id="barcode-input" autocomplete="off" aria-hidden="true"
                 tabindex="-1" style="position:fixed;left:-10000px;top:-10000px;width:1px;height:1px;opacity:0;pointer-events:none;">
@@ -177,8 +181,9 @@
                 </button>
                 <button class="nav-btn restricted" id="nav-users" data-target="users">
                     <i class="ph ph-users"></i> Users
-                </button>
-                <button class="nav-btn restricted hidden" id="nav-requests" data-target="requests">
+                </button>                <button class=\"nav-btn restricted\" id=\"nav-kiosk-settings\" data-target=\"kiosk-settings\">
+                    <i class=\"ph ph-monitor-play\"></i> Kiosk Settings
+                </button>                <button class="nav-btn restricted hidden" id="nav-requests" data-target="requests">
                     <i class="ph ph-envelope-open"></i> Requests
                 </button>
             </nav>
@@ -267,6 +272,9 @@
                             <button class="btn btn-secondary" id="bulk-manage-items-btn">
                                 <i class="ph ph-stack"></i> Bulk Tags/Categories
                             </button>
+                            <button class="btn btn-danger" id="bulk-delete-items-btn">
+                                <i class="ph ph-trash"></i> Bulk Delete
+                            </button>
                             <button class="btn btn-secondary" id="bulk-import-items-btn">
                                 <i class="ph ph-upload"></i> Bulk Import
                             </button>
@@ -329,9 +337,7 @@
                                 <div class="operations-hub-nav-group">
                                     <span class="operations-hub-group-title">Queue Views</span>
                                     <div class="operations-hub-mode-group">
-                                        <button class="btn btn-secondary orders-mode-btn active" data-mode="all">All Activity</button>
-                                        <button class="btn btn-secondary orders-mode-btn" data-mode="orders">Orders</button>
-                                        <button class="btn btn-secondary orders-mode-btn" data-mode="requests">Requests</button>
+                                        <button class="btn btn-secondary orders-mode-btn active" data-mode="all">Orders + Requests</button>
                                         <button class="btn btn-secondary orders-mode-btn" data-mode="flags">System Flags</button>
                                     </div>
                                 </div>
@@ -339,10 +345,6 @@
                                     <span class="operations-hub-group-title">Admin Views</span>
                                     <div class="operations-hub-mode-group">
                                         <button class="btn btn-secondary orders-mode-btn" data-mode="kiosk">Kiosk Control</button>
-                                        <button class="btn btn-secondary orders-mode-btn" data-mode="policy">Policy</button>
-                                        <button class="btn btn-secondary orders-mode-btn" data-mode="audit">Audit Center</button>
-                                        <button class="btn btn-secondary orders-mode-btn" data-mode="health">Health Alerts</button>
-                                        <button class="btn btn-secondary orders-mode-btn" data-mode="recovery">Recovery</button>
                                     </div>
                                 </div>
                             </div>
@@ -369,6 +371,10 @@
                         <div class="glass-panel" style="padding:0.65rem 0.8rem;display:flex;align-items:center;gap:0.55rem;">
                             <input type="checkbox" id="orders-student-visible-toggle">
                             <label for="orders-student-visible-toggle" style="cursor:pointer;">Allow students to view Orders tab</label>
+                        </div>
+                        <div class="glass-panel" style="padding:0.65rem 0.8rem;display:flex;align-items:center;gap:0.55rem;">
+                            <input type="checkbox" id="login-help-visible-toggle">
+                            <label for="login-help-visible-toggle" style="cursor:pointer;">Show login Help / Request Credentials button on kiosk sign-in</label>
                         </div>
                     </div>
 
@@ -444,9 +450,11 @@
                 <!-- Users Page -->
                 <div id="page-users" class="page hidden">
                     <div class="action-bar users-action-bar">
-                        <input type="text" class="form-control users-search-input" id="users-search-input"
-                            placeholder="Search users...">
-                        <h3>System Users</h3>
+                        <div class="users-heading-search">
+                            <h3>System Users</h3>
+                            <input type="text" class="form-control users-search-input" id="users-search-input"
+                                placeholder="Search users...">
+                        </div>
                         <div class="users-toolbar">
                             <button class="btn btn-secondary" id="view-requests-btn">
                                 <i class="ph ph-lifebuoy"></i> Requests
@@ -465,6 +473,9 @@
                             </button>
                             <button class="btn btn-secondary hidden" id="bulk-suspend-users-btn">
                                 <i class="ph ph-user-minus"></i> Bulk Suspend
+                            </button>
+                            <button class="btn btn-secondary" id="bulk-import-users-btn">
+                                <i class="ph ph-upload"></i> Bulk Import Users
                             </button>
                             <button class="btn btn-primary" id="add-user-btn">
                                 <i class="ph ph-user-plus"></i> Add User
@@ -512,6 +523,88 @@
                                 <!-- Injected via JS -->
                             </tbody>
                         </table>
+                    </div>
+                </div>
+
+                <!-- Kiosk Settings Page -->
+                <div id="page-kiosk-settings" class="page hidden">
+                    <div class="action-bar" style="gap: 1rem; margin-bottom: 2rem;">
+                        <h3 style="margin: 0; flex: 1;">Kiosk Configuration</h3>
+                        <button class="btn btn-primary" id="save-kiosk-settings-btn">
+                            <i class="ph ph-save"></i> Save Settings
+                        </button>
+                    </div>
+
+                    <div class="glass-panel" style="padding: 2rem; max-width: 900px;">
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2.5rem;">
+                            <!-- Session Settings Column -->
+                            <div>
+                                <h4 style="margin-bottom: 1.5rem; color: var(--text-primary); font-size: 1.1rem;">Session Management</h4>
+                                <div class="form-group">
+                                    <label>Session Timeout (minutes)</label>
+                                    <input type="number" id="kiosk-session-timeout" class="form-control" min="5" max="480" value="30" placeholder="e.g. 30">
+                                    <small class="text-muted" style="display: block; margin-top: 0.3rem;">Auto-logout idle sessions</small>
+                                </div>
+                                <div class="form-group">
+                                    <label>No Activity Expiry (minutes)</label>
+                                    <input type="number" id="kiosk-no-activity-expiry" class="form-control" min="1" max="60" value="3" placeholder="e.g. 3">
+                                    <small class="text-muted" style="display: block; margin-top: 0.3rem;">Logout after no user action</small>
+                                </div>
+                                <div class="form-group">
+                                    <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                                        <input type="checkbox" id="kiosk-enforce-privilege-unlock" checked>
+                                        Require Privilege Password for Unlock
+                                    </label>
+                                    <small class="text-muted" style="display: block; margin-top: 0.3rem;">Prevent students from unlocking screens</small>
+                                </div>
+                            </div>
+
+                            <!-- Feature Toggles Column -->
+                            <div>
+                                <h4 style="margin-bottom: 1.5rem; color: var(--text-primary); font-size: 1.1rem;">Feature Toggles</h4>
+                                <div class="form-group" style="margin-bottom: 1.5rem;">
+                                    <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                                        <input type="checkbox" id="kiosk-show-order-form" checked>
+                                        Show Order Form
+                                    </label>
+                                    <small class="text-muted" style="display: block; margin-top: 0.3rem;">Allow students to place orders</small>
+                                </div>
+                                <div class="form-group" style="margin-bottom: 1.5rem;">
+                                    <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                                        <input type="checkbox" id="kiosk-show-credential-request" checked>
+                                        Show Credential Request Form
+                                    </label>
+                                    <small class="text-muted" style="display: block; margin-top: 0.3rem;">Allow students to request passwords</small>
+                                </div>
+                                <div class="form-group">
+                                    <label>Kiosk Branding Text</label>
+                                    <input type="text" id="kiosk-branding-text" class="form-control" placeholder="e.g. Equipment Room A" maxlength="100">
+                                    <small class="text-muted" style="display: block; margin-top: 0.3rem;">Display location or description</small>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Sign-in Hours Section -->
+                        <div style="margin-top: 2.5rem; padding-top: 2.5rem; border-top: 1px solid var(--glass-border);">
+                            <h4 style="margin-bottom: 1.5rem; color: var(--text-primary); font-size: 1.1rem;">Operating Hours</h4>
+                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1.5rem;">
+                                <div class="form-group">
+                                    <label>Start Time (HH:MM)</label>
+                                    <input type="time" id="kiosk-start-time" class="form-control" value="08:00">
+                                </div>
+                                <div class="form-group">
+                                    <label>End Time (HH:MM)</label>
+                                    <input type="time" id="kiosk-end-time" class="form-control" value="16:00">
+                                </div>
+                                <div class="form-group">
+                                    <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                                        <input type="checkbox" id="kiosk-enforce-hours" checked>
+                                        Enforce Operating Hours
+                                    </label>
+                                    <small class="text-muted" style="display: block; margin-top: 0.3rem;">Block access outside these hours</small>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>

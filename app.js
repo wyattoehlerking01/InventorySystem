@@ -2021,7 +2021,9 @@ function setProfilePrivilegedActionState(isEnabled) {
     if (!userProfileEl) return;
     userProfileEl.classList.toggle('profile-action-enabled', !!isEnabled);
     if (isEnabled) {
-        userProfileEl.setAttribute('title', 'Change Authentication Password');
+        const hasExistingPassword = !!(currentUser && getUserPrivilegedPasswordHash(currentUser));
+        const profileActionLabel = hasExistingPassword ? 'Reset Authorization Password' : 'Set Authorization Password';
+        userProfileEl.setAttribute('title', profileActionLabel);
         userProfileEl.setAttribute('role', 'button');
         userProfileEl.setAttribute('tabindex', '0');
     } else {
@@ -2320,13 +2322,17 @@ async function promptSetPrivilegedActionPassword(reason = 'this action', forcedR
     if (!currentUser || !userCanPerformPrivilegedActions()) return false;
 
     return new Promise(resolve => {
+        const hasExistingPassword = !!getUserPrivilegedPasswordHash(currentUser);
         const resetHint = forcedReset
             ? 'Your current authentication password matches the debug PIN. Create a different password now.'
-            : `Set an authentication password for ${escapeHtml(currentUser.name)} to continue with ${escapeHtml(reason)}.`;
+            : hasExistingPassword
+                ? 'You are updating your Authentication Password.'
+                : `Set an authentication password for ${escapeHtml(currentUser.name)} to continue with ${escapeHtml(reason)}.`;
+        const modalTitle = hasExistingPassword ? 'Reset Authorization Password' : 'Set Authentication Password';
 
         const html = `
             <div class="modal-header debug-modal-header">
-                <h3 style="color:#a78bfa"><i class="ph ph-lock-key"></i> Set Authentication Password</h3>
+                <h3 style="color:#a78bfa"><i class="ph ph-lock-key"></i> ${modalTitle}</h3>
                 <button class="close-btn" id="priv-pass-close"><i class="ph ph-x"></i></button>
             </div>
             <div class="modal-body">
