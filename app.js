@@ -2299,10 +2299,10 @@ async function savePrivilegedPasswordHashForCurrentUser(hashValue) {
 
     if (typeof updateUserInSupabase === 'function') {
         for (const payload of payloadCandidates) {
-            const updated = await updateUserInSupabase(currentUser.id, payload);
-            if (!updated) continue;
+            const result = await updateUserInSupabase(currentUser.id, payload);
+            if (result.error) continue;
             savedToSupabase = true;
-            currentUser = { ...currentUser, ...updated, privileged_password_hash: normalizedHash };
+            currentUser = { ...currentUser, ...result.data, privileged_password_hash: normalizedHash };
             break;
         }
     }
@@ -5791,9 +5791,16 @@ function renderUsers() {
             }
 
             const nextStatus = isSuspending ? 'Suspended' : 'Active';
-            const updated = await updateUserInSupabase(id, { status: nextStatus });
-            if (!updated) {
-                showToast('Failed to update user status in database.', 'error');
+            const result = await updateUserInSupabase(id, { status: nextStatus });
+            if (result.error) {
+                let errorMsg = 'Failed to update user status in database.';
+                if (result.error.message) {
+                    errorMsg = `Failed to update user status: ${result.error.message}`;
+                }
+                if (result.error.hint && result.error.hint.includes('RLS')) {
+                    errorMsg = 'You do not have permission to update user status.';
+                }
+                showToast(errorMsg, 'error');
                 return;
             }
             await refreshUsersFromSupabase();
@@ -6090,9 +6097,16 @@ async function openUserModal(editId = null) {
             });
 
             // Update in Supabase
-            const updated = await updateUserInSupabase(id, { name, role, grade, status: userToEdit.status });
-            if (!updated) {
-                showToast('Failed to update user in database.', 'error');
+            const result = await updateUserInSupabase(id, { name, role, grade, status: userToEdit.status });
+            if (result.error) {
+                let errorMsg = 'Failed to update user in database.';
+                if (result.error.message) {
+                    errorMsg = `Failed to update user: ${result.error.message}`;
+                }
+                if (result.error.hint && result.error.hint.includes('RLS')) {
+                    errorMsg = 'You do not have permission to update this user.';
+                }
+                showToast(errorMsg, 'error');
                 return;
             }
             await refreshUsersFromSupabase();
@@ -6700,20 +6714,33 @@ document.getElementById('bulk-suspend-users-btn')?.addEventListener('click', asy
     if (confirm(promptMsg)) {
         let suspendCount = 0;
         let activateCount = 0;
+        let failureCount = 0;
         for (const u of targetUsers) {
             if (u.status === 'Suspended') {
-                await updateUserInSupabase(u.id, { status: 'Active' });
-                activateCount++;
+                const result = await updateUserInSupabase(u.id, { status: 'Active' });
+                if (!result.error) {
+                    activateCount++;
+                } else {
+                    failureCount++;
+                }
             } else {
-                await updateUserInSupabase(u.id, { status: 'Suspended' });
-                suspendCount++;
+                const result = await updateUserInSupabase(u.id, { status: 'Suspended' });
+                if (!result.error) {
+                    suspendCount++;
+                } else {
+                    failureCount++;
+                }
             }
         }
 
         await refreshUsersFromSupabase();
 
-        showToast(`Updated status for ${targetUsers.length} students (${suspendCount} suspended, ${activateCount} activated).`, 'success');
-        addLog(currentUser.id, 'Bulk Suspend', `Changed suspension for ${targetUsers.length} students via selection.`);
+        let msg = `Updated status for ${targetUsers.length - failureCount} students (${suspendCount} suspended, ${activateCount} activated).`;
+        if (failureCount > 0) {
+            msg += ` ${failureCount} update(s) failed - you may not have permission.`;
+        }
+        showToast(msg, failureCount > 0 ? 'warning' : 'success');
+        addLog(currentUser.id, 'Bulk Suspend', `Changed suspension for ${targetUsers.length - failureCount} students via selection.`);
         renderUsers();
     }
 });

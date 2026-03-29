@@ -2771,10 +2771,10 @@ async function savePrivilegedPasswordHashForCurrentUser(hashValue) {
 
     if (typeof updateUserInSupabase === 'function') {
         for (const payload of payloadCandidates) {
-            const updated = await updateUserInSupabase(currentUser.id, payload);
-            if (!updated) continue;
+            const result = await updateUserInSupabase(currentUser.id, payload);
+            if (result.error) continue;
             savedToSupabase = true;
-            currentUser = { ...currentUser, ...updated, privileged_password_hash: normalizedHash };
+            currentUser = { ...currentUser, ...result.data, privileged_password_hash: normalizedHash };
             setUserPrivilegedPasswordHash(currentUser.id, normalizedHash);
             break;
         }
@@ -6671,9 +6671,16 @@ function renderUsers() {
             }
 
             const nextStatus = isSuspending ? 'Suspended' : 'Active';
-            const updated = await updateUserInSupabase(id, { status: nextStatus });
-            if (!updated) {
-                showToast('Failed to update user status in database.', 'error');
+            const result = await updateUserInSupabase(id, { status: nextStatus });
+            if (result.error) {
+                let errorMsg = 'Failed to update user status in database.';
+                if (result.error.message) {
+                    errorMsg = `Failed to update user status: ${result.error.message}`;
+                }
+                if (result.error.hint && result.error.hint.includes('RLS')) {
+                    errorMsg = 'You do not have permission to update user status.';
+                }
+                showToast(errorMsg, 'error');
                 return;
             }
             await refreshUsersFromSupabase();
@@ -6964,9 +6971,16 @@ async function openUserModal(editId = null) {
             });
 
             // Update in Supabase
-            const updated = await updateUserInSupabase(id, { name, role, grade, status: userToEdit.status });
-            if (!updated) {
-                showToast('Failed to update user in database.', 'error');
+            const result = await updateUserInSupabase(id, { name, role, grade, status: userToEdit.status });
+            if (result.error) {
+                let errorMsg = 'Failed to update user in database.';
+                if (result.error.message) {
+                    errorMsg = `Failed to update user: ${result.error.message}`;
+                }
+                if (result.error.hint && result.error.hint.includes('RLS')) {
+                    errorMsg = 'You do not have permission to update this user.';
+                }
+                showToast(errorMsg, 'error');
                 return;
             }
             await refreshUsersFromSupabase();
@@ -7571,20 +7585,33 @@ document.getElementById('bulk-suspend-users-btn')?.addEventListener('click', asy
     if (confirm(promptMsg)) {
         let suspendCount = 0;
         let activateCount = 0;
+        let failureCount = 0;
         for (const u of targetUsers) {
             if (u.status === 'Suspended') {
-                await updateUserInSupabase(u.id, { status: 'Active' });
-                activateCount++;
+                const result = await updateUserInSupabase(u.id, { status: 'Active' });
+                if (!result.error) {
+                    activateCount++;
+                } else {
+                    failureCount++;
+                }
             } else {
-                await updateUserInSupabase(u.id, { status: 'Suspended' });
-                suspendCount++;
+                const result = await updateUserInSupabase(u.id, { status: 'Suspended' });
+                if (!result.error) {
+                    suspendCount++;
+                } else {
+                    failureCount++;
+                }
             }
         }
 
         await refreshUsersFromSupabase();
 
-        showToast(`Updated status for ${targetUsers.length} students (${suspendCount} suspended, ${activateCount} activated).`, 'success');
-        addLog(currentUser.id, 'Bulk Suspend', `Changed suspension for ${targetUsers.length} students via selection.`);
+        let msg = `Updated status for ${targetUsers.length - failureCount} students (${suspendCount} suspended, ${activateCount} activated).`;
+        if (failureCount > 0) {
+            msg += ` ${failureCount} update(s) failed - you may not have permission.`;
+        }
+        showToast(msg, failureCount > 0 ? 'warning' : 'success');
+        addLog(currentUser.id, 'Bulk Suspend', `Changed suspension for ${targetUsers.length - failureCount} students via selection.`);
         renderUsers();
     }
 });
@@ -10182,7 +10209,8 @@ function getDefaultKioskSettings() {
         brandingText: '',
         startTime: '08:00',
         endTime: '16:00',
-        enforceHours: true
+        enforceHours: true,
+        doorUnlockDuration: 2
     };
 }
 
@@ -10219,6 +10247,7 @@ function renderKioskSettings() {
     document.getElementById('kiosk-show-order-form').checked = settings.showOrderForm;
     document.getElementById('kiosk-show-credential-request').checked = settings.showCredentialRequest;
     document.getElementById('kiosk-branding-text').value = settings.brandingText;
+    document.getElementById('kiosk-door-unlock-duration').value = settings.doorUnlockDuration;
     document.getElementById('kiosk-start-time').value = settings.startTime;
     document.getElementById('kiosk-end-time').value = settings.endTime;
     document.getElementById('kiosk-enforce-hours').checked = settings.enforceHours;
@@ -10239,6 +10268,7 @@ async function handleSaveKioskSettings() {
         showOrderForm: document.getElementById('kiosk-show-order-form').checked,
         showCredentialRequest: document.getElementById('kiosk-show-credential-request').checked,
         brandingText: document.getElementById('kiosk-branding-text').value.trim(),
+        doorUnlockDuration: parseFloat(document.getElementById('kiosk-door-unlock-duration').value) || 2,
         startTime: document.getElementById('kiosk-start-time').value,
         endTime: document.getElementById('kiosk-end-time').value,
         enforceHours: document.getElementById('kiosk-enforce-hours').checked
@@ -10252,6 +10282,11 @@ async function handleSaveKioskSettings() {
 
     if (settings.noActivityExpiry < 1 || settings.noActivityExpiry > 60) {
         showToast('No activity expiry must be between 1 and 60 minutes.', 'error');
+        return;
+    }
+
+    if (settings.doorUnlockDuration < 0.5 || settings.doorUnlockDuration > 10) {
+        showToast('Door unlock duration must be between 0.5 and 10 seconds.', 'error');
         return;
     }
 

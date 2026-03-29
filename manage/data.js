@@ -1149,10 +1149,23 @@ async function updateUserInSupabase(userId, updates) {
     }
     
     if (error) {
+        const errorMessage = error.message || JSON.stringify(error);
         console.error('Error updating user:', error);
-        return null;
+        // Return error info so caller can show meaningful message
+        return {
+            data: null,
+            error: {
+                message: errorMessage,
+                details: error.details,
+                hint: error.hint,
+                code: error.code
+            }
+        };
     }
-    return data?.[0];
+    return {
+        data: data?.[0],
+        error: null
+    };
 }
 
 /**

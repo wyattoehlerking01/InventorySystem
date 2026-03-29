@@ -608,6 +608,18 @@
                             </div>
                         </div>
 
+                        <!-- Hardware Settings Section -->
+                        <div style="margin-top: 2.5rem; padding-top: 2.5rem; border-top: 1px solid var(--glass-border);">
+                            <h4 style="margin-bottom: 1.5rem; color: var(--text-primary); font-size: 1.1rem;">Hardware Settings</h4>
+                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1.5rem;">
+                                <div class="form-group">
+                                    <label>Door Unlock Duration (seconds)</label>
+                                    <input type="number" id="kiosk-door-unlock-duration" class="form-control" min="0.5" max="10" step="0.5" value="2" placeholder="e.g. 2">
+                                    <small class="text-muted" style="display: block; margin-top: 0.3rem;">How long the door solenoid stays unlocked</small>
+                                </div>
+                            </div>
+                        </div>
+
                         <!-- Sign-in Hours Section -->
                         <div style="margin-top: 2.5rem; padding-top: 2.5rem; border-top: 1px solid var(--glass-border);">
                             <h4 style="margin-bottom: 1.5rem; color: var(--text-primary); font-size: 1.1rem;">Operating Hours</h4>
