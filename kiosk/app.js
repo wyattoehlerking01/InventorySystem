@@ -2037,15 +2037,6 @@ function applyOrdersNavVisibility() {
 function setProfilePrivilegedActionState(isEnabled) {
     if (!userProfileEl) return;
     userProfileEl.classList.toggle('profile-action-enabled', !!isEnabled);
-    if (isEnabled) {
-        userProfileEl.setAttribute('title', 'Change Authentication Password');
-        userProfileEl.setAttribute('role', 'button');
-        userProfileEl.setAttribute('tabindex', '0');
-    } else {
-        userProfileEl.removeAttribute('title');
-        userProfileEl.removeAttribute('role');
-        userProfileEl.removeAttribute('tabindex');
-    }
 }
 
 function login(user) {
@@ -2106,9 +2097,10 @@ function login(user) {
         applyOrdersNavVisibility();
         document.getElementById('manage-categories-btn')?.classList.remove('hidden');
         document.getElementById('manage-visibility-tags-btn')?.classList.remove('hidden');
-        document.getElementById('bulk-manage-items-btn')?.classList.remove('hidden');
-        document.getElementById('bulk-import-items-btn')?.classList.remove('hidden');
-        setProfilePrivilegedActionState(true);
+        // Bulk actions disabled in kiosk
+        document.getElementById('bulk-manage-items-btn')?.classList.add('hidden');
+        document.getElementById('bulk-import-items-btn')?.classList.add('hidden');
+        setProfilePrivilegedActionState(false);
     }
 
     // Role-based Add Item / Create Project UI logic
@@ -3691,138 +3683,7 @@ document.getElementById('request-item-btn')?.addEventListener('click', () => {
     });
 });
 
-document.getElementById('bulk-manage-items-btn')?.addEventListener('click', async () => {
-    if (currentUser?.role === 'student') {
-        showToast('You do not have permission to bulk manage items.', 'error');
-        return;
-    }
-
-    const selectedIds = getSelectedInventoryItemIds();
-    if (selectedIds.length === 0) {
-        showToast('Select at least one inventory item using the checkboxes first.', 'error');
-        return;
-    }
-
-    const authOk = await ensurePrivilegedActionAuth('bulk managing inventory categories and visibility tags');
-    if (!authOk) return;
-
-    const categoryOptions = [
-        '<option value="__KEEP__">Keep existing categories</option>',
-        ...(categories.length > 0
-            ? categories.map(c => `<option value="${c}">${c}</option>`)
-            : ['<option value="Uncategorized">Uncategorized</option>'])
-    ].join('');
-
-    const tagOptions = visibilityTags.length > 0
-        ? visibilityTags.map(tag => `
-            <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;margin-bottom:0.4rem;">
-                <input type="checkbox" class="bulk-item-tag-cb" value="${tag}"> ${tag}
-            </label>
-        `).join('')
-        : '<p class="text-muted text-sm">No visibility tags defined. Use Visibility Tags to create some first.</p>';
-
-    const html = `
-        <div class="modal-header">
-            <h3>Bulk Apply Tags/Categories</h3>
-            <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
-        </div>
-        <div class="modal-body">
-            <p class="text-secondary mb-4">Applying changes to <strong>${selectedIds.length}</strong> selected item(s).</p>
-            <div class="form-group">
-                <label>Category</label>
-                <select id="bulk-item-category" class="form-control">
-                    ${categoryOptions}
-                </select>
-            </div>
-            <div class="form-group">
-                <label>Visibility Tags</label>
-                <select id="bulk-tag-mode" class="form-control" style="margin-bottom:0.6rem;">
-                    <option value="keep">Keep existing tags</option>
-                    <option value="add">Add selected tags</option>
-                    <option value="replace">Replace with selected tags</option>
-                    <option value="remove">Remove selected tags</option>
-                </select>
-                <div class="glass-panel" style="padding:0.75rem;max-height:220px;overflow:auto;">
-                    ${tagOptions}
-                </div>
-            </div>
-            <small class="text-muted">Tip: choose "Replace" with no tags selected to clear all tags from selected items.</small>
-        </div>
-        <div class="modal-footer">
-            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-            <button class="btn btn-primary" id="confirm-bulk-item-apply">Apply Changes</button>
-        </div>
-    `;
-
-    openModal(html);
-
-    const confirmBtn = document.getElementById('confirm-bulk-item-apply');
-    confirmBtn?.addEventListener('click', () => {
-        withButtonPending(confirmBtn, 'Applying...', async () => {
-            const categoryValue = document.getElementById('bulk-item-category')?.value || '__KEEP__';
-            const tagMode = document.getElementById('bulk-tag-mode')?.value || 'keep';
-            const selectedTags = Array.from(document.querySelectorAll('.bulk-item-tag-cb:checked')).map(cb => cb.value);
-
-            const shouldUpdateCategory = categoryValue !== '__KEEP__';
-            const shouldUpdateTags = tagMode !== 'keep';
-
-            if (!shouldUpdateCategory && !shouldUpdateTags) {
-                showToast('Choose at least one category or tag operation before applying.', 'error');
-                return;
-            }
-
-            let categoryUpdatedCount = 0;
-            let categoryFailedCount = 0;
-            let tagsUpdatedCount = 0;
-            let tagsFailedCount = 0;
-
-            for (const itemId of selectedIds) {
-                const item = inventoryItems.find(i => i.id === itemId);
-                if (!item) continue;
-
-                if (shouldUpdateCategory) {
-                    const categoryResult = await updateItemInSupabase(itemId, { category: categoryValue });
-                    if (categoryResult) categoryUpdatedCount++;
-                    else categoryFailedCount++;
-                }
-
-                if (shouldUpdateTags) {
-                    const existingTags = Array.isArray(item.visibilityTags) ? item.visibilityTags : [];
-                    let nextTags = existingTags;
-
-                    if (tagMode === 'replace') {
-                        nextTags = [...selectedTags];
-                    } else if (tagMode === 'add') {
-                        nextTags = Array.from(new Set([...existingTags, ...selectedTags]));
-                    } else if (tagMode === 'remove') {
-                        const removeSet = new Set(selectedTags);
-                        nextTags = existingTags.filter(tag => !removeSet.has(tag));
-                    }
-
-                    const tagsUpdated = await setItemVisibilityTagsInSupabase(itemId, nextTags);
-                    if (tagsUpdated) tagsUpdatedCount++;
-                    else tagsFailedCount++;
-                }
-            }
-
-            await refreshInventoryFromSupabase();
-            closeModal();
-            renderInventory();
-
-            const updates = [];
-            if (shouldUpdateCategory) updates.push(`category updated on ${categoryUpdatedCount}`);
-            if (shouldUpdateTags) updates.push(`tags updated on ${tagsUpdatedCount}`);
-
-            const failures = categoryFailedCount + tagsFailedCount;
-            const failureText = failures > 0
-                ? ` (${failures} update${failures === 1 ? '' : 's'} failed)`
-                : '';
-
-            showToast(`Bulk apply complete: ${updates.join(', ')} item(s)${failureText}.`, failures > 0 ? 'warning' : 'success');
-            addLog(currentUser.id, 'Bulk Item Update', `Bulk-applied category/tags to ${selectedIds.length} inventory items.`);
-        });
-    });
-});
+// Bulk item management disabled in kiosk mode
 
 /* =======================================
    PROJECTS & SIGNOUT LOGIC
@@ -6279,31 +6140,7 @@ document.getElementById('add-user-btn')?.addEventListener('click', async () => {
     openUserModal();
 });
 
-document.getElementById('users-bulk-actions-btn')?.addEventListener('click', () => {
-    document.getElementById('users-bulk-actions-menu')?.classList.toggle('hidden');
-});
-
-document.getElementById('bulk-action-import')?.addEventListener('click', () => {
-    document.getElementById('users-bulk-actions-menu')?.classList.add('hidden');
-    document.getElementById('bulk-users-btn')?.click();
-});
-
-document.getElementById('bulk-action-delete')?.addEventListener('click', () => {
-    document.getElementById('users-bulk-actions-menu')?.classList.add('hidden');
-    document.getElementById('bulk-delete-users-btn')?.click();
-});
-
-document.getElementById('bulk-action-suspend')?.addEventListener('click', () => {
-    document.getElementById('users-bulk-actions-menu')?.classList.add('hidden');
-    document.getElementById('bulk-suspend-users-btn')?.click();
-});
-
-document.addEventListener('click', (e) => {
-    const wrap = document.getElementById('users-bulk-actions-wrap');
-    const menu = document.getElementById('users-bulk-actions-menu');
-    if (!wrap || !menu) return;
-    if (!wrap.contains(e.target)) menu.classList.add('hidden');
-});
+// Bulk actions are disabled in kiosk mode
 
 document.getElementById('view-requests-btn')?.addEventListener('click', () => {
     ordersTabMode = 'requests';
@@ -6311,34 +6148,6 @@ document.getElementById('view-requests-btn')?.addEventListener('click', () => {
         console.error('Failed to open Orders/Requests view:', err);
         showToast('Unable to open requests tab.', 'error');
     });
-});
-
-async function handleProfilePrivilegedPasswordAction() {
-    if (!userCanPerformPrivilegedActions()) {
-        showToast('Only teacher/developer accounts can change the authentication password.', 'error');
-        return;
-    }
-
-    const changed = await promptSetPrivilegedActionPassword('updating your authentication password');
-    if (changed) privilegedStartupAuditShown = true;
-}
-
-function bindProfilePrivilegedActionTrigger(element) {
-    element?.addEventListener('click', async e => {
-        e.preventDefault();
-        e.stopPropagation();
-        await handleProfilePrivilegedPasswordAction();
-    });
-}
-
-bindProfilePrivilegedActionTrigger(userProfileEl);
-bindProfilePrivilegedActionTrigger(userNameEl);
-bindProfilePrivilegedActionTrigger(userAvatarEl);
-
-userProfileEl?.addEventListener('keydown', async e => {
-    if (e.key !== 'Enter' && e.key !== ' ') return;
-    e.preventDefault();
-    await handleProfilePrivilegedPasswordAction();
 });
 
 function normalizeImportText(value) {
@@ -8728,85 +8537,7 @@ async function openEditItemModal(itemId) {
 /* =======================================
    BULK IMPORT ITEMS
    ======================================= */
-document.getElementById('bulk-import-items-btn')?.addEventListener('click', async () => {
-    if (currentUser?.role === 'student') {
-        showToast('You do not have permission to bulk import items.', 'error');
-        return;
-    }
-
-    const authOk = await ensurePrivilegedActionAuth('bulk importing items');
-    if (!authOk) return;
-
-    const html = `
-        <div class="modal-header">
-            <h3>Bulk Import Items</h3>
-            <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
-        </div>
-        <div class="modal-body">
-            <p class="text-secondary mb-4">Paste comma-separated item data in the format:<br><strong>Name,Category,SKU,Stock,Threshold</strong></p>
-            <div class="form-group">
-                <textarea id="bulk-items-data" class="form-control" rows="6" placeholder="Servo Motor,Electronics,SRV-001,20,5\nWire Kit,Hardware,WIR-001,100,20"></textarea>
-            </div>
-            <p class="text-sm text-muted">Categories must match existing categories. Use Manage Categories to add new ones first.</p>
-        </div>
-        <div class="modal-footer">
-            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-            <button class="btn btn-primary" id="confirm-bulk-items">Import Items</button>
-        </div>
-    `;
-
-    openModal(html);
-
-    document.getElementById('confirm-bulk-items').addEventListener('click', async () => {
-        const data = document.getElementById('bulk-items-data').value.trim();
-        if (!data) {
-            showToast('Please enter data to import.', 'error');
-            return;
-        }
-
-        const lines = data.split('\n');
-        let importCount = 0;
-
-        for (const line of lines) {
-            const parts = line.split(',');
-            if (parts.length >= 3) {
-                const name = parts[0].trim();
-                const category = parts[1].trim();
-                const sku = parts[2] ? parts[2].trim() : name.substring(0, 3).toUpperCase() + '-' + Math.floor(Math.random() * 1000).toString().padStart(3, '0');
-                const stock = parseInt(parts[3]) || 0;
-                const threshold = parseInt(parts[4]) || 5;
-
-                if (name) {
-                    const item = {
-                        id: generateId('ITM'),
-                        name: name,
-                        category: category,
-                        sku: sku,
-                        stock: stock,
-                        threshold: threshold
-                    };
-
-                    const created = await addItemToSupabase(item);
-                    if (created) importCount++;
-                }
-            }
-        }
-
-        await refreshInventoryFromSupabase();
-
-        if (importCount > 0) {
-            showToast(`Successfully imported ${importCount} items.`, 'success');
-            addLog(currentUser.id, 'Bulk Import Items', `Imported ${importCount} inventory items.`);
-        } else {
-            showToast('No valid items found to import.', 'error');
-        }
-
-        closeModal();
-        if (document.getElementById('page-inventory').classList.contains('active')) {
-            renderInventory();
-        }
-    });
-});
+// Bulk import items disabled in kiosk mode
 
 /* =======================================
    MANAGE CATEGORIES

@@ -310,6 +310,41 @@ async function loginWithUsernameAndPassword(username, password) {
     }
 }
 
+/**
+ * Save authentication password hash to Supabase for a user
+ * Stores as auth_password_hash and updates in-memory user
+ */
+async function saveAuthPasswordToSupabase(userId, password) {
+    if (!userId || !password) return false;
+
+    try {
+        const hashedPassword = await hashAuthPasswordValue(password);
+        if (!hashedPassword) return false;
+
+        const { data, error } = await dbClient
+            .from('users')
+            .update({ auth_password_hash: hashedPassword })
+            .eq('id', userId)
+            .select();
+
+        if (error) {
+            console.error('Error saving auth password to Supabase:', error);
+            return false;
+        }
+
+        // Update in-memory user data
+        const userIndex = mockUsers.findIndex(u => u.id === userId);
+        if (userIndex !== -1) {
+            mockUsers[userIndex] = { ...mockUsers[userIndex], auth_password_hash: hashedPassword };
+        }
+
+        return true;
+    } catch (err) {
+        console.error('Failed to save auth password:', err);
+        return false;
+    }
+}
+
 /* =======================================
    GLOBAL DATA ARRAYS (from Supabase)
    ======================================= */

@@ -51,6 +51,69 @@ let signoutPolicy = {
     periodRanges: defaultDuePolicy.periodRanges.map(range => ({ ...range }))
 };
 
+const POLICY_CONFIG_STORAGE_KEY = 'managePolicyConfigV1';
+const KIOSK_CONFIG_STORAGE_KEY = 'manageKioskConfigV1';
+const CONFIG_SNAPSHOT_STORAGE_KEY = 'manageConfigSnapshotsV1';
+
+const defaultPolicyConfig = {
+    duePolicy: {
+        defaultSignoutMinutes: defaultDuePolicy.defaultSignoutMinutes,
+        timezone: defaultDuePolicy.timezone,
+        periodRanges: defaultDuePolicy.periodRanges.map(range => ({ ...range }))
+    },
+    checkoutConstraints: {
+        maxItemsPerCheckout: 20,
+        maxDistinctItemsPerCheckout: 10,
+        allowStudentAssignOthers: false
+    },
+    accessLevelDefaults: {
+        canCreateProjects: false,
+        canJoinProjects: true,
+        canSignOut: true
+    },
+    healthThresholds: {
+        loginFailureThreshold: 5,
+        unlockFailureThreshold: 3,
+        staleKioskMinutes: 45
+    }
+};
+
+const defaultKioskManageConfig = {
+    location: '',
+    brandingText: '',
+    featureFlags: {
+        allowUnlockPulse: true,
+        allowEmergencyLockout: true,
+        enableAuditCsvExport: true,
+        enforcePrivilegedAuditFocus: true
+    }
+};
+
+let policyConfig = {
+    duePolicy: {
+        defaultSignoutMinutes: defaultPolicyConfig.duePolicy.defaultSignoutMinutes,
+        timezone: defaultPolicyConfig.duePolicy.timezone,
+        periodRanges: defaultPolicyConfig.duePolicy.periodRanges.map(range => ({ ...range }))
+    },
+    checkoutConstraints: { ...defaultPolicyConfig.checkoutConstraints },
+    accessLevelDefaults: { ...defaultPolicyConfig.accessLevelDefaults },
+    healthThresholds: { ...defaultPolicyConfig.healthThresholds }
+};
+
+let kioskManageConfig = {
+    location: defaultKioskManageConfig.location,
+    brandingText: defaultKioskManageConfig.brandingText,
+    featureFlags: { ...defaultKioskManageConfig.featureFlags }
+};
+
+const kioskLiveStatus = {
+    realtimeConnected: false,
+    lastSyncAt: null,
+    lastSettingsVersion: '',
+    lastKnownLockState: false,
+    lastKnownLockScreen: 'systemLocked'
+};
+
 // Provide a safe fallback ID generator for forms/actions that create records.
 if (typeof window.generateId !== 'function') {
     window.generateId = function generateIdFallback(prefix = 'ID') {
@@ -315,6 +378,181 @@ function normalizeDuePolicy(policy) {
         timezone: policy?.timezone || defaultDuePolicy.timezone,
         periodRanges: normalizedRanges.length > 0 ? normalizedRanges : fallbackRanges
     };
+}
+
+function loadPolicyConfig() {
+    try {
+        const raw = localStorage.getItem(POLICY_CONFIG_STORAGE_KEY);
+        if (!raw) return;
+        const parsed = JSON.parse(raw);
+        policyConfig = {
+            duePolicy: normalizeDuePolicy(parsed?.duePolicy || defaultPolicyConfig.duePolicy),
+            checkoutConstraints: {
+                ...defaultPolicyConfig.checkoutConstraints,
+                ...(parsed?.checkoutConstraints || {})
+            },
+            accessLevelDefaults: {
+                ...defaultPolicyConfig.accessLevelDefaults,
+                ...(parsed?.accessLevelDefaults || {})
+            },
+            healthThresholds: {
+                ...defaultPolicyConfig.healthThresholds,
+                ...(parsed?.healthThresholds || {})
+            }
+        };
+        signoutPolicy = normalizeDuePolicy(policyConfig.duePolicy);
+    } catch {
+        policyConfig = {
+            duePolicy: normalizeDuePolicy(defaultPolicyConfig.duePolicy),
+            checkoutConstraints: { ...defaultPolicyConfig.checkoutConstraints },
+            accessLevelDefaults: { ...defaultPolicyConfig.accessLevelDefaults },
+            healthThresholds: { ...defaultPolicyConfig.healthThresholds }
+        };
+    }
+}
+
+function savePolicyConfig(nextConfig) {
+    policyConfig = {
+        duePolicy: normalizeDuePolicy(nextConfig?.duePolicy || policyConfig.duePolicy),
+        checkoutConstraints: {
+            ...defaultPolicyConfig.checkoutConstraints,
+            ...(nextConfig?.checkoutConstraints || {})
+        },
+        accessLevelDefaults: {
+            ...defaultPolicyConfig.accessLevelDefaults,
+            ...(nextConfig?.accessLevelDefaults || {})
+        },
+        healthThresholds: {
+            ...defaultPolicyConfig.healthThresholds,
+            ...(nextConfig?.healthThresholds || {})
+        }
+    };
+
+    signoutPolicy = normalizeDuePolicy(policyConfig.duePolicy);
+    localStorage.setItem(POLICY_CONFIG_STORAGE_KEY, JSON.stringify(policyConfig));
+}
+
+function loadKioskManageConfig() {
+    try {
+        const raw = localStorage.getItem(KIOSK_CONFIG_STORAGE_KEY);
+        if (!raw) return;
+        const parsed = JSON.parse(raw);
+        kioskManageConfig = {
+            location: String(parsed?.location || '').trim(),
+            brandingText: String(parsed?.brandingText || '').trim(),
+            featureFlags: {
+                ...defaultKioskManageConfig.featureFlags,
+                ...(parsed?.featureFlags || {})
+            }
+        };
+    } catch {
+        kioskManageConfig = {
+            location: defaultKioskManageConfig.location,
+            brandingText: defaultKioskManageConfig.brandingText,
+            featureFlags: { ...defaultKioskManageConfig.featureFlags }
+        };
+    }
+}
+
+function saveKioskManageConfig(nextConfig) {
+    kioskManageConfig = {
+        location: String(nextConfig?.location || '').trim(),
+        brandingText: String(nextConfig?.brandingText || '').trim(),
+        featureFlags: {
+            ...defaultKioskManageConfig.featureFlags,
+            ...(nextConfig?.featureFlags || {})
+        }
+    };
+    localStorage.setItem(KIOSK_CONFIG_STORAGE_KEY, JSON.stringify(kioskManageConfig));
+}
+
+function getStoredConfigSnapshots() {
+    try {
+        const raw = localStorage.getItem(CONFIG_SNAPSHOT_STORAGE_KEY);
+        const parsed = JSON.parse(raw || '[]');
+        return Array.isArray(parsed) ? parsed : [];
+    } catch {
+        return [];
+    }
+}
+
+function saveConfigSnapshots(snapshots) {
+    const nextSnapshots = Array.isArray(snapshots) ? snapshots.slice(0, 30) : [];
+    localStorage.setItem(CONFIG_SNAPSHOT_STORAGE_KEY, JSON.stringify(nextSnapshots));
+}
+
+function createConfigSnapshot(label = '') {
+    const snapshot = {
+        id: generateId('SNAP'),
+        label: String(label || '').trim() || `Snapshot ${new Date().toLocaleString()}`,
+        createdAt: new Date().toISOString(),
+        policyConfig,
+        kioskManageConfig,
+        orderFormConfig
+    };
+    const snapshots = getStoredConfigSnapshots();
+    snapshots.unshift(snapshot);
+    saveConfigSnapshots(snapshots);
+    return snapshot;
+}
+
+function restoreConfigSnapshot(snapshotId) {
+    const snapshots = getStoredConfigSnapshots();
+    const target = snapshots.find(snapshot => String(snapshot.id) === String(snapshotId));
+    if (!target) return false;
+
+    savePolicyConfig(target.policyConfig || defaultPolicyConfig);
+    saveKioskManageConfig(target.kioskManageConfig || defaultKioskManageConfig);
+    if (target.orderFormConfig) {
+        saveOrderFormConfig(target.orderFormConfig);
+    }
+    applyKioskManageBranding();
+    return true;
+}
+
+function applyKioskManageBranding() {
+    const subtitleEl = document.getElementById('app-login-subtitle');
+    if (subtitleEl) {
+        subtitleEl.textContent = kioskManageConfig.brandingText || appSubtitle;
+    }
+}
+
+function exceedsCheckoutConstraints({ distinctItems = 0, totalQuantity = 0 }) {
+    const maxDistinct = Math.max(1, parseInt(policyConfig.checkoutConstraints.maxDistinctItemsPerCheckout, 10) || defaultPolicyConfig.checkoutConstraints.maxDistinctItemsPerCheckout);
+    const maxQty = Math.max(1, parseInt(policyConfig.checkoutConstraints.maxItemsPerCheckout, 10) || defaultPolicyConfig.checkoutConstraints.maxItemsPerCheckout);
+
+    if (distinctItems > maxDistinct) {
+        return `Checkout exceeds max distinct items (${maxDistinct}).`;
+    }
+    if (totalQuantity > maxQty) {
+        return `Checkout exceeds max total quantity (${maxQty}).`;
+    }
+    return '';
+}
+
+function downloadCsv(filename, headers, rows) {
+    const encodeCell = (value) => {
+        const cell = String(value ?? '');
+        if (cell.includes(',') || cell.includes('"') || cell.includes('\n')) {
+            return `"${cell.replace(/"/g, '""')}"`;
+        }
+        return cell;
+    };
+
+    const csvText = [
+        headers.map(encodeCell).join(','),
+        ...rows.map(row => row.map(encodeCell).join(','))
+    ].join('\n');
+
+    const blob = new Blob([csvText], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(url);
 }
 
 function getClassPermissionScore(cls) {
@@ -1091,6 +1329,9 @@ async function handleRemoteKioskSettingsChange(nextSettings = {}) {
     if (typeof nextSettings.is_locked === 'boolean' || nextSettings.lock_screen) {
         const remoteLocked = !!nextSettings.is_locked;
         const remoteLockScreen = String(nextSettings.lock_screen || 'systemLocked');
+        kioskLiveStatus.lastKnownLockState = remoteLocked;
+        kioskLiveStatus.lastKnownLockScreen = remoteLockScreen;
+        kioskLiveStatus.lastSyncAt = new Date().toISOString();
         await applyKioskLock(remoteLocked, remoteLockScreen);
     }
 
@@ -1135,6 +1376,7 @@ function startKioskVersionRealtimeListener(targetKioskId = kioskId) {
             await handleRemoteKioskSettingsChange(next);
         })
         .subscribe(status => {
+            kioskLiveStatus.realtimeConnected = status === 'SUBSCRIBED';
             if (status === 'CHANNEL_ERROR') {
                 console.warn('kiosk_settings app_version realtime channel error');
             }
@@ -1273,8 +1515,27 @@ function addToBasket(itemId) {
             showToast('Cannot exceed available stock.', 'warning');
             return;
         }
+
+        const projectedTotalQty = inventoryBasket.reduce((sum, entry) => sum + entry.qty, 0) + 1;
+        const constraintError = exceedsCheckoutConstraints({
+            distinctItems: inventoryBasket.length,
+            totalQuantity: projectedTotalQty
+        });
+        if (constraintError) {
+            showToast(constraintError, 'error');
+            return;
+        }
         existing.qty++;
     } else {
+        const projectedTotalQty = inventoryBasket.reduce((sum, entry) => sum + entry.qty, 0) + 1;
+        const constraintError = exceedsCheckoutConstraints({
+            distinctItems: inventoryBasket.length + 1,
+            totalQuantity: projectedTotalQty
+        });
+        if (constraintError) {
+            showToast(constraintError, 'error');
+            return;
+        }
         inventoryBasket.push({ id: item.id, name: item.name, qty: 1 });
     }
 
@@ -1534,6 +1795,16 @@ async function checkoutBasket() {
     const projectId = document.getElementById('basket-project-select').value;
     const project = projectId ? projects.find(p => p.id === projectId) : getOrCreatePersonalProject(currentUser.id);
 
+    const totalQuantity = inventoryBasket.reduce((sum, entry) => sum + (parseInt(entry.qty, 10) || 0), 0);
+    const constraintError = exceedsCheckoutConstraints({
+        distinctItems: inventoryBasket.length,
+        totalQuantity
+    });
+    if (constraintError) {
+        showToast(constraintError, 'error');
+        return;
+    }
+
     if (!project) {
         showToast('Unable to resolve checkout destination project.', 'error');
         return;
@@ -1666,7 +1937,10 @@ document.getElementById('checkout-basket-btn')?.addEventListener('click', openCh
 
 // Init application
 document.addEventListener('DOMContentLoaded', async () => {
+    loadPolicyConfig();
+    loadKioskManageConfig();
     applyBranding();
+    applyKioskManageBranding();
     bindAppInfoTriggers();
     updateAppInfoOverlayVisibility();
 
@@ -1686,6 +1960,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     const kioskSettings = await fetchKioskSettings(kioskId);
+    kioskLiveStatus.lastSyncAt = new Date().toISOString();
+    kioskLiveStatus.lastSettingsVersion = String(kioskSettings.app_version || '').trim();
+    kioskLiveStatus.lastKnownLockState = !!kioskSettings.is_locked;
+    kioskLiveStatus.lastKnownLockScreen = String(kioskSettings.lock_screen || 'systemLocked');
     debugConfig.pinHash = String(kioskSettings.debug_menu_pin_hash || '').trim() || null;
     if (!debugConfig.pinHash) {
         try {
@@ -1835,6 +2113,7 @@ async function handleBarcodeLogin(rawId) {
         const loginResult = await loginWithBarcode(id);
         if (loginResult.error) {
             recordFailedLoginAttempt();
+            addLog('SYSTEM', 'Login Failed', `Barcode login failed for input ${id}. Reason: ${loginResult.error || 'Unknown'}`);
             showToast(loginResult.error || 'Login failed', 'error');
             return;
         }
@@ -1875,6 +2154,7 @@ async function handleBarcodeLogin(rawId) {
         }
 
         recordFailedLoginAttempt();
+        addLog('SYSTEM', 'Login Failed', `Barcode login failed for input ${id}. Reason: Invalid barcode scanned.`);
         showToast('Invalid barcode scanned.', 'error');
     } catch (error) {
         console.error('Login lookup failed:', error);
@@ -1908,6 +2188,7 @@ async function handleManageCredentialLogin(rawUsername, rawPassword) {
         const loginResult = await loginWithUsernameAndPassword(username, password);
         if (loginResult.error) {
             recordFailedLoginAttempt();
+            addLog('SYSTEM', 'Login Failed', `Credential login failed for identity ${username}. Reason: ${loginResult.error || 'Unknown'}`);
             showToast(loginResult.error || 'Login failed', 'error');
             return;
         }
@@ -1915,6 +2196,7 @@ async function handleManageCredentialLogin(rawUsername, rawPassword) {
         const user = loginResult.user || null;
         if (!user) {
             recordFailedLoginAttempt();
+            addLog('SYSTEM', 'Login Failed', `Credential login failed for identity ${username}. Reason: Invalid username or password.`);
             showToast('Invalid username or password.', 'error');
             return;
         }
@@ -2546,6 +2828,7 @@ async function promptSetPrivilegedActionPassword(reason = 'this action', forcedR
             } else {
                 showToast('Authentication password saved.', 'success');
             }
+            addLog(currentUser.id, 'Privileged Password Updated', 'Updated authentication password for privileged actions.');
             finish(true);
         };
 
@@ -2611,6 +2894,7 @@ function requestPrivilegedActionAuth(reason = 'this action') {
             const enteredHash = await hashDebugPin(enteredPassword);
             if (enteredHash && enteredHash === expectedHash) {
                 privilegedSessionAuthenticated = true;
+                addLog(currentUser.id, 'Privileged Auth Success', `Privileged action authentication passed for ${reason}.`);
                 showToast('Session authenticated.', 'success');
                 finish(true);
                 return;
@@ -5141,6 +5425,15 @@ function openSignOutModal(itemId) {
         }
 
         if (qty > 0 && qty <= item.stock) {
+            const constraintError = exceedsCheckoutConstraints({
+                distinctItems: 1,
+                totalQuantity: qty
+            });
+            if (constraintError) {
+                showToast(constraintError, 'error');
+                return;
+            }
+
             let project;
             if (projId === 'personal') {
                 project = getOrCreatePersonalProject(currentUser.id);
@@ -5686,7 +5979,11 @@ document.getElementById('create-class-btn')?.addEventListener('click', async () 
                         timezone,
                         periodRanges: parsedRanges
                     }),
-                    defaultPermissions: { canCreateProjects: false, canJoinProjects: true, canSignOut: true }
+                    defaultPermissions: {
+                        canCreateProjects: !!policyConfig.accessLevelDefaults.canCreateProjects,
+                        canJoinProjects: !!policyConfig.accessLevelDefaults.canJoinProjects,
+                        canSignOut: !!policyConfig.accessLevelDefaults.canSignOut
+                    }
                 };
 
                 const saved = await saveStudentClassToSupabase(newClass);
@@ -7829,6 +8126,444 @@ function openOrderRequestModal({ initialName = '' } = {}) {
     });
 }
 
+function setOrdersPanelBody(tbody, html, colSpan = 8) {
+    while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = colSpan;
+    td.innerHTML = html;
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+}
+
+async function fetchAllKioskSettingsRows() {
+    const client = getSettingsSupabaseClient();
+    if (!client) return [];
+    const { data, error } = await client.from('kiosk_settings').select('*');
+    if (error) return [];
+    return Array.isArray(data) ? data : [];
+}
+
+async function persistKioskManageConfigToSupabase() {
+    const client = getSettingsSupabaseClient();
+    if (!client || !kioskId) return false;
+
+    let { error } = await client.from('kiosk_settings').upsert([{
+        kiosk_id: kioskId,
+        location_label: kioskManageConfig.location || null,
+        branding_text: kioskManageConfig.brandingText || null,
+        feature_flags_json: kioskManageConfig.featureFlags
+    }], { onConflict: 'kiosk_id' });
+
+    if (!error) return true;
+
+    ({ error } = await client.from('kiosk_settings').upsert([{
+        kiosk_id: kioskId,
+        location: kioskManageConfig.location || null,
+        branding: kioskManageConfig.brandingText || null,
+        feature_flags: JSON.stringify(kioskManageConfig.featureFlags)
+    }], { onConflict: 'kiosk_id' }));
+
+    return !error;
+}
+
+function getPrivilegedHistoryRows() {
+    const pattern = /privileged|archive flag|orders settings|manage categories|bulk delete|bulk suspend|delete user|create class|edit class|kiosk lock|emergency lockout|recovery/i;
+    return (activityLogs || []).filter(log => pattern.test(String(log.action || '')));
+}
+
+function buildAuditRows({ actionFilter = '', actorFilter = 'all', privilegedOnly = false } = {}) {
+    const normalizedFilter = String(actionFilter || '').trim().toLowerCase();
+    let rows = [...(activityLogs || [])];
+
+    if (normalizedFilter) {
+        rows = rows.filter(log => {
+            const action = String(log.action || '').toLowerCase();
+            const details = String(log.details || '').toLowerCase();
+            return action.includes(normalizedFilter) || details.includes(normalizedFilter);
+        });
+    }
+
+    if (actorFilter !== 'all') {
+        rows = rows.filter(log => {
+            const actorId = log.userId || log.user_id;
+            const actor = mockUsers.find(user => user.id === actorId);
+            if (!actor) return actorFilter === 'system';
+            if (actorFilter === 'staff') return actor.role === 'teacher' || actor.role === 'developer';
+            return actor.role === actorFilter;
+        });
+    }
+
+    if (privilegedOnly) {
+        const idSet = new Set(getPrivilegedHistoryRows().map(log => log.id));
+        rows = rows.filter(log => idSet.has(log.id));
+    }
+
+    rows.sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0));
+    return rows;
+}
+
+function renderOrdersKioskMode(tbody) {
+    const lockScreenLabel = getKioskLockScreen(kioskLiveStatus.lastKnownLockScreen).label;
+    const html = `
+        <div class="glass-panel" style="padding:1rem;display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:0.75rem;">
+            <div><strong>Status:</strong> ${kioskLiveStatus.realtimeConnected ? 'Online' : 'Offline'}</div>
+            <div><strong>Lock:</strong> ${kioskLiveStatus.lastKnownLockState ? 'Locked' : 'Unlocked'} (${escapeHtml(lockScreenLabel)})</div>
+            <div><strong>Version:</strong> ${escapeHtml(kioskLiveStatus.lastSettingsVersion || appVersion)}</div>
+            <div><strong>Last Sync:</strong> ${escapeHtml(kioskLiveStatus.lastSyncAt ? new Date(kioskLiveStatus.lastSyncAt).toLocaleString() : 'Never')}</div>
+        </div>
+        <div class="glass-panel" style="padding:1rem;margin-top:0.8rem;">
+            <h4 style="margin-bottom:0.6rem;">Remote Controls</h4>
+            <div style="display:flex;gap:0.55rem;flex-wrap:wrap;">
+                <button class="btn btn-secondary" id="hub-kiosk-refresh">Refresh</button>
+                <button class="btn btn-danger" id="hub-kiosk-lock">Lock</button>
+                <button class="btn btn-primary" id="hub-kiosk-unlock">Unlock</button>
+                <button class="btn btn-secondary" id="hub-kiosk-pulse">Unlock Pulse (20s)</button>
+                <button class="btn btn-danger" id="hub-kiosk-lockout">Emergency Lockout</button>
+            </div>
+        </div>
+        <div class="glass-panel" style="padding:1rem;margin-top:0.8rem;">
+            <h4 style="margin-bottom:0.6rem;">Kiosk Configuration</h4>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:0.75rem;">
+                <div class="form-group"><label>Location</label><input id="hub-kiosk-location" class="form-control" value="${escapeHtml(kioskManageConfig.location)}"></div>
+                <div class="form-group"><label>Branding Text</label><input id="hub-kiosk-branding" class="form-control" value="${escapeHtml(kioskManageConfig.brandingText)}"></div>
+            </div>
+            <div style="display:flex;gap:0.8rem;flex-wrap:wrap;margin-top:0.5rem;">
+                <label style="display:flex;gap:0.35rem;align-items:center;"><input type="checkbox" id="hub-kiosk-flag-pulse" ${kioskManageConfig.featureFlags.allowUnlockPulse ? 'checked' : ''}> Unlock pulse</label>
+                <label style="display:flex;gap:0.35rem;align-items:center;"><input type="checkbox" id="hub-kiosk-flag-lockout" ${kioskManageConfig.featureFlags.allowEmergencyLockout ? 'checked' : ''}> Emergency lockout</label>
+                <label style="display:flex;gap:0.35rem;align-items:center;"><input type="checkbox" id="hub-kiosk-flag-csv" ${kioskManageConfig.featureFlags.enableAuditCsvExport ? 'checked' : ''}> CSV export</label>
+            </div>
+            <button class="btn btn-primary" id="hub-kiosk-save-config" style="margin-top:0.6rem;">Save Configuration</button>
+        </div>
+    `;
+
+    setOrdersPanelBody(tbody, html);
+
+    document.getElementById('hub-kiosk-refresh')?.addEventListener('click', async () => {
+        const settings = await fetchKioskSettings(kioskId);
+        kioskLiveStatus.lastSyncAt = new Date().toISOString();
+        kioskLiveStatus.lastSettingsVersion = String(settings.app_version || '').trim();
+        kioskLiveStatus.lastKnownLockState = !!settings.is_locked;
+        kioskLiveStatus.lastKnownLockScreen = String(settings.lock_screen || 'systemLocked');
+        renderOrders();
+    });
+
+    document.getElementById('hub-kiosk-lock')?.addEventListener('click', async () => {
+        await applyKioskLock(true, debugConfig.kioskLockScreen || 'systemLocked', { syncRemote: true });
+        addLog(currentUser.id, 'Kiosk Lock Change', 'Remote kiosk locked from Operations Hub.');
+        renderOrders();
+    });
+
+    document.getElementById('hub-kiosk-unlock')?.addEventListener('click', async () => {
+        await applyKioskLock(false, debugConfig.kioskLockScreen || 'systemLocked', { syncRemote: true });
+        addLog(currentUser.id, 'Kiosk Lock Change', 'Remote kiosk unlocked from Operations Hub.');
+        renderOrders();
+    });
+
+    document.getElementById('hub-kiosk-pulse')?.addEventListener('click', async () => {
+        if (!kioskManageConfig.featureFlags.allowUnlockPulse) {
+            showToast('Unlock pulse is disabled by feature flags.', 'error');
+            return;
+        }
+        await applyKioskLock(false, debugConfig.kioskLockScreen || 'systemLocked', { syncRemote: true });
+        addLog(currentUser.id, 'Remote Unlock Pulse', 'Triggered kiosk unlock pulse for 20 seconds.');
+        setTimeout(() => {
+            applyKioskLock(true, debugConfig.kioskLockScreen || 'systemLocked', { syncRemote: true });
+        }, 20000);
+        showToast('Unlock pulse triggered for 20 seconds.', 'success');
+    });
+
+    document.getElementById('hub-kiosk-lockout')?.addEventListener('click', async () => {
+        if (!kioskManageConfig.featureFlags.allowEmergencyLockout) {
+            showToast('Emergency lockout is disabled by feature flags.', 'error');
+            return;
+        }
+        await applyKioskLock(true, 'outOfOrder', { syncRemote: true });
+        await addSystemFlagToSupabase({
+            id: generateId('FLAG'),
+            flag_type: 'Emergency Lockout',
+            actor_user_id: currentUser.id,
+            details: `${currentUser.name} triggered emergency kiosk lockout.`,
+            status: 'Open',
+            timestamp: new Date().toISOString()
+        });
+        addLog(currentUser.id, 'Emergency Lockout', 'Emergency lockout triggered from Operations Hub.');
+        await refreshRequestsFromSupabase();
+        renderOrders();
+    });
+
+    document.getElementById('hub-kiosk-save-config')?.addEventListener('click', async () => {
+        saveKioskManageConfig({
+            location: document.getElementById('hub-kiosk-location')?.value || '',
+            brandingText: document.getElementById('hub-kiosk-branding')?.value || '',
+            featureFlags: {
+                ...kioskManageConfig.featureFlags,
+                allowUnlockPulse: !!document.getElementById('hub-kiosk-flag-pulse')?.checked,
+                allowEmergencyLockout: !!document.getElementById('hub-kiosk-flag-lockout')?.checked,
+                enableAuditCsvExport: !!document.getElementById('hub-kiosk-flag-csv')?.checked
+            }
+        });
+        applyKioskManageBranding();
+        const synced = await persistKioskManageConfigToSupabase();
+        addLog(currentUser.id, 'Kiosk Configuration', `Kiosk config saved (location=${kioskManageConfig.location || 'N/A'}).`);
+        showToast(synced ? 'Kiosk configuration saved.' : 'Saved locally. Remote columns unavailable.', synced ? 'success' : 'warning');
+    });
+}
+
+function renderOrdersPolicyMode(tbody) {
+    const due = normalizeDuePolicy(policyConfig.duePolicy);
+    const constraints = policyConfig.checkoutConstraints;
+    const access = policyConfig.accessLevelDefaults;
+    const health = policyConfig.healthThresholds;
+
+    const html = `
+        <div class="glass-panel" style="padding:1rem;display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:0.75rem;">
+            <div class="form-group"><label>Default Due Minutes</label><input id="hub-policy-due" class="form-control" type="number" min="1" value="${due.defaultSignoutMinutes}"></div>
+            <div class="form-group"><label>Timezone</label><select id="hub-policy-timezone" class="form-control">${buildTimezoneOptionsHtml(due.timezone)}</select></div>
+            <div class="form-group"><label>Max Total Qty / Checkout</label><input id="hub-policy-max-qty" class="form-control" type="number" min="1" value="${constraints.maxItemsPerCheckout}"></div>
+            <div class="form-group"><label>Max Distinct Items / Checkout</label><input id="hub-policy-max-distinct" class="form-control" type="number" min="1" value="${constraints.maxDistinctItemsPerCheckout}"></div>
+        </div>
+        <div class="glass-panel" style="padding:1rem;margin-top:0.8rem;">
+            <h4 style="margin-bottom:0.55rem;">Access-Level Defaults</h4>
+            <label style="display:flex;gap:0.35rem;align-items:center;margin-bottom:0.4rem;"><input id="hub-policy-access-create" type="checkbox" ${access.canCreateProjects ? 'checked' : ''}> Can Create Projects</label>
+            <label style="display:flex;gap:0.35rem;align-items:center;margin-bottom:0.4rem;"><input id="hub-policy-access-join" type="checkbox" ${access.canJoinProjects ? 'checked' : ''}> Can Join Projects</label>
+            <label style="display:flex;gap:0.35rem;align-items:center;"><input id="hub-policy-access-signout" type="checkbox" ${access.canSignOut ? 'checked' : ''}> Can Sign Out Items</label>
+        </div>
+        <div class="glass-panel" style="padding:1rem;margin-top:0.8rem;display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:0.75rem;">
+            <div class="form-group"><label>Login Failure Alert Threshold</label><input id="hub-health-login-threshold" class="form-control" type="number" min="1" value="${health.loginFailureThreshold}"></div>
+            <div class="form-group"><label>Unlock Failure Alert Threshold</label><input id="hub-health-unlock-threshold" class="form-control" type="number" min="1" value="${health.unlockFailureThreshold}"></div>
+            <div class="form-group"><label>Stale Kiosk Minutes</label><input id="hub-health-stale-threshold" class="form-control" type="number" min="5" value="${health.staleKioskMinutes}"></div>
+        </div>
+        <div style="margin-top:0.7rem;"><button class="btn btn-primary" id="hub-policy-save">Save Policy Controls</button></div>
+    `;
+
+    setOrdersPanelBody(tbody, html);
+
+    document.getElementById('hub-policy-save')?.addEventListener('click', () => {
+        savePolicyConfig({
+            duePolicy: {
+                defaultSignoutMinutes: parseInt(document.getElementById('hub-policy-due')?.value, 10) || due.defaultSignoutMinutes,
+                timezone: document.getElementById('hub-policy-timezone')?.value || due.timezone,
+                periodRanges: due.periodRanges
+            },
+            checkoutConstraints: {
+                maxItemsPerCheckout: parseInt(document.getElementById('hub-policy-max-qty')?.value, 10) || constraints.maxItemsPerCheckout,
+                maxDistinctItemsPerCheckout: parseInt(document.getElementById('hub-policy-max-distinct')?.value, 10) || constraints.maxDistinctItemsPerCheckout,
+                allowStudentAssignOthers: constraints.allowStudentAssignOthers
+            },
+            accessLevelDefaults: {
+                canCreateProjects: !!document.getElementById('hub-policy-access-create')?.checked,
+                canJoinProjects: !!document.getElementById('hub-policy-access-join')?.checked,
+                canSignOut: !!document.getElementById('hub-policy-access-signout')?.checked
+            },
+            healthThresholds: {
+                loginFailureThreshold: parseInt(document.getElementById('hub-health-login-threshold')?.value, 10) || health.loginFailureThreshold,
+                unlockFailureThreshold: parseInt(document.getElementById('hub-health-unlock-threshold')?.value, 10) || health.unlockFailureThreshold,
+                staleKioskMinutes: parseInt(document.getElementById('hub-health-stale-threshold')?.value, 10) || health.staleKioskMinutes
+            }
+        });
+        addLog(currentUser.id, 'Policy Controls Updated', 'Policy controls updated from Operations Hub.');
+        showToast('Policy controls saved.', 'success');
+    });
+}
+
+function renderOrdersAuditMode(tbody) {
+    const html = `
+        <div class="glass-panel" style="padding:1rem;display:flex;gap:0.65rem;flex-wrap:wrap;align-items:flex-end;">
+            <div class="form-group" style="min-width:220px;"><label>Search</label><input id="hub-audit-search" class="form-control" placeholder="Action or details"></div>
+            <div class="form-group" style="min-width:170px;"><label>Actor</label>
+                <select id="hub-audit-actor" class="form-control">
+                    <option value="all">All</option>
+                    <option value="staff">Staff</option>
+                    <option value="student">Students</option>
+                    <option value="system">System</option>
+                </select>
+            </div>
+            <label style="display:flex;gap:0.35rem;align-items:center;margin-bottom:0.6rem;"><input id="hub-audit-privileged" type="checkbox"> Privileged Only</label>
+            <button class="btn btn-secondary" id="hub-audit-apply">Apply</button>
+            <button class="btn btn-primary" id="hub-audit-export">Export CSV</button>
+        </div>
+        <div class="glass-panel" style="padding:1rem;margin-top:0.8rem;max-height:440px;overflow:auto;" id="hub-audit-results"></div>
+    `;
+    setOrdersPanelBody(tbody, html);
+
+    const drawRows = () => {
+        const rows = buildAuditRows({
+            actionFilter: document.getElementById('hub-audit-search')?.value || '',
+            actorFilter: document.getElementById('hub-audit-actor')?.value || 'all',
+            privilegedOnly: !!document.getElementById('hub-audit-privileged')?.checked
+        });
+        const results = document.getElementById('hub-audit-results');
+        if (!results) return;
+        if (rows.length === 0) {
+            results.innerHTML = '<p class="text-muted">No audit rows matched current filters.</p>';
+            return;
+        }
+        results.innerHTML = `
+            <table class="data-table">
+                <thead><tr><th>Timestamp</th><th>Actor</th><th>Action</th><th>Details</th></tr></thead>
+                <tbody>
+                    ${rows.slice(0, 400).map(log => {
+                        const actorId = log.userId || log.user_id;
+                        const actor = mockUsers.find(user => user.id === actorId);
+                        return `<tr>
+                            <td><small>${new Date(log.timestamp || Date.now()).toLocaleString()}</small></td>
+                            <td>${escapeHtml(actor?.name || actorId || 'SYSTEM')}</td>
+                            <td><strong>${escapeHtml(String(log.action || ''))}</strong></td>
+                            <td>${escapeHtml(String(log.details || ''))}</td>
+                        </tr>`;
+                    }).join('')}
+                </tbody>
+            </table>
+        `;
+    };
+
+    document.getElementById('hub-audit-apply')?.addEventListener('click', drawRows);
+    document.getElementById('hub-audit-export')?.addEventListener('click', () => {
+        if (!kioskManageConfig.featureFlags.enableAuditCsvExport) {
+            showToast('CSV export is disabled by feature flags.', 'error');
+            return;
+        }
+        const rows = buildAuditRows({
+            actionFilter: document.getElementById('hub-audit-search')?.value || '',
+            actorFilter: document.getElementById('hub-audit-actor')?.value || 'all',
+            privilegedOnly: !!document.getElementById('hub-audit-privileged')?.checked
+        });
+        downloadCsv(`audit-${new Date().toISOString().slice(0, 10)}.csv`, ['timestamp', 'actor', 'action', 'details'], rows.map(row => [
+            row.timestamp,
+            row.userId || row.user_id || 'SYSTEM',
+            row.action || '',
+            row.details || ''
+        ]));
+    });
+
+    drawRows();
+}
+
+async function renderOrdersHealthMode(tbody) {
+    setOrdersPanelBody(tbody, '<div class="glass-panel" style="padding:1rem;">Loading health alerts...</div>');
+
+    const now = Date.now();
+    const lookbackMs = 30 * 60 * 1000;
+    const loginThreshold = Math.max(1, parseInt(policyConfig.healthThresholds.loginFailureThreshold, 10) || 5);
+    const unlockThreshold = Math.max(1, parseInt(policyConfig.healthThresholds.unlockFailureThreshold, 10) || 3);
+    const staleMinutes = Math.max(5, parseInt(policyConfig.healthThresholds.staleKioskMinutes, 10) || 45);
+
+    const recent = (activityLogs || []).filter(log => now - new Date(log.timestamp || 0).getTime() <= lookbackMs);
+    const logins = recent.filter(log => String(log.action || '').toLowerCase().includes('login failed'));
+    const unlocks = recent.filter(log => String(log.action || '').toLowerCase().includes('door access failed'));
+
+    const countByActor = (rows) => rows.reduce((acc, row) => {
+        const key = String(row.userId || row.user_id || 'SYSTEM');
+        acc[key] = (acc[key] || 0) + 1;
+        return acc;
+    }, {});
+
+    const loginCounts = countByActor(logins);
+    const unlockCounts = countByActor(unlocks);
+
+    const loginAlerts = Object.entries(loginCounts).filter(([, count]) => count >= loginThreshold);
+    const unlockAlerts = Object.entries(unlockCounts).filter(([, count]) => count >= unlockThreshold);
+
+    const kioskRows = await fetchAllKioskSettingsRows();
+    const staleKiosks = kioskRows.filter(row => {
+        const marker = row.updated_at || row.last_sync_at || row.modified_at || row.created_at;
+        if (!marker) return true;
+        const ageMinutes = (now - new Date(marker).getTime()) / 60000;
+        return ageMinutes > staleMinutes;
+    });
+
+    const html = `
+        <div class="glass-panel" style="padding:1rem;display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:0.75rem;">
+            <div><strong>Login Failure Alerts:</strong> ${loginAlerts.length}</div>
+            <div><strong>Unlock Failure Alerts:</strong> ${unlockAlerts.length}</div>
+            <div><strong>Stale Kiosks:</strong> ${staleKiosks.length}</div>
+            <div><strong>Window:</strong> 30 minutes</div>
+        </div>
+        <div class="glass-panel" style="padding:1rem;margin-top:0.8rem;">
+            <h4>Repeated Login Failures</h4>
+            ${loginAlerts.length === 0 ? '<p class="text-muted">No repeated login failures detected.</p>' : `<ul class="stock-list">${loginAlerts.map(([actor, count]) => `<li class="stock-item"><span>${escapeHtml(actor)}</span><span class="text-danger">${count}</span></li>`).join('')}</ul>`}
+        </div>
+        <div class="glass-panel" style="padding:1rem;margin-top:0.8rem;">
+            <h4>Repeated Unlock Failures</h4>
+            ${unlockAlerts.length === 0 ? '<p class="text-muted">No repeated unlock failures detected.</p>' : `<ul class="stock-list">${unlockAlerts.map(([actor, count]) => `<li class="stock-item"><span>${escapeHtml(actor)}</span><span class="text-danger">${count}</span></li>`).join('')}</ul>`}
+        </div>
+        <div class="glass-panel" style="padding:1rem;margin-top:0.8rem;">
+            <h4>Stale Kiosks (>${staleMinutes} min)</h4>
+            ${staleKiosks.length === 0 ? '<p class="text-muted">No stale kiosks detected.</p>' : `<ul class="stock-list">${staleKiosks.map(row => `<li class="stock-item"><span>${escapeHtml(String(row.kiosk_id || 'Unknown'))}</span><span class="text-warning">${escapeHtml(String(row.updated_at || row.last_sync_at || 'Unknown'))}</span></li>`).join('')}</ul>`}
+        </div>
+    `;
+
+    setOrdersPanelBody(tbody, html);
+}
+
+function renderOrdersRecoveryMode(tbody) {
+    const snapshots = getStoredConfigSnapshots();
+    const html = `
+        <div class="glass-panel" style="padding:1rem;">
+            <h4 style="margin-bottom:0.6rem;">Configuration Recovery</h4>
+            <div style="display:flex;gap:0.65rem;flex-wrap:wrap;align-items:flex-end;">
+                <div class="form-group" style="min-width:260px;flex:1;"><label>Snapshot Label</label><input id="hub-snapshot-label" class="form-control" placeholder="Before policy changes"></div>
+                <button class="btn btn-primary" id="hub-snapshot-create">Capture Snapshot</button>
+            </div>
+            <div id="hub-snapshot-list" style="margin-top:0.8rem;"></div>
+        </div>
+    `;
+    setOrdersPanelBody(tbody, html);
+
+    const listWrap = document.getElementById('hub-snapshot-list');
+    if (listWrap) {
+        if (snapshots.length === 0) {
+            listWrap.innerHTML = '<p class="text-muted">No snapshots available yet.</p>';
+        } else {
+            listWrap.innerHTML = snapshots.map(snapshot => `
+                <div class="glass-panel" style="padding:0.7rem;margin-bottom:0.5rem;display:flex;justify-content:space-between;gap:0.7rem;align-items:center;">
+                    <div>
+                        <div><strong>${escapeHtml(String(snapshot.label || 'Snapshot'))}</strong></div>
+                        <small class="text-muted">${new Date(snapshot.createdAt || Date.now()).toLocaleString()}</small>
+                    </div>
+                    <div style="display:flex;gap:0.45rem;flex-wrap:wrap;">
+                        <button class="btn btn-secondary hub-snapshot-restore" data-id="${escapeHtml(String(snapshot.id || ''))}">Restore</button>
+                        <button class="btn btn-danger hub-snapshot-delete" data-id="${escapeHtml(String(snapshot.id || ''))}">Delete</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+    }
+
+    document.getElementById('hub-snapshot-create')?.addEventListener('click', () => {
+        const label = document.getElementById('hub-snapshot-label')?.value || '';
+        const snapshot = createConfigSnapshot(label);
+        addLog(currentUser.id, 'Recovery Snapshot', `Created config snapshot ${snapshot.id}.`);
+        showToast('Snapshot captured.', 'success');
+        renderOrders();
+    });
+
+    document.querySelectorAll('.hub-snapshot-restore').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const snapshotId = btn.getAttribute('data-id');
+            const restored = restoreConfigSnapshot(snapshotId);
+            if (!restored) {
+                showToast('Snapshot restore failed.', 'error');
+                return;
+            }
+            addLog(currentUser.id, 'Recovery Restore', `Restored config snapshot ${snapshotId}.`);
+            showToast('Configuration restored.', 'success');
+            renderOrders();
+        });
+    });
+
+    document.querySelectorAll('.hub-snapshot-delete').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const snapshotId = btn.getAttribute('data-id');
+            const next = getStoredConfigSnapshots().filter(snapshot => String(snapshot.id) !== String(snapshotId));
+            saveConfigSnapshots(next);
+            addLog(currentUser.id, 'Recovery Snapshot Delete', `Deleted config snapshot ${snapshotId}.`);
+            renderOrders();
+        });
+    });
+}
+
 function renderOrders() {
     const tbody = document.getElementById('orders-table-body');
     const filter = document.getElementById('orders-status-filter');
@@ -7842,6 +8577,15 @@ function renderOrders() {
     if (!tbody || !currentUser) return;
 
     ordersModeButtons.forEach(btn => {
+        const mode = btn.getAttribute('data-mode') || '';
+        const restrictedModes = ['kiosk', 'policy', 'audit', 'health', 'recovery'];
+        if (currentUser.role === 'student' && restrictedModes.includes(mode)) {
+            btn.classList.add('hidden');
+            if (ordersTabMode === mode) ordersTabMode = 'orders';
+        } else {
+            btn.classList.remove('hidden');
+        }
+
         btn.classList.toggle('active', btn.getAttribute('data-mode') === ordersTabMode);
         if (!btn.dataset.bound) {
             btn.addEventListener('click', () => {
@@ -7864,6 +8608,8 @@ function renderOrders() {
             headers = ['Date', 'Requested By', 'Part Name', 'Qty', 'Priority', 'Est. Total', 'Status', 'Actions'];
         } else if (ordersTabMode === 'requests') {
             headers = ['Date', 'Type', 'From', 'Details', 'Status', 'Actions', '', ''];
+        } else if (ordersTabMode === 'kiosk' || ordersTabMode === 'policy' || ordersTabMode === 'audit' || ordersTabMode === 'health' || ordersTabMode === 'recovery') {
+            headers = ['Operations Hub Control Center', '', '', '', '', '', '', ''];
         } else {
             headers = ['Date', 'Flag Type', 'Actor', 'Details', 'Status', 'Actions', '', ''];
         }
@@ -7921,6 +8667,34 @@ function renderOrders() {
         td.textContent = 'Orders view is currently disabled for students.';
         tr.appendChild(td);
         tbody.appendChild(tr);
+        return;
+    }
+
+    if (ordersTabMode === 'kiosk') {
+        renderOrdersKioskMode(tbody);
+        return;
+    }
+
+    if (ordersTabMode === 'policy') {
+        renderOrdersPolicyMode(tbody);
+        return;
+    }
+
+    if (ordersTabMode === 'audit') {
+        renderOrdersAuditMode(tbody);
+        return;
+    }
+
+    if (ordersTabMode === 'health') {
+        renderOrdersHealthMode(tbody).catch(err => {
+            console.error('Failed to render health alerts:', err);
+            setOrdersPanelBody(tbody, '<div class="glass-panel" style="padding:1rem;">Unable to load health alerts.</div>');
+        });
+        return;
+    }
+
+    if (ordersTabMode === 'recovery') {
+        renderOrdersRecoveryMode(tbody);
         return;
     }
 
@@ -9509,6 +10283,9 @@ async function applyKioskLock(lock, screenKey = debugConfig.kioskLockScreen || '
     debugConfig.kioskLockScreen = Object.keys(KIOSK_LOCK_SCREENS).includes(screenKey)
         ? screenKey
         : 'systemLocked';
+    kioskLiveStatus.lastKnownLockState = !!lock;
+    kioskLiveStatus.lastKnownLockScreen = debugConfig.kioskLockScreen;
+    kioskLiveStatus.lastSyncAt = new Date().toISOString();
 
     if (lock && debugConfig.kioskLockScreen === 'kioskUnavailable' && customDescription) {
         kioskUnavailableDescriptionOverride = customDescription;
