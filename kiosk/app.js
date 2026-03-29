@@ -5583,18 +5583,11 @@ function openEditClassModal(classId) {
 }
 
 document.getElementById('create-class-btn')?.addEventListener('click', async () => {
-    const authOk = await ensurePrivilegedActionAuth('creating classes');
-    if (!authOk) return;
-
     if (!currentUser || !['teacher', 'developer'].includes(currentUser.role)) {
         showToast('Only teachers can create classes.', 'error');
         return;
     }
-    document.getElementById('create-class-btn')?.addEventListener('click', async () => {
-        if (!currentUser || !['teacher', 'developer'].includes(currentUser.role)) {
-            showToast('Only teachers can create classes.', 'error');
-            return;
-        }
+    const availableStudents = mockUsers.filter(u => u.role === 'student');
     const studentOptions = availableStudents.map(s =>
         `<div class="class-list-option" data-label="${`${s.name} ${s.id}`.toLowerCase()}" style="margin-bottom:0.5rem">
             <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">
@@ -5726,7 +5719,11 @@ document.getElementById('create-class-btn')?.addEventListener('click', async () 
                         timezone,
                         periodRanges: parsedRanges
                     }),
-                    defaultPermissions: { canCreateProjects: false, canJoinProjects: true, canSignOut: true }
+                    defaultPermissions: {
+                        canCreateProjects: !!policyConfig.accessLevelDefaults.canCreateProjects,
+                        canJoinProjects: !!policyConfig.accessLevelDefaults.canJoinProjects,
+                        canSignOut: !!policyConfig.accessLevelDefaults.canSignOut
+                    }
                 };
 
                 const saved = await saveStudentClassToSupabase(newClass);
@@ -6475,8 +6472,10 @@ document.getElementById('view-requests-btn')?.addEventListener('click', () => {
 function normalizeImportText(value) {
     return String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
 }
+
+function normalizeImportCell(value) {
+    return String(value || '')
         .replace(/^\uFEFF/, '')
-    openUserModal();
         .trim()
         .replace(/^"(.*)"$/, '$1')
         .replace(/""/g, '"')
@@ -7269,26 +7268,24 @@ function openEditProjectModal(projectId) {
     ownerSelect?.addEventListener('change', () => {
         const wrapper = document.getElementById('edit-proj-collaborators-wrap');
         if (!wrapper) return;
-        wrapper.innerHTML = buildProjectCollaboratorOptions({
+        wrapper.innerHTML = buildSearchableProjectCollaborators({
             selectedOwnerId: ownerSelect.value,
             selectedCollaborators: project.collaborators || []
         }) || '<p class="text-sm text-muted">No eligible student collaborators.</p>';
+        setupProjectCollaboratorSearch();
     });
-        // Setup initial search functionality
-        setTimeout(() => {
-            setupProjectCollaboratorSearch();
-        }, 10);
 
+    setTimeout(() => {
+        setupProjectCollaboratorSearch();
+    }, 10);
+
+    document.getElementById('edit-proj-delete')?.addEventListener('click', () => {
+        openDeleteProjectModal(project.id);
+    });
+
+    document.getElementById('confirm-edit-proj')?.addEventListener('click', async () => {
+        const name = document.getElementById('edit-proj-name').value.trim();
         const desc = document.getElementById('edit-proj-desc').value.trim();
-        ownerSelect?.addEventListener('change', () => {
-            const wrapper = document.getElementById('edit-proj-collaborators-wrap');
-            if (!wrapper) return;
-            wrapper.innerHTML = buildSearchableProjectCollaborators({
-                selectedOwnerId: ownerSelect.value,
-                selectedCollaborators: project.collaborators || []
-            }) || '<p class="text-sm text-muted">No eligible student collaborators.</p>';
-            setupProjectCollaboratorSearch();
-        });
         const status = document.getElementById('edit-proj-status').value;
         const selectedOwnerId = canAssignOwner
             ? (document.getElementById('edit-proj-owner')?.value || project.ownerId)
@@ -7300,31 +7297,34 @@ function openEditProjectModal(projectId) {
             return;
         }
 
-        if (name) {
-            const updated = await updateProjectInSupabase(project.id, {
-                name,
-                owner_id: selectedOwnerId,
-                description: desc,
-                status
-            });
-            if (!updated) {
-                showToast('Failed to update project in database.', 'error');
-                return;
-            }
+        if (!name) {
+            showToast('Project name is required.', 'error');
+            return;
+        }
 
-            const collaboratorsSaved = await syncProjectCollaboratorsInSupabase(project.id, collaborators, project.collaborators || []);
-            if (!collaboratorsSaved) {
-                showToast('Project updated, but collaborator sync failed.', 'warning');
-            }
+        const updated = await updateProjectInSupabase(project.id, {
+            name,
+            owner_id: selectedOwnerId,
+            description: desc,
+            status
+        });
+        if (!updated) {
+            showToast('Failed to update project in database.', 'error');
+            return;
+        }
 
-            await refreshProjectsFromSupabase();
+        const collaboratorsSaved = await syncProjectCollaboratorsInSupabase(project.id, collaborators, project.collaborators || []);
+        if (!collaboratorsSaved) {
+            showToast('Project updated, but collaborator sync failed.', 'warning');
+        }
 
-            addLog(currentUser.id, 'Edit Project', `Updated project: ${name} (owner ${selectedOwnerId}, ${collaborators.length} collaborators)`);
-            showToast(`Project updated.`, 'success');
-            closeModal();
-            if (document.getElementById('page-projects').classList.contains('active')) {
-                renderProjects();
-            }
+        await refreshProjectsFromSupabase();
+
+        addLog(currentUser.id, 'Edit Project', `Updated project: ${name} (owner ${selectedOwnerId}, ${collaborators.length} collaborators)`);
+        showToast('Project updated.', 'success');
+        closeModal();
+        if (document.getElementById('page-projects').classList.contains('active')) {
+            renderProjects();
         }
     });
 }
@@ -7341,7 +7341,7 @@ document.getElementById('create-project-btn')?.addEventListener('click', () => {
         `<option value="${escapeHtml(student.id)}" ${student.id === defaultOwnerId ? 'selected' : ''}>${escapeHtml(student.name)} (${escapeHtml(student.id)})</option>`
     ).join('');
 
-    const collaboratorOptions = buildProjectCollaboratorOptions({ selectedOwnerId: defaultOwnerId });
+    const collaboratorOptions = buildSearchableProjectCollaborators({ selectedOwnerId: defaultOwnerId });
 
     const html = `
         <div class="modal-header">
@@ -7377,18 +7377,23 @@ document.getElementById('create-project-btn')?.addEventListener('click', () => {
             <button class="btn btn-primary" id="confirm-add-proj">Create Project</button>
         </div>
     `;
-                <div class="form-group">
-                    <label>Add Collaborators (Optional)</label>
-                    <div id="add-proj-collaborators-wrap" class="glass-panel" style="padding:1rem; max-height:200px; overflow-y:auto">
-                        ${buildSearchableProjectCollaborators({ selectedOwnerId: defaultOwnerId }) || '<p class="text-sm text-muted">No available student collaborators.</p>'}
-                    </div>
-                </div>
 
-        wrap.innerHTML = buildProjectCollaboratorOptions({ selectedOwnerId: ownerSelect.value })
+    openModal(html);
+
+    const ownerSelect = document.getElementById('add-proj-owner');
+    ownerSelect?.addEventListener('change', () => {
+        const wrap = document.getElementById('add-proj-collaborators-wrap');
+        if (!wrap) return;
+        wrap.innerHTML = buildSearchableProjectCollaborators({ selectedOwnerId: ownerSelect.value })
             || '<p class="text-sm text-muted">No available student collaborators.</p>';
+        setupProjectCollaboratorSearch();
     });
 
-    document.getElementById('confirm-add-proj').addEventListener('click', () => {
+    setTimeout(() => {
+        setupProjectCollaboratorSearch();
+    }, 10);
+
+    document.getElementById('confirm-add-proj')?.addEventListener('click', () => {
         const submitBtn = document.getElementById('confirm-add-proj');
         withButtonPending(submitBtn, 'Creating...', async () => {
             const name = document.getElementById('add-proj-name').value.trim();
@@ -7402,42 +7407,39 @@ document.getElementById('create-project-btn')?.addEventListener('click', () => {
                 showToast('Please select a project owner.', 'error');
                 return;
             }
-            if (name) {
-                            <small class="text-muted">Teachers can create projects for eligible users.</small>
-                const newProject = {
-                    id: generateId('PRJ'),
-                    name: name,
-                    ownerId,
-                    description: desc,
-                    collaborators: collaborators,
-                    status: 'Active',
-                    itemsOut: []
-                };
 
-                    // Setup initial search functionality
-                    setTimeout(() => {
-                        setupProjectCollaboratorSearch();
-                    }, 10);
-    
-                    ownerSelect?.addEventListener('change', () => {
-                        const wrap = document.getElementById('add-proj-collaborators-wrap');
-                        if (!wrap) return;
-                        wrap.innerHTML = buildSearchableProjectCollaborators({ selectedOwnerId: ownerSelect.value })
-                            || '<p class="text-sm text-muted">No available student collaborators.</p>';
-                        setupProjectCollaboratorSearch();
-                    });
-                for (const collaboratorId of collaborators) {
-                    await addProjectCollaboratorToSupabase(newProject.id, collaboratorId);
-                }
+            if (!name) {
+                showToast('Project name is required.', 'error');
+                return;
+            }
 
-                await refreshProjectsFromSupabase();
+            const newProject = {
+                id: generateId('PRJ'),
+                name,
+                ownerId,
+                description: desc,
+                collaborators,
+                status: 'Active',
+                itemsOut: []
+            };
 
-                addLog(currentUser.id, 'Create Project', `Created new project: ${name} for ${ownerId} with ${collaborators.length} collaborators.`);
-                showToast(`Project ${name} created.`, 'success');
-                closeModal();
-                if (document.getElementById('page-projects').classList.contains('active')) {
-                    renderProjects();
-                }
+            const created = await addProjectToSupabase(newProject);
+            if (!created) {
+                showToast('Failed to create project in database.', 'error');
+                return;
+            }
+
+            for (const collaboratorId of collaborators) {
+                await addProjectCollaboratorToSupabase(newProject.id, collaboratorId);
+            }
+
+            await refreshProjectsFromSupabase();
+
+            addLog(currentUser.id, 'Create Project', `Created new project: ${name} for ${ownerId} with ${collaborators.length} collaborators.`);
+            showToast(`Project ${name} created.`, 'success');
+            closeModal();
+            if (document.getElementById('page-projects').classList.contains('active')) {
+                renderProjects();
             }
         });
     });

@@ -1263,12 +1263,227 @@ async function fetchKioskSettings(targetKioskId = kioskId) {
             organization_id: String(data?.organization_id || runtimeOrganizationId || '').trim(),
             is_locked: !!(data?.is_locked ?? data?.kiosk_locked),
             lock_screen: String(data?.lock_screen || data?.kiosk_lock_screen || 'systemLocked'),
-            debug_menu_pin_hash: String(data?.debug_menu_pin_hash || data?.debug_menu_pin || '').trim() || null
+            debug_menu_pin_hash: String(data?.debug_menu_pin_hash || data?.debug_menu_pin || '').trim() || null,
+            row: data || null
         };
     } catch (error) {
         console.warn('Unexpected error fetching kiosk settings:', error);
         return fallback;
     }
+}
+
+function resolveKioskSettingsBlob(sourceRow = {}) {
+    const blobCandidates = [
+        sourceRow?.settings,
+        sourceRow?.settings_json,
+        sourceRow?.kiosk_settings,
+        sourceRow?.kiosk_config,
+        sourceRow?.config
+    ];
+
+    for (const candidate of blobCandidates) {
+        if (!candidate) continue;
+        if (typeof candidate === 'object') return candidate;
+        if (typeof candidate === 'string') {
+            try {
+                const parsed = JSON.parse(candidate);
+                if (parsed && typeof parsed === 'object') return parsed;
+            } catch {
+                // Ignore malformed JSON text.
+            }
+        }
+    }
+
+    return {};
+}
+
+function readKioskBooleanSetting(values, fallback) {
+    for (const value of values) {
+        if (value === undefined || value === null || value === '') continue;
+        if (typeof value === 'boolean') return value;
+        if (typeof value === 'number') return value !== 0;
+        const normalized = String(value).trim().toLowerCase();
+        if (['true', '1', 'yes', 'y', 'on'].includes(normalized)) return true;
+        if (['false', '0', 'no', 'n', 'off'].includes(normalized)) return false;
+    }
+    return !!fallback;
+}
+
+function readKioskNumberSetting(values, fallback, min, max) {
+    for (const value of values) {
+        if (value === undefined || value === null || value === '') continue;
+        const parsed = parseFloat(value);
+        if (!Number.isFinite(parsed)) continue;
+        return Math.min(max, Math.max(min, parsed));
+    }
+    return fallback;
+}
+
+function readKioskTimeSetting(values, fallback) {
+    for (const value of values) {
+        if (value === undefined || value === null || value === '') continue;
+        const text = String(value).trim();
+        if (/^\d{2}:\d{2}$/.test(text)) return text;
+    }
+    return fallback;
+}
+
+function resolveKioskRuntimeSettings(source = {}) {
+    const defaults = getDefaultKioskSettings();
+    const blob = resolveKioskSettingsBlob(source);
+    const merged = { ...blob, ...source };
+
+    return {
+        sessionTimeout: Math.round(readKioskNumberSetting([
+            merged.sessionTimeout,
+            merged.session_timeout,
+            merged.session_timeout_minutes
+        ], defaults.sessionTimeout, 5, 480)),
+        noActivityExpiry: Math.round(readKioskNumberSetting([
+            merged.noActivityExpiry,
+            merged.no_activity_expiry,
+            merged.no_activity_expiry_minutes
+        ], defaults.noActivityExpiry, 1, 60)),
+        enforcePrivilegeUnlock: readKioskBooleanSetting([
+            merged.enforcePrivilegeUnlock,
+            merged.enforce_privilege_unlock
+        ], defaults.enforcePrivilegeUnlock),
+        showOrderForm: readKioskBooleanSetting([
+            merged.showOrderForm,
+            merged.show_order_form
+        ], defaults.showOrderForm),
+        showCredentialRequest: readKioskBooleanSetting([
+            merged.showCredentialRequest,
+            merged.show_credential_request
+        ], defaults.showCredentialRequest),
+        brandingText: String(
+            merged.brandingText
+            ?? merged.branding_text
+            ?? merged.location
+            ?? ''
+        ).trim(),
+        startTime: readKioskTimeSetting([
+            merged.startTime,
+            merged.start_time,
+            merged.operating_start_time
+        ], defaults.startTime),
+        endTime: readKioskTimeSetting([
+            merged.endTime,
+            merged.end_time,
+            merged.operating_end_time
+        ], defaults.endTime),
+        enforceHours: readKioskBooleanSetting([
+            merged.enforceHours,
+            merged.enforce_hours
+        ], defaults.enforceHours),
+        doorUnlockDuration: readKioskNumberSetting([
+            merged.doorUnlockDuration,
+            merged.door_unlock_duration,
+            merged.door_unlock_duration_seconds
+        ], defaults.doorUnlockDuration, 0.5, 10)
+    };
+}
+
+function isMissingColumnSchemaError(error) {
+    const message = String(error?.message || '').toLowerCase();
+    const code = String(error?.code || '').trim();
+    return code === '42703'
+        || message.includes('column')
+        || message.includes('schema cache');
+}
+
+async function saveKioskSettingsToSupabase(settings, targetKioskId = kioskId) {
+    if (!targetKioskId) {
+        return { ok: false, error: 'Kiosk ID is not configured.' };
+    }
+
+    const client = getSettingsSupabaseClient();
+    if (!client) {
+        return { ok: false, error: 'Supabase client is unavailable.' };
+    }
+
+    const basePayload = {
+        kiosk_id: targetKioskId,
+        organization_id: String(runtimeOrganizationId || configuredOrganizationId || '').trim() || null,
+        app_version: String(appVersion || '').trim() || null
+    };
+
+    const variants = [
+        {
+            ...basePayload,
+            session_timeout: settings.sessionTimeout,
+            no_activity_expiry: settings.noActivityExpiry,
+            enforce_privilege_unlock: settings.enforcePrivilegeUnlock,
+            show_order_form: settings.showOrderForm,
+            show_credential_request: settings.showCredentialRequest,
+            branding_text: settings.brandingText,
+            door_unlock_duration: settings.doorUnlockDuration,
+            start_time: settings.startTime,
+            end_time: settings.endTime,
+            enforce_hours: settings.enforceHours
+        },
+        {
+            ...basePayload,
+            session_timeout_minutes: settings.sessionTimeout,
+            no_activity_expiry_minutes: settings.noActivityExpiry,
+            enforce_privilege_unlock: settings.enforcePrivilegeUnlock,
+            show_order_form: settings.showOrderForm,
+            show_credential_request: settings.showCredentialRequest,
+            branding_text: settings.brandingText,
+            door_unlock_duration_seconds: settings.doorUnlockDuration,
+            operating_start_time: settings.startTime,
+            operating_end_time: settings.endTime,
+            enforce_hours: settings.enforceHours
+        },
+        {
+            ...basePayload,
+            settings: {
+                sessionTimeout: settings.sessionTimeout,
+                noActivityExpiry: settings.noActivityExpiry,
+                enforcePrivilegeUnlock: settings.enforcePrivilegeUnlock,
+                showOrderForm: settings.showOrderForm,
+                showCredentialRequest: settings.showCredentialRequest,
+                brandingText: settings.brandingText,
+                doorUnlockDuration: settings.doorUnlockDuration,
+                startTime: settings.startTime,
+                endTime: settings.endTime,
+                enforceHours: settings.enforceHours
+            }
+        },
+        {
+            ...basePayload,
+            settings_json: {
+                sessionTimeout: settings.sessionTimeout,
+                noActivityExpiry: settings.noActivityExpiry,
+                enforcePrivilegeUnlock: settings.enforcePrivilegeUnlock,
+                showOrderForm: settings.showOrderForm,
+                showCredentialRequest: settings.showCredentialRequest,
+                brandingText: settings.brandingText,
+                doorUnlockDuration: settings.doorUnlockDuration,
+                startTime: settings.startTime,
+                endTime: settings.endTime,
+                enforceHours: settings.enforceHours
+            }
+        }
+    ];
+
+    let lastError = null;
+    for (const payload of variants) {
+        const { error } = await client
+            .from('kiosk_settings')
+            .upsert([payload], { onConflict: 'kiosk_id' });
+
+        if (!error) return { ok: true, error: null };
+        lastError = error;
+        if (!isMissingColumnSchemaError(error)) {
+            break;
+        }
+    }
+
+    return {
+        ok: false,
+        error: String(lastError?.message || 'Failed to save kiosk settings.')
+    };
 }
 
 function showNewUpdateOverlay(newVersion) {
@@ -6068,11 +6283,7 @@ document.getElementById('create-class-btn')?.addEventListener('click', async () 
         showToast('Only teachers can create classes.', 'error');
         return;
     }
-    document.getElementById('create-class-btn')?.addEventListener('click', async () => {
-        if (!currentUser || !['teacher', 'developer'].includes(currentUser.role)) {
-            showToast('Only teachers can create classes.', 'error');
-            return;
-        }
+    const availableStudents = mockUsers.filter(u => u.role === 'student');
     const studentOptions = availableStudents.map(s =>
         `<div class="class-list-option" data-label="${`${s.name} ${s.id}`.toLowerCase()}" style="margin-bottom:0.5rem">
             <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">
@@ -6102,12 +6313,20 @@ document.getElementById('create-class-btn')?.addEventListener('click', async () 
             </div>
         `
         : '';
+
+    const html = `
+        <div class="modal-header">
+            <h3>Create New Class</h3>
+            <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
+        </div>
+        <div class="modal-body">
+            <div class="form-group">
+                <label>Class Name</label>
+                <input type="text" id="add-class-name" class="form-control" placeholder="e.g. Adv. Electronics">
+            </div>
+            ${teacherFieldHtml}
+            <div class="form-group">
                 <label>Select Students</label>
-        document.getElementById('create-class-btn')?.addEventListener('click', async () => {
-            if (!currentUser || !['teacher', 'developer'].includes(currentUser.role)) {
-                showToast('Only teachers can create classes.', 'error');
-                return;
-            }
                 <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.5rem;flex-wrap:wrap;">
                     <input type="text" id="add-class-student-search" class="form-control" placeholder="Search students by name or ID" style="flex:1;min-width:220px;">
                     <button type="button" class="btn btn-secondary" id="add-class-student-select-all">Select Visible</button>
@@ -8043,26 +8262,24 @@ function openEditProjectModal(projectId) {
     ownerSelect?.addEventListener('change', () => {
         const wrapper = document.getElementById('edit-proj-collaborators-wrap');
         if (!wrapper) return;
-        wrapper.innerHTML = buildProjectCollaboratorOptions({
+        wrapper.innerHTML = buildSearchableProjectCollaborators({
             selectedOwnerId: ownerSelect.value,
             selectedCollaborators: project.collaborators || []
         }) || '<p class="text-sm text-muted">No eligible student collaborators.</p>';
+        setupProjectCollaboratorSearch();
     });
-        // Setup initial search functionality
-        setTimeout(() => {
-            setupProjectCollaboratorSearch();
-        }, 10);
 
+    setTimeout(() => {
+        setupProjectCollaboratorSearch();
+    }, 10);
+
+    document.getElementById('edit-proj-delete')?.addEventListener('click', () => {
+        openDeleteProjectModal(project.id);
+    });
+
+    document.getElementById('confirm-edit-proj')?.addEventListener('click', async () => {
+        const name = document.getElementById('edit-proj-name').value.trim();
         const desc = document.getElementById('edit-proj-desc').value.trim();
-        ownerSelect?.addEventListener('change', () => {
-            const wrapper = document.getElementById('edit-proj-collaborators-wrap');
-            if (!wrapper) return;
-            wrapper.innerHTML = buildSearchableProjectCollaborators({
-                selectedOwnerId: ownerSelect.value,
-                selectedCollaborators: project.collaborators || []
-            }) || '<p class="text-sm text-muted">No eligible student collaborators.</p>';
-            setupProjectCollaboratorSearch();
-        });
         const status = document.getElementById('edit-proj-status').value;
         const selectedOwnerId = canAssignOwner
             ? (document.getElementById('edit-proj-owner')?.value || project.ownerId)
@@ -8074,31 +8291,34 @@ function openEditProjectModal(projectId) {
             return;
         }
 
-        if (name) {
-            const updated = await updateProjectInSupabase(project.id, {
-                name,
-                owner_id: selectedOwnerId,
-                description: desc,
-                status
-            });
-            if (!updated) {
-                showToast('Failed to update project in database.', 'error');
-                return;
-            }
+        if (!name) {
+            showToast('Project name is required.', 'error');
+            return;
+        }
 
-            const collaboratorsSaved = await syncProjectCollaboratorsInSupabase(project.id, collaborators, project.collaborators || []);
-            if (!collaboratorsSaved) {
-                showToast('Project updated, but collaborator sync failed.', 'warning');
-            }
+        const updated = await updateProjectInSupabase(project.id, {
+            name,
+            owner_id: selectedOwnerId,
+            description: desc,
+            status
+        });
+        if (!updated) {
+            showToast('Failed to update project in database.', 'error');
+            return;
+        }
 
-            await refreshProjectsFromSupabase();
+        const collaboratorsSaved = await syncProjectCollaboratorsInSupabase(project.id, collaborators, project.collaborators || []);
+        if (!collaboratorsSaved) {
+            showToast('Project updated, but collaborator sync failed.', 'warning');
+        }
 
-            addLog(currentUser.id, 'Edit Project', `Updated project: ${name} (owner ${selectedOwnerId}, ${collaborators.length} collaborators)`);
-            showToast(`Project updated.`, 'success');
-            closeModal();
-            if (document.getElementById('page-projects').classList.contains('active')) {
-                renderProjects();
-            }
+        await refreshProjectsFromSupabase();
+
+        addLog(currentUser.id, 'Edit Project', `Updated project: ${name} (owner ${selectedOwnerId}, ${collaborators.length} collaborators)`);
+        showToast('Project updated.', 'success');
+        closeModal();
+        if (document.getElementById('page-projects').classList.contains('active')) {
+            renderProjects();
         }
     });
 }
@@ -8115,7 +8335,7 @@ document.getElementById('create-project-btn')?.addEventListener('click', () => {
         `<option value="${escapeHtml(student.id)}" ${student.id === defaultOwnerId ? 'selected' : ''}>${escapeHtml(student.name)} (${escapeHtml(student.id)})</option>`
     ).join('');
 
-    const collaboratorOptions = buildProjectCollaboratorOptions({ selectedOwnerId: defaultOwnerId });
+    const collaboratorOptions = buildSearchableProjectCollaborators({ selectedOwnerId: defaultOwnerId });
 
     const html = `
         <div class="modal-header">
@@ -8151,18 +8371,22 @@ document.getElementById('create-project-btn')?.addEventListener('click', () => {
             <button class="btn btn-primary" id="confirm-add-proj">Create Project</button>
         </div>
     `;
-
     openModal(html);
 
     const ownerSelect = document.getElementById('add-proj-owner');
     ownerSelect?.addEventListener('change', () => {
         const wrap = document.getElementById('add-proj-collaborators-wrap');
         if (!wrap) return;
-        wrap.innerHTML = buildProjectCollaboratorOptions({ selectedOwnerId: ownerSelect.value })
+        wrap.innerHTML = buildSearchableProjectCollaborators({ selectedOwnerId: ownerSelect.value })
             || '<p class="text-sm text-muted">No available student collaborators.</p>';
+        setupProjectCollaboratorSearch();
     });
 
-    document.getElementById('confirm-add-proj').addEventListener('click', () => {
+    setTimeout(() => {
+        setupProjectCollaboratorSearch();
+    }, 10);
+
+    document.getElementById('confirm-add-proj')?.addEventListener('click', () => {
         const submitBtn = document.getElementById('confirm-add-proj');
         withButtonPending(submitBtn, 'Creating...', async () => {
             const name = document.getElementById('add-proj-name').value.trim();
@@ -8176,42 +8400,39 @@ document.getElementById('create-project-btn')?.addEventListener('click', () => {
                 showToast('Please select a project owner.', 'error');
                 return;
             }
-            if (name) {
-                            <small class="text-muted">Teachers can create projects for eligible users.</small>
-                const newProject = {
-                    id: generateId('PRJ'),
-                    name: name,
-                    ownerId,
-                    description: desc,
-                    collaborators: collaborators,
-                    status: 'Active',
-                    itemsOut: []
-                };
 
-                    // Setup initial search functionality
-                    setTimeout(() => {
-                        setupProjectCollaboratorSearch();
-                    }, 10);
-    
-                    ownerSelect?.addEventListener('change', () => {
-                        const wrap = document.getElementById('add-proj-collaborators-wrap');
-                        if (!wrap) return;
-                        wrap.innerHTML = buildSearchableProjectCollaborators({ selectedOwnerId: ownerSelect.value })
-                            || '<p class="text-sm text-muted">No available student collaborators.</p>';
-                        setupProjectCollaboratorSearch();
-                    });
-                for (const collaboratorId of collaborators) {
-                    await addProjectCollaboratorToSupabase(newProject.id, collaboratorId);
-                }
+            if (!name) {
+                showToast('Project name is required.', 'error');
+                return;
+            }
 
-                await refreshProjectsFromSupabase();
+            const newProject = {
+                id: generateId('PRJ'),
+                name,
+                ownerId,
+                description: desc,
+                collaborators,
+                status: 'Active',
+                itemsOut: []
+            };
 
-                addLog(currentUser.id, 'Create Project', `Created new project: ${name} for ${ownerId} with ${collaborators.length} collaborators.`);
-                showToast(`Project ${name} created.`, 'success');
-                closeModal();
-                if (document.getElementById('page-projects').classList.contains('active')) {
-                    renderProjects();
-                }
+            const created = await addProjectToSupabase(newProject);
+            if (!created) {
+                showToast('Failed to create project in database.', 'error');
+                return;
+            }
+
+            for (const collaboratorId of collaborators) {
+                await addProjectCollaboratorToSupabase(newProject.id, collaboratorId);
+            }
+
+            await refreshProjectsFromSupabase();
+
+            addLog(currentUser.id, 'Create Project', `Created new project: ${name} for ${ownerId} with ${collaborators.length} collaborators.`);
+            showToast(`Project ${name} created.`, 'success');
+            closeModal();
+            if (document.getElementById('page-projects').classList.contains('active')) {
+                renderProjects();
             }
         });
     });
@@ -10229,7 +10450,7 @@ function getDefaultKioskSettings() {
         showCredentialRequest: true,
         brandingText: '',
         startTime: '08:00',
-        endTime: '16:00',
+        endTime: '18:00',
         enforceHours: true,
         doorUnlockDuration: 2
     };
