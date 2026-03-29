@@ -984,30 +984,30 @@ function normalizeLicenseStatus(status) {
 function getLicenseUnavailableDescription(licenseStatus) {
     const normalized = normalizeLicenseStatus(licenseStatus);
     if (normalized === 'suspended' || normalized === 'supspended') {
-        return 'Kiosk Unavailable. License Suspended';
+        return 'Console Unavailable. License suspended.';
     }
     if (normalized === 'expired') {
-        return 'License expired, please renew your license';
+        return 'License expired. Please renew your license.';
     }
     if (normalized === 'offline') {
-        return 'Kiosk is offline. Routine maintenence may be underway, check your internet connection';
+        return 'Console is offline. Routine maintenance may be underway. Check your internet connection.';
     }
     if (normalized === 'admin') {
-        return 'This kiosk has been disabled by a system administrator';
+        return 'This console has been disabled by a system administrator.';
     }
     if (normalized === 'disabled') {
-        return 'This Kiosk is disabled';
+        return 'This console is disabled.';
     }
     if (normalized === 'terminated') {
         return 'Your license is unavailable or has been terminated.';
     }
-    return 'This kiosk is temporarily unavailable. Please check back shortly.';
+    return 'This console is temporarily unavailable. Please check back shortly.';
 }
 
 function getLicenseFailureMessage(reason, licenseStatus = '') {
-    if (reason === 'invalid_id') return 'Kiosk disabled: invalid organization ID.';
+    if (reason === 'invalid_id') return 'Console disabled: invalid organization ID.';
     if (reason === 'invalid_license') return getLicenseUnavailableDescription(licenseStatus);
-    return 'Kiosk disabled: license verification failed.';
+    return 'Console disabled: license verification failed.';
 }
 
 async function verifyOrganizationLicense(preferredOrganizationId = '') {
@@ -4392,9 +4392,6 @@ document.getElementById('bulk-manage-items-btn')?.addEventListener('click', asyn
         return;
     }
 
-    const authOk = await ensurePrivilegedActionAuth('bulk managing inventory categories and visibility tags');
-    if (!authOk) return;
-
     const categoryOptions = [
         '<option value="__KEEP__">Keep existing categories</option>',
         ...(categories.length > 0
@@ -7410,8 +7407,6 @@ document.getElementById('add-user-btn')?.addEventListener('click', async () => {
         showToast('You do not have permission to manage users.', 'error');
         return;
     }
-    const authOk = await ensureBulkDeletionAuth('adding users');
-    if (!authOk) return;
     openUserModal();
 });
 
@@ -7439,7 +7434,7 @@ document.getElementById('view-requests-btn')?.addEventListener('click', () => {
 
 async function ensureBulkDeletionAuth(reason = 'bulk deletion') {
     if (!currentUser || !userCanPerformPrivilegedActions()) {
-        showToast('Only teacher/developer accounts can perform bulk deletions.', 'error');
+        showToast('Only teacher/developer accounts can perform bulk add/delete operations.', 'error');
         return false;
     }
 
@@ -7571,6 +7566,9 @@ function findClassByCourseAndGrade(course, grade) {
 }
 
 document.getElementById('bulk-users-btn')?.addEventListener('click', () => {
+    ensureBulkDeletionAuth('bulk importing users').then(authOk => {
+        if (!authOk) return;
+
     const gradeOptions = ['10', '11', '12'];
     const courseOptions = [...new Set(
         studentClasses
@@ -7753,6 +7751,7 @@ document.getElementById('bulk-users-btn')?.addEventListener('click', () => {
         if (document.getElementById('page-users').classList.contains('active')) {
             renderUsers();
         }
+    });
     });
 });
 
@@ -8018,9 +8017,6 @@ async function openAddItemModal() {
         showToast('You do not have permission to add inventory items.', 'error');
         return;
     }
-
-    const authOk = await ensureBulkDeletionAuth('adding inventory items');
-    if (!authOk) return;
 
     const categoryOptions = categories.length > 0
         ? categories.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('')
@@ -10005,9 +10001,6 @@ async function openEditItemModal(itemId) {
         return;
     }
 
-    const authOk = await ensurePrivilegedActionAuth('editing inventory items');
-    if (!authOk) return;
-
     const item = inventoryItems.find(i => i.id === itemId);
     if (!item) return;
 
@@ -10246,9 +10239,6 @@ document.getElementById('manage-categories-btn')?.addEventListener('click', asyn
         return;
     }
 
-    const authOk = await ensurePrivilegedActionAuth('managing categories');
-    if (!authOk) return;
-
     function renderCategoryModal() {
         const categoryList = categories.map((cat, i) => `
             <div style="display:flex; align-items:center; justify-content:space-between; padding:0.5rem; border-bottom:1px solid rgba(255,255,255,0.05);">
@@ -10350,9 +10340,6 @@ document.getElementById('manage-visibility-tags-btn')?.addEventListener('click',
         showToast('You do not have permission to manage visibility tags.', 'error');
         return;
     }
-
-    const authOk = await ensurePrivilegedActionAuth('managing visibility tags');
-    if (!authOk) return;
 
     function renderVisibilityTagModal() {
         const tagList = visibilityTags.map((tag, i) => `
@@ -10951,8 +10938,8 @@ const KIOSK_LOCK_SCREENS = {
     kioskUnavailable: {
         label: 'Kiosk Unavailable',
         icon: 'desktop-tower',
-        title: 'Kiosk Unavailable',
-        description: 'This kiosk is temporarily unavailable. Please check back shortly.'
+        title: 'Console Unavailable',
+        description: 'This console is temporarily unavailable. Please check back shortly.'
     }
 };
 

@@ -1,13 +1,13 @@
 // Runtime environment configuration
 window.APP_ENV = {
     APP_MODE: 'manage',
-    APP_NAME: 'LCHS Management Console',
-    APP_SUBTITLE: 'System Management Console',
+    APP_NAME: 'LCHS Inventory Management Console',
+    APP_SUBTITLE: 'System Control Console',
     APP_LOGO_URL: '',
     APP_SIDEBAR_LOGO_URL: '',
     APP_VERSION: 'Version',
-    KIOSK_ID: 'KIOSK-01',
-    ORGANIZATION_ID: '967e4664-4eb8-4dff-966f-be1d04f98967',
+    KIOSK_ID: 'KIOSK-001',
+    ORGANIZATION_ID: '4339f9a2-dc08-4232-851a-cf993eba2e67',
     APP_UPDATE_ACTION: 'overlay',
     ALLOW_STUDENT_ORDER_VIEW: false,
     INFO_POPUP_HEADING: 'System Information',
