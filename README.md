@@ -87,6 +87,53 @@ Deprecated:
 
 - `LOCK_OVERLAY_COMMAND` string execution is intentionally rejected for security hardening.
 
+Organization License Status Behavior
+
+The license check reads the resolved license status returned by the database verification function and applies kiosk behavior as follows.
+
+- `suspended` (or legacy typo `supspended`): Kiosk is locked to unavailable screen with message "Kiosk Unavailable. License Suspended".
+- `expired`: Kiosk is locked to unavailable screen with message "License expired, please renew your license".
+- `offline`: Kiosk is locked to unavailable screen with message "Kiosk is offline. Routine maintenence may be underway, check your internet connection".
+- `admin`: Kiosk is locked to unavailable screen with message "This kiosk has been disabled by a system administrator".
+- `disabled`: Kiosk is locked to unavailable screen with message "This Kiosk is disabled".
+- `terminated`: Kiosk is locked to unavailable screen with message "Your license is unavailable or has been terminated.".
+- Any other non-active status: Kiosk is locked to unavailable screen with fallback message "This kiosk is temporarily unavailable. Please check back shortly.".
+
+Allowed / healthy license path:
+
+- Verification returns `allowed = true` and `reason = ok`: license is treated as valid and normal kiosk operation continues.
+
+Failure modes not tied to a status value:
+
+- Invalid or missing organization ID (`invalid_id`): kiosk is blocked and shows "Kiosk disabled: invalid organization ID.".
+- Verification failure (`verification_error`): kiosk is blocked and shows "Kiosk disabled: license verification failed.".
+
+Recovery behavior:
+
+- If a kiosk was previously blocked by license verification and later becomes valid, the app automatically reloads to restore normal operation.
+
+User-Facing Error Codes
+
+To keep user messaging consistent and vendor-neutral, use the following support codes when reporting issues.
+
+- `INV-1001` Database client unavailable: App could not initialize the browser database client.
+- `INV-1002` Data module missing: A required data script failed to load.
+- `INV-1003` Initial data load failed: App could not fetch startup data from the server.
+- `INV-1101` License verification failed: Organization license check failed or could not be completed.
+- `INV-1201` Auth password setup sync unavailable: Password saved locally but could not sync to server.
+- `INV-1301` Refresh failed: Page data refresh failed; UI may show cached data.
+- `INV-1401` User update failed: User create/update/delete action failed on server.
+- `INV-1501` Class update failed: Class create/update/delete action failed on server.
+- `INV-1601` Inventory update failed: Item or stock update failed on server.
+- `INV-1701` Project update failed: Project create/update/delete action failed on server.
+- `INV-1801` Request workflow update failed: Help/extension/order/system-flag action failed on server.
+
+Support guidance:
+
+- Capture the visible message and corresponding code.
+- Note the screen and action being performed.
+- Include timestamp and affected user ID when available.
+
 Contributions
 
 At this stage, the project is in early development. Feedback, testing results, and improvement suggestions are welcome.

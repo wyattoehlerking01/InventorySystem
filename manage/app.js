@@ -1032,7 +1032,7 @@ async function verifyOrganizationLicense(preferredOrganizationId = '') {
             valid: false,
             expectedHash: '',
             providedHash: '',
-            message: 'Supabase client is unavailable for license verification.'
+            message: 'Database client is unavailable for license verification.'
         };
         appLicenseBlocked = true;
         return {
@@ -1813,7 +1813,7 @@ async function checkoutBasket() {
     if (project.id.startsWith('PERS-')) {
         const ensured = await ensureProjectExistsInSupabase(project);
         if (!ensured) {
-            showToast('Failed to create personal project in Supabase.', 'error');
+            showToast('Failed to create personal project in database.', 'error');
             return;
         }
     }
@@ -1945,7 +1945,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     updateAppInfoOverlayVisibility();
 
     if (!window.supabase || typeof window.supabase.createClient !== 'function') {
-        showToast('Supabase client library failed to load. Check internet/CDN access and reload.', 'error');
+        showToast('Database client failed to load. Check connection and reload.', 'error');
         return;
     }
 
@@ -1992,7 +1992,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         await loadAllData();
     } catch (error) {
         console.error('Initial Supabase load failed:', error);
-        showToast('Unable to load data from Supabase. Login may not work until this is fixed.', 'error');
+        showToast('Unable to load data from server. Login may not work until this is fixed.', 'error');
     }
 
     // Bring focus to the primary login field for the current app mode.
@@ -2103,7 +2103,7 @@ async function handleBarcodeLogin(rawId) {
     }
 
     if (typeof fetchUserByIdFromSupabase !== 'function') {
-        showToast('Supabase data module is not loaded. Refresh and verify script loading.', 'error');
+        showToast('Data module is not loaded. Refresh and verify script loading.', 'error');
         return;
     }
 
@@ -2824,7 +2824,7 @@ async function promptSetPrivilegedActionPassword(reason = 'this action', forcedR
             privilegedSessionAuthenticated = true;
 
             if (!savedToSupabase) {
-                showToast('Password saved locally. Supabase update unavailable for this field.', 'warning');
+                showToast('Password saved locally. Server update unavailable for this field.', 'warning');
             } else {
                 showToast('Authentication password saved.', 'success');
             }
@@ -3059,7 +3059,7 @@ async function switchPage(targetId, title) {
         await refreshPageDataFromSupabase(targetId);
     } catch (error) {
         console.error(`Failed to refresh ${targetId} from Supabase:`, error);
-        showToast(`Failed to refresh ${title} from Supabase. Showing current data.`, 'error');
+        showToast(`Failed to refresh ${title} from server. Showing current data.`, 'error');
     }
 
     pages.forEach(page => {
@@ -3238,7 +3238,7 @@ function loadDashboard() {
 
                 const created = await addExtensionRequestToSupabase(request);
                 if (!created) {
-                    showToast('Failed to submit extension request to Supabase.', 'error');
+                    showToast('Failed to submit extension request to database.', 'error');
                     return;
                 }
 
@@ -4423,7 +4423,7 @@ async function performProjectDeleteWithMove(project, targetProjectId) {
 async function deleteProjectAfterResolution(project, actionLabel) {
     const deleted = await deleteProjectFromSupabase(project.id);
     if (!deleted) {
-        showToast('Failed to delete project in Supabase.', 'error');
+        showToast('Failed to delete project in database.', 'error');
         return false;
     }
 
@@ -5028,7 +5028,7 @@ async function returnProjectItem(projectId, signoutId, options = {}) {
         const nextStock = currentStock + returnQty;
         const stockUpdated = await updateItemInSupabase(item.id, { stock: nextStock });
         if (!stockUpdated) {
-            showToast('Failed to update item stock in Supabase.', 'error');
+            showToast('Failed to update item stock in database.', 'error');
             return false;
         }
 
@@ -5039,7 +5039,7 @@ async function returnProjectItem(projectId, signoutId, options = {}) {
     if (io.id) {
         const returned = await returnItemToSupabase(io.id);
         if (!returned) {
-            showToast('Failed to return item in Supabase.', 'error');
+            showToast('Failed to return item in database.', 'error');
             return false;
         }
     } else {
@@ -5050,7 +5050,7 @@ async function returnProjectItem(projectId, signoutId, options = {}) {
             quantity: io.quantity
         });
         if (!returned) {
-            showToast('Failed to return item in Supabase.', 'error');
+            showToast('Failed to return item in database.', 'error');
             return false;
         }
     }
@@ -5445,7 +5445,7 @@ function openSignOutModal(itemId) {
             if (project.id.startsWith('PERS-')) {
                 const ensured = await ensureProjectExistsInSupabase(project);
                 if (!ensured) {
-                    showToast('Failed to create personal project in Supabase.', 'error');
+                    showToast('Failed to create personal project in database.', 'error');
                     return;
                 }
             }
@@ -5609,7 +5609,7 @@ function renderClasses() {
             if (confirm(`Are you sure you want to delete ${cls.name}? This cannot be undone.`)) {
                 const deleted = await deleteStudentClassInSupabase(id);
                 if (!deleted) {
-                    showToast('Failed to delete class from Supabase.', 'error');
+                    showToast('Failed to delete class from database.', 'error');
                     return;
                 }
                 
@@ -5819,7 +5819,7 @@ function openEditClassModal(classId) {
 
             const saved = await saveStudentClassToSupabase(cls);
             if (!saved) {
-                showToast('Failed to save class updates to Supabase.', 'error');
+                showToast('Failed to save class updates to database.', 'error');
                 return;
             }
 
@@ -5984,7 +5984,7 @@ document.getElementById('create-class-btn')?.addEventListener('click', async () 
 
                 const saved = await saveStudentClassToSupabase(newClass);
                 if (!saved) {
-                    showToast('Failed to create class in Supabase.', 'error');
+                    showToast('Failed to create class in database.', 'error');
                     return;
                 }
 
@@ -6109,7 +6109,24 @@ function renderUsers() {
         return fromClassName ? fromClassName[1].toUpperCase() : 'N/A';
     };
 
-    tbody.innerHTML = mockUsers.map(user => {
+    const searchValue = String(document.getElementById('users-search-input')?.value || '').trim().toLowerCase();
+    const filteredUsers = (mockUsers || []).filter(user => {
+        if (!searchValue) return true;
+        const gradeLabel = getUserGradeLabel(user);
+        const tokens = [
+            user?.name,
+            user?.id,
+            user?.role,
+            user?.status,
+            user?.email,
+            user?.username,
+            gradeLabel
+        ];
+        const haystack = tokens.map(value => String(value || '').toLowerCase()).join(' ');
+        return haystack.includes(searchValue);
+    });
+
+    tbody.innerHTML = filteredUsers.map(user => {
         const suspensionBypassed = isSuspensionBypassedUser(user);
         const isSuspended = user.status === 'Suspended' && !suspensionBypassed;
         const canEdit = !(currentUser.role === 'teacher' && user.role === 'developer') || (currentUser.id === user.id && user.role === 'developer');
@@ -6120,7 +6137,6 @@ function renderUsers() {
 
         const safeUserId = escapeHtml(String(user.id || ''));
         const safeUserName = escapeHtml(String(user.name || 'Unknown User'));
-        const safeUserStatus = escapeHtml(String(user.status || 'Unknown'));
         const safeUserRole = escapeHtml(String(user.role || 'unknown'));
         const safeGradeLabel = escapeHtml(String(gradeLabel || 'N/A'));
 
@@ -6144,10 +6160,6 @@ function renderUsers() {
                 </td>
                 <td>
                     <div class="flex flex-col items-start gap-1">
-                        <span>
-                            <span class="status-indicator ${user.status === 'Active' ? 'bg-success' : 'bg-danger'}"></span>
-                            ${safeUserStatus}
-                        </span>
                         <span class="badge" style="color:${user.role === 'developer' ? '#8b5cf6' : user.role === 'teacher' ? '#f59e0b' : '#94a3b8'}">
                             ${safeUserRole}
                         </span>
@@ -6168,6 +6180,11 @@ function renderUsers() {
             </tr>
         `;
     }).join('');
+
+    if (filteredUsers.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No users match your search.</td></tr>';
+        return;
+    }
 
     // Attach listeners
     document.querySelectorAll('.suspend-user-btn').forEach(btn => {
@@ -6196,7 +6213,7 @@ function renderUsers() {
             const nextStatus = isSuspending ? 'Suspended' : 'Active';
             const updated = await updateUserInSupabase(id, { status: nextStatus });
             if (!updated) {
-                showToast('Failed to update user status in Supabase.', 'error');
+                showToast('Failed to update user status in database.', 'error');
                 return;
             }
             await refreshUsersFromSupabase();
@@ -6235,7 +6252,7 @@ function renderUsers() {
                 const deletingCurrentUser = currentUser?.id === id;
                 const deleted = await deleteUserFromSupabase(id);
                 if (!deleted) {
-                    showToast('Failed to delete user from Supabase.', 'error');
+                    showToast('Failed to delete user from database.', 'error');
                     return;
                 }
 
@@ -6460,7 +6477,7 @@ async function openUserModal(editId = null) {
 
                 const renamed = await renameUserBarcodeInSupabase(originalId, id);
                 if (!renamed) {
-                    showToast('Failed to update user barcode in Supabase.', 'error');
+                    showToast('Failed to update user barcode in database.', 'error');
                     return;
                 }
 
@@ -6495,7 +6512,7 @@ async function openUserModal(editId = null) {
             // Update in Supabase
             const updated = await updateUserInSupabase(id, { name, role, grade, status: userToEdit.status });
             if (!updated) {
-                showToast('Failed to update user in Supabase.', 'error');
+                showToast('Failed to update user in database.', 'error');
                 return;
             }
             await refreshUsersFromSupabase();
@@ -6518,7 +6535,7 @@ async function openUserModal(editId = null) {
 
             const created = await addUserToSupabase(newUser);
             if (!created) {
-                showToast('Failed to add user in Supabase.', 'error');
+                showToast('Failed to add user in database.', 'error');
                 return;
             }
             await refreshUsersFromSupabase();
@@ -6682,6 +6699,10 @@ document.getElementById('add-user-btn')?.addEventListener('click', async () => {
     const authOk = await ensurePrivilegedActionAuth('adding users');
     if (!authOk) return;
     openUserModal();
+});
+
+document.getElementById('users-search-input')?.addEventListener('input', () => {
+    renderUsers();
 });
 
 document.getElementById('view-requests-btn')?.addEventListener('click', () => {
@@ -7402,7 +7423,7 @@ async function openAddItemModal() {
 
         const createdItem = await addItemToSupabase(newItem);
         if (!createdItem) {
-            showToast('Failed to add item in Supabase.', 'error');
+            showToast('Failed to add item in database.', 'error');
             return;
         }
 
@@ -7530,7 +7551,7 @@ function openEditProjectModal(projectId) {
                 status
             });
             if (!updated) {
-                showToast('Failed to update project in Supabase.', 'error');
+                showToast('Failed to update project in database.', 'error');
                 return;
             }
 
@@ -7638,7 +7659,7 @@ document.getElementById('create-project-btn')?.addEventListener('click', () => {
 
                 const created = await addProjectToSupabase(newProject);
                 if (!created) {
-                    showToast('Failed to create project in Supabase.', 'error');
+                    showToast('Failed to create project in database.', 'error');
                     return;
                 }
 
@@ -8075,7 +8096,7 @@ function openOrderRequestModal({ initialName = '' } = {}) {
 
         const created = await addOrderRequestToSupabase(request);
         if (!created) {
-            showToast('Failed to submit order request to Supabase.', 'error');
+            showToast('Failed to submit order request to database.', 'error');
             return;
         }
 
@@ -8945,7 +8966,7 @@ function renderOrders() {
                 if (!req) return;
                 const updated = await updateHelpRequestInSupabase(req.id, 'Resolved');
                 if (!updated) {
-                    showToast('Failed to resolve help request in Supabase.', 'error');
+                    showToast('Failed to resolve help request in database.', 'error');
                     return;
                 }
                 await refreshRequestsFromSupabase();
@@ -8963,7 +8984,7 @@ function renderOrders() {
 
                 const updated = await updateExtensionRequestInSupabase(req.id, 'Approved');
                 if (!updated) {
-                    showToast('Failed to approve extension request in Supabase.', 'error');
+                    showToast('Failed to approve extension request in database.', 'error');
                     return;
                 }
 
@@ -8994,7 +9015,7 @@ function renderOrders() {
 
                 const updated = await updateExtensionRequestInSupabase(req.id, 'Denied');
                 if (!updated) {
-                    showToast('Failed to deny extension request in Supabase.', 'error');
+                    showToast('Failed to deny extension request in database.', 'error');
                     return;
                 }
 
@@ -9102,7 +9123,7 @@ function renderOrders() {
                 const flagId = e.currentTarget.getAttribute('data-id');
                 const updated = await updateSystemFlagStatusInSupabase(flagId, 'Archived');
                 if (!updated) {
-                    showToast('Failed to archive flag in Supabase.', 'error');
+                    showToast('Failed to archive flag in database.', 'error');
                     return;
                 }
                 await refreshRequestsFromSupabase();
@@ -9355,7 +9376,7 @@ function renderRequests() {
             if (req) {
                 const updated = await updateHelpRequestInSupabase(req.id, 'Resolved');
                 if (!updated) {
-                    showToast('Failed to resolve help request in Supabase.', 'error');
+                    showToast('Failed to resolve help request in database.', 'error');
                     return;
                 }
                 await refreshRequestsFromSupabase();
@@ -9374,7 +9395,7 @@ function renderRequests() {
             if (req) {
                 const updated = await updateExtensionRequestInSupabase(req.id, 'Approved');
                 if (!updated) {
-                    showToast('Failed to approve extension request in Supabase.', 'error');
+                    showToast('Failed to approve extension request in database.', 'error');
                     return;
                 }
 
@@ -9411,7 +9432,7 @@ function renderRequests() {
             if (req) {
                 const updated = await updateExtensionRequestInSupabase(req.id, 'Denied');
                 if (!updated) {
-                    showToast('Failed to deny extension request in Supabase.', 'error');
+                    showToast('Failed to deny extension request in database.', 'error');
                     return;
                 }
                 await refreshRequestsFromSupabase();
@@ -9557,7 +9578,7 @@ async function openEditItemModal(itemId) {
                 threshold
             });
             if (!updated) {
-                showToast('Failed to update item in Supabase.', 'error');
+                showToast('Failed to update item in database.', 'error');
                 return;
             }
 
@@ -9710,7 +9731,7 @@ document.getElementById('manage-categories-btn')?.addEventListener('click', asyn
             if (name && !categories.includes(name)) {
                 const created = await addCategoryToSupabase(name);
                 if (!created) {
-                    showToast('Failed to add category in Supabase.', 'error');
+                    showToast('Failed to add category in database.', 'error');
                     return;
                 }
                 await loadCategories();
@@ -9730,7 +9751,7 @@ document.getElementById('manage-categories-btn')?.addEventListener('click', asyn
                 if (newName && newName.trim() && newName.trim() !== oldName) {
                     const renamed = await renameCategoryInSupabase(oldName, newName.trim());
                     if (!renamed) {
-                        showToast('Failed to rename category in Supabase.', 'error');
+                        showToast('Failed to rename category in database.', 'error');
                         return;
                     }
                     await Promise.all([
@@ -9751,7 +9772,7 @@ document.getElementById('manage-categories-btn')?.addEventListener('click', asyn
                 if (confirm(`Delete category "${catName}"? Items in this category will become "Uncategorized".`)) {
                     const moved = await renameCategoryInSupabase(catName, 'Uncategorized');
                     if (!moved) {
-                        showToast('Failed to delete category in Supabase.', 'error');
+                        showToast('Failed to delete category in database.', 'error');
                         return;
                     }
                     await Promise.all([
@@ -9816,7 +9837,7 @@ document.getElementById('manage-visibility-tags-btn')?.addEventListener('click',
             if (name && !visibilityTags.includes(name)) {
                 const created = await addVisibilityTagToSupabase(name);
                 if (!created) {
-                    showToast('Failed to add visibility tag in Supabase.', 'error');
+                    showToast('Failed to add visibility tag in database.', 'error');
                     return;
                 }
                 await loadVisibilityTags();
@@ -9837,7 +9858,7 @@ document.getElementById('manage-visibility-tags-btn')?.addEventListener('click',
                     const trimmed = newName.trim();
                     const renamed = await renameVisibilityTagInSupabase(oldName, trimmed);
                     if (!renamed) {
-                        showToast('Failed to rename visibility tag in Supabase.', 'error');
+                        showToast('Failed to rename visibility tag in database.', 'error');
                         return;
                     }
                     await Promise.all([
@@ -9859,7 +9880,7 @@ document.getElementById('manage-visibility-tags-btn')?.addEventListener('click',
                 if (confirm(`Delete visibility tag "${tagName}"? It will be removed from all items and classes.`)) {
                     const deleted = await deleteVisibilityTagFromSupabase(tagName);
                     if (!deleted) {
-                        showToast('Failed to delete visibility tag in Supabase.', 'error');
+                        showToast('Failed to delete visibility tag in database.', 'error');
                         return;
                     }
                     await Promise.all([
@@ -10010,7 +10031,7 @@ function _promptSetDebugPin() {
 
         const saved = await saveDebugPinHashToSupabase(pinHash);
         if (!saved) {
-            showToast('Debug PIN saved for this device, but Supabase sync failed.', 'warning');
+            showToast('Debug PIN saved for this device, but server sync failed.', 'warning');
         }
 
         showToast('Debug PIN set.', 'success');
