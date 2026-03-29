@@ -2542,7 +2542,7 @@ function login(user) {
 
         // Run one-time authentication password setup audit for staff users.
         setTimeout(() => {
-            runPrivilegedStartupAudit();
+            void runPrivilegedStartupAudit();
         }, 250);
     }, 300);
 }
@@ -2656,14 +2656,42 @@ function userCanPerformPrivilegedActions() {
     return !!currentUser && ['teacher', 'developer'].includes(normalizedRole);
 }
 
-function runPrivilegedStartupAudit() {
+async function isDefaultChangeMeCredential(user, storedHash) {
+    const normalizedHash = String(storedHash || '').trim();
+    const defaultToken = 'changeme';
+
+    const plainCandidates = [
+        user?.auth_password,
+        user?.authentication_password,
+        user?.password
+    ];
+    const hasPlainDefault = plainCandidates.some(value => String(value || '').trim().toLowerCase() === defaultToken);
+    if (hasPlainDefault) return true;
+
+    if (!normalizedHash) return false;
+
+    const defaultHash = await hashDebugPin(defaultToken);
+    return !!defaultHash && normalizedHash.toLowerCase() === String(defaultHash).trim().toLowerCase();
+}
+
+async function runPrivilegedStartupAudit() {
     if (privilegedStartupAuditShown) return;
     privilegedStartupAuditShown = true;
 
     if (!userCanPerformPrivilegedActions()) return;
 
     const privilegedHash = getUserPrivilegedPasswordHash(currentUser);
-    if (privilegedHash) return;
+    if (privilegedHash) {
+        const requiresDefaultChange = await isDefaultChangeMeCredential(currentUser, privilegedHash);
+        if (!requiresDefaultChange) return;
+
+        showToast('Default authentication password detected. Change it now.', 'warning');
+        const changed = await promptSetPrivilegedActionPassword('updating your authentication password');
+        if (!changed) {
+            showToast('Please change the default authentication password after signing in.', 'warning');
+        }
+        return;
+    }
 
     showToast('No authentication password set for this account. Click your profile in the sidebar to set one.', 'warning');
 }
@@ -2678,6 +2706,7 @@ function getUserPrivilegedPasswordHash(user) {
     return String(
         user.auth_password_hash
         || user.authentication_password_hash
+        || user.password_hash
         || user.privileged_password_hash
         || user.privileged_auth_password_hash
         || user.staff_password_hash
@@ -2936,21 +2965,8 @@ function requestPrivilegedActionAuth(reason = 'this action') {
 }
 
 async function ensurePrivilegedActionAuth(reason = 'this action') {
-    if (!userCanPerformPrivilegedActions()) return true;
-    if (privilegedSessionAuthenticated) return true;
-
-    const privilegedHash = getUserPrivilegedPasswordHash(currentUser);
-    if (!privilegedHash) {
-        showToast('Set your authentication password to continue.', 'warning');
-        return promptSetPrivilegedActionPassword(reason);
-    }
-
-    if (debugConfig.pinHash && privilegedHash === debugConfig.pinHash) {
-        showToast('Authentication password cannot match the debug PIN. Please set a new password.', 'warning');
-        return promptSetPrivilegedActionPassword(reason, true);
-    }
-
-    return requestPrivilegedActionAuth(reason);
+    // Manage mode no longer requires a second privileged-auth step after login.
+    return true;
 }
 
 navBtns.forEach(btn => {
@@ -3943,11 +3959,6 @@ function renderInventory() {
             syncInventorySelectAllState();
             updateInventoryBulkSelectionState();
         });
-    });
-
-    // Select all users checkbox
-    document.getElementById('select-all-users')?.addEventListener('change', (e) => {
-        document.querySelectorAll('.user-select-cb').forEach(cb => { cb.checked = e.target.checked; });
     });
 
     // Attach listeners for actions
@@ -6102,6 +6113,42 @@ function renderLogs() {
 /* =======================================
    USERS LOGIC
    ======================================= */
+function updateUsersBulkSelectionState() {
+    const userCheckboxes = Array.from(document.querySelectorAll('#users-table-body .user-select-cb'));
+    const selectedCheckboxes = userCheckboxes.filter(cb => cb.checked);
+    const selectedCount = selectedCheckboxes.length;
+
+    const bulkDeleteBtn = document.getElementById('bulk-delete-users-btn');
+    const bulkSuspendBtn = document.getElementById('bulk-suspend-users-btn');
+    const selectAllUsersCb = document.getElementById('select-all-users');
+
+    const defaultDeleteLabel = '<i class="ph ph-trash"></i> Bulk Delete';
+    const defaultSuspendLabel = '<i class="ph ph-user-minus"></i> Bulk Suspend';
+
+    if (bulkDeleteBtn) {
+        bulkDeleteBtn.classList.toggle('hidden', selectedCount === 0);
+        bulkDeleteBtn.disabled = selectedCount === 0;
+        bulkDeleteBtn.innerHTML = selectedCount > 0
+            ? `<i class="ph ph-trash"></i> Bulk Delete (${selectedCount})`
+            : defaultDeleteLabel;
+    }
+
+    if (bulkSuspendBtn) {
+        bulkSuspendBtn.classList.toggle('hidden', selectedCount === 0);
+        bulkSuspendBtn.disabled = selectedCount === 0;
+        bulkSuspendBtn.innerHTML = selectedCount > 0
+            ? `<i class="ph ph-user-minus"></i> Bulk Suspend (${selectedCount})`
+            : defaultSuspendLabel;
+    }
+
+    if (selectAllUsersCb) {
+        const totalCount = userCheckboxes.length;
+        selectAllUsersCb.disabled = totalCount === 0;
+        selectAllUsersCb.checked = totalCount > 0 && selectedCount === totalCount;
+        selectAllUsersCb.indeterminate = selectedCount > 0 && selectedCount < totalCount;
+    }
+}
+
 function renderUsers() {
     const tbody = document.getElementById('users-table-body');
     if (currentUser.role === 'student' || !tbody) return;
@@ -6192,8 +6239,28 @@ function renderUsers() {
 
     if (filteredUsers.length === 0) {
         tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No users match your search.</td></tr>';
+        updateUsersBulkSelectionState();
         return;
     }
+
+    const selectAllUsersCb = document.getElementById('select-all-users');
+    if (selectAllUsersCb) {
+        selectAllUsersCb.onchange = (e) => {
+            const shouldSelectAll = !!e.target.checked;
+            document.querySelectorAll('#users-table-body .user-select-cb').forEach(cb => {
+                cb.checked = shouldSelectAll;
+            });
+            updateUsersBulkSelectionState();
+        };
+    }
+
+    document.querySelectorAll('#users-table-body .user-select-cb').forEach(cb => {
+        cb.addEventListener('change', () => {
+            updateUsersBulkSelectionState();
+        });
+    });
+
+    updateUsersBulkSelectionState();
 
     // Attach listeners
     document.querySelectorAll('.suspend-user-btn').forEach(btn => {

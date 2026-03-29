@@ -2079,9 +2079,9 @@ function login(user) {
     // Access Control & Permission Enforcement
     const navRequests = document.getElementById('nav-requests');
     if (user.role === 'student') {
-        navLogs.classList.add('hidden');
-        navUsers.classList.add('hidden');
-        navClasses.classList.add('hidden');
+        navLogs?.classList.add('hidden');
+        navUsers?.classList.add('hidden');
+        navClasses?.classList.add('hidden');
         navRequests?.classList.add('hidden');
         applyOrdersNavVisibility();
         document.getElementById('manage-categories-btn')?.classList.add('hidden');
@@ -2090,9 +2090,9 @@ function login(user) {
         document.getElementById('bulk-import-items-btn')?.classList.add('hidden');
         setProfilePrivilegedActionState(false);
     } else {
-        navLogs.classList.remove('hidden');
-        navUsers.classList.remove('hidden');
-        navClasses.classList.remove('hidden');
+        navLogs?.classList.remove('hidden');
+        navUsers?.classList.remove('hidden');
+        navClasses?.classList.remove('hidden');
         navRequests?.classList.add('hidden');
         applyOrdersNavVisibility();
         document.getElementById('manage-categories-btn')?.classList.remove('hidden');
@@ -2239,13 +2239,41 @@ async function runPrivilegedStartupAudit() {
     if (!userCanPerformPrivilegedActions()) return;
 
     const privilegedHash = getUserPrivilegedPasswordHash(currentUser);
-    if (privilegedHash) return;
+    if (privilegedHash) {
+        const requiresDefaultChange = await isDefaultChangeMeCredential(currentUser, privilegedHash);
+        if (!requiresDefaultChange) return;
+
+        showToast('Default authentication password detected. Change it now.', 'warning');
+        const changed = await promptSetPrivilegedActionPassword('updating your authentication password');
+        if (!changed) {
+            showToast('Manage sign-in remains at risk until the default authentication password is changed.', 'warning');
+        }
+        return;
+    }
 
     showToast('Set an authentication password now to enable Manage sign-in.', 'warning');
     const configured = await promptSetPrivilegedActionPassword('signing in to Manage');
     if (!configured) {
         showToast('Manage sign-in stays unavailable until an authentication password is set.', 'warning');
     }
+}
+
+async function isDefaultChangeMeCredential(user, storedHash) {
+    const normalizedHash = String(storedHash || '').trim();
+    const defaultToken = 'changeme';
+
+    const plainCandidates = [
+        user?.auth_password,
+        user?.authentication_password,
+        user?.password
+    ];
+    const hasPlainDefault = plainCandidates.some(value => String(value || '').trim().toLowerCase() === defaultToken);
+    if (hasPlainDefault) return true;
+
+    if (!normalizedHash) return false;
+
+    const defaultHash = await hashDebugPin(defaultToken);
+    return !!defaultHash && normalizedHash.toLowerCase() === String(defaultHash).trim().toLowerCase();
 }
 
 function getPrivilegedPasswordStorageKey(userId) {
@@ -2258,6 +2286,7 @@ function getUserPrivilegedPasswordHash(user) {
     return String(
         user.auth_password_hash
         || user.authentication_password_hash
+        || user.password_hash
         || user.privileged_password_hash
         || user.privileged_auth_password_hash
         || user.staff_password_hash
@@ -2547,7 +2576,12 @@ navBtns.forEach(btn => {
 
 async function refreshPageDataFromSupabase(targetId) {
     if (targetId === 'requests') {
-        await refreshPageDataFromSupabase('orders');
+        await Promise.all([
+            refreshRequestsFromSupabase(),
+            refreshProjectsFromSupabase(),
+            refreshUsersFromSupabase(),
+            refreshInventoryFromSupabase()
+        ]);
         return;
     }
 
@@ -2597,16 +2631,6 @@ async function refreshPageDataFromSupabase(targetId) {
         return;
     }
 
-    if (targetId === 'requests') {
-        await Promise.all([
-            refreshRequestsFromSupabase(),
-            refreshProjectsFromSupabase(),
-            refreshUsersFromSupabase(),
-            refreshInventoryFromSupabase()
-        ]);
-        return;
-    }
-
     if (targetId === 'orders') {
         await Promise.all([
             refreshRequestsFromSupabase(),
@@ -2616,10 +2640,9 @@ async function refreshPageDataFromSupabase(targetId) {
 }
 
 async function switchPage(targetId, title) {
-    if (targetId === 'requests') {
-        targetId = 'orders';
-        title = 'Operations Hub';
-        ordersTabMode = 'requests';
+    if (targetId === 'orders' || targetId === 'logs') {
+        showToast('This page is not available in kiosk mode.', 'error');
+        return;
     }
 
     if (targetId === 'orders' && !canCurrentUserViewOrders()) {
@@ -2675,6 +2698,7 @@ async function switchPage(targetId, title) {
     if (targetId === 'logs') renderLogs();
     if (targetId === 'users') renderUsers();
     if (targetId === 'classes') renderClasses();
+    if (targetId === 'requests') renderRequests();
     if (targetId === 'orders') renderOrders();
 }
 
@@ -6157,9 +6181,8 @@ document.getElementById('users-search-input')?.addEventListener('input', () => {
 // Bulk actions are disabled in kiosk mode
 
 document.getElementById('view-requests-btn')?.addEventListener('click', () => {
-    ordersTabMode = 'requests';
-    switchPage('orders', 'Operations Hub').catch(err => {
-        console.error('Failed to open Orders/Requests view:', err);
+    switchPage('requests', 'Requests').catch(err => {
+        console.error('Failed to open requests page:', err);
         showToast('Unable to open requests tab.', 'error');
     });
 });
