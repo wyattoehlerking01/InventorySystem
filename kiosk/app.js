@@ -58,8 +58,6 @@ if (typeof window.generateId !== 'function') {
     };
 }
 const generateId = window.generateId;
-const KIOSK_CONFIG_STORAGE_KEY = 'manageKioskConfigV1';
-
 function getDefaultKioskRuntimeSettings() {
     return {
         sessionTimeout: 30,
@@ -70,25 +68,97 @@ function getDefaultKioskRuntimeSettings() {
     };
 }
 
-function loadKioskRuntimeSettings() {
-    const fallback = getDefaultKioskRuntimeSettings();
-    try {
-        const raw = localStorage.getItem(KIOSK_CONFIG_STORAGE_KEY);
-        if (!raw) return fallback;
-        const parsed = JSON.parse(raw);
-        return {
-            ...fallback,
-            ...parsed,
-            sessionTimeout: Math.max(5, Math.min(480, parseInt(parsed?.sessionTimeout, 10) || fallback.sessionTimeout)),
-            noActivityExpiry: Math.max(1, Math.min(60, parseInt(parsed?.noActivityExpiry, 10) || fallback.noActivityExpiry)),
-            startTime: String(parsed?.startTime || fallback.startTime),
-            endTime: String(parsed?.endTime || fallback.endTime),
-            enforceHours: parsed?.enforceHours !== false
-        };
-    } catch (error) {
-        console.warn('Failed to parse kiosk runtime settings from local storage:', error);
-        return fallback;
+function resolveKioskSettingsBlob(sourceRow = {}) {
+    const blobCandidates = [
+        sourceRow?.settings,
+        sourceRow?.settings_json,
+        sourceRow?.kiosk_settings,
+        sourceRow?.kiosk_config,
+        sourceRow?.config
+    ];
+
+    for (const candidate of blobCandidates) {
+        if (!candidate) continue;
+        if (typeof candidate === 'object') return candidate;
+        if (typeof candidate === 'string') {
+            try {
+                const parsed = JSON.parse(candidate);
+                if (parsed && typeof parsed === 'object') return parsed;
+            } catch {
+                // Ignore malformed JSON text.
+            }
+        }
     }
+
+    return {};
+}
+
+function readKioskBooleanSetting(values, fallback) {
+    for (const value of values) {
+        if (value === undefined || value === null || value === '') continue;
+        if (typeof value === 'boolean') return value;
+        if (typeof value === 'number') return value !== 0;
+        const normalized = String(value).trim().toLowerCase();
+        if (['true', '1', 'yes', 'y', 'on'].includes(normalized)) return true;
+        if (['false', '0', 'no', 'n', 'off'].includes(normalized)) return false;
+    }
+    return !!fallback;
+}
+
+function readKioskNumberSetting(values, fallback, min, max) {
+    for (const value of values) {
+        if (value === undefined || value === null || value === '') continue;
+        const parsed = parseFloat(value);
+        if (!Number.isFinite(parsed)) continue;
+        return Math.min(max, Math.max(min, parsed));
+    }
+    return fallback;
+}
+
+function readKioskTimeSetting(values, fallback) {
+    for (const value of values) {
+        if (value === undefined || value === null || value === '') continue;
+        const text = String(value).trim();
+        if (/^\d{2}:\d{2}$/.test(text)) return text;
+    }
+    return fallback;
+}
+
+function resolveKioskRuntimeSettings(source = {}) {
+    const defaults = getDefaultKioskRuntimeSettings();
+    const blob = resolveKioskSettingsBlob(source);
+    const merged = { ...blob, ...source };
+
+    return {
+        sessionTimeout: Math.round(readKioskNumberSetting([
+            merged.sessionTimeout,
+            merged.session_timeout,
+            merged.session_timeout_minutes
+        ], defaults.sessionTimeout, 5, 480)),
+        noActivityExpiry: Math.round(readKioskNumberSetting([
+            merged.noActivityExpiry,
+            merged.no_activity_expiry,
+            merged.no_activity_expiry_minutes
+        ], defaults.noActivityExpiry, 1, 60)),
+        startTime: readKioskTimeSetting([
+            merged.startTime,
+            merged.start_time,
+            merged.operating_start_time
+        ], defaults.startTime),
+        endTime: readKioskTimeSetting([
+            merged.endTime,
+            merged.end_time,
+            merged.operating_end_time
+        ], defaults.endTime),
+        enforceHours: readKioskBooleanSetting([
+            merged.enforceHours,
+            merged.enforce_hours
+        ], defaults.enforceHours)
+    };
+}
+
+function loadKioskRuntimeSettings() {
+    return getDefaultKioskRuntimeSettings();
 }
 
 let kioskRuntimeSettings = loadKioskRuntimeSettings();
@@ -162,7 +232,7 @@ function getOperatingHoursClosedMessage() {
 }
 
 function refreshKioskRuntimeSettings() {
-    kioskRuntimeSettings = loadKioskRuntimeSettings();
+    return kioskRuntimeSettings;
 }
 
 function getNoActivityExpirySeconds() {
@@ -1098,7 +1168,8 @@ async function fetchKioskSettings(targetKioskId = kioskId) {
             organization_id: String(data?.organization_id || runtimeOrganizationId || '').trim(),
             is_locked: !!(data?.is_locked ?? data?.kiosk_locked),
             lock_screen: String(data?.lock_screen || data?.kiosk_lock_screen || 'systemLocked'),
-            debug_menu_pin_hash: String(data?.debug_menu_pin_hash || data?.debug_menu_pin || '').trim() || null
+            debug_menu_pin_hash: String(data?.debug_menu_pin_hash || data?.debug_menu_pin || '').trim() || null,
+            row: data || null
         };
     } catch (error) {
         console.warn('Unexpected error fetching kiosk settings:', error);
@@ -1175,6 +1246,19 @@ async function handleRemoteKioskSettingsChange(nextSettings = {}) {
         await applyKioskLock(remoteLocked, remoteLockScreen);
     }
 
+    const nextRuntimeSettings = resolveKioskRuntimeSettings(nextSettings);
+    const changed = JSON.stringify(nextRuntimeSettings) !== JSON.stringify(kioskRuntimeSettings);
+    if (changed) {
+        kioskRuntimeSettings = nextRuntimeSettings;
+        if (currentUser) {
+            if (!isWithinKioskOperatingHours()) {
+                logout(getOperatingHoursClosedMessage());
+                return;
+            }
+            resetInactivityTimer();
+        }
+    }
+
     if (Object.prototype.hasOwnProperty.call(nextSettings || {}, 'debug_menu_pin_hash')) {
         const remotePinHash = String(nextSettings.debug_menu_pin_hash || '').trim();
         debugConfig.pinHash = remotePinHash || null;
@@ -1211,7 +1295,18 @@ function startKioskVersionRealtimeListener(targetKioskId = kioskId) {
                 organization_id: payload?.new?.organization_id,
                 is_locked: payload?.new?.is_locked ?? payload?.new?.kiosk_locked,
                 lock_screen: payload?.new?.lock_screen || payload?.new?.kiosk_lock_screen,
-                debug_menu_pin_hash: payload?.new?.debug_menu_pin_hash || payload?.new?.debug_menu_pin
+                debug_menu_pin_hash: payload?.new?.debug_menu_pin_hash || payload?.new?.debug_menu_pin,
+                session_timeout: payload?.new?.session_timeout,
+                session_timeout_minutes: payload?.new?.session_timeout_minutes,
+                no_activity_expiry: payload?.new?.no_activity_expiry,
+                no_activity_expiry_minutes: payload?.new?.no_activity_expiry_minutes,
+                start_time: payload?.new?.start_time,
+                operating_start_time: payload?.new?.operating_start_time,
+                end_time: payload?.new?.end_time,
+                operating_end_time: payload?.new?.operating_end_time,
+                enforce_hours: payload?.new?.enforce_hours,
+                settings: payload?.new?.settings,
+                settings_json: payload?.new?.settings_json
             };
             await handleRemoteKioskSettingsChange(next);
         })
@@ -1796,6 +1891,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     const kioskSettings = await fetchKioskSettings(kioskId);
+    kioskRuntimeSettings = resolveKioskRuntimeSettings(kioskSettings?.row || kioskSettings || {});
     debugConfig.pinHash = String(kioskSettings.debug_menu_pin_hash || '').trim() || null;
     if (!debugConfig.pinHash) {
         try {
@@ -1849,20 +1945,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         document.addEventListener(evt, resetInactivityTimer, true);
     });
 
-    // Apply kiosk settings updates made in /manage without a full refresh.
-    window.addEventListener('storage', (event) => {
-        if (event.key !== KIOSK_CONFIG_STORAGE_KEY) return;
-
-        refreshKioskRuntimeSettings();
-
-        if (currentUser) {
-            if (!isWithinKioskOperatingHours()) {
-                logout(getOperatingHoursClosedMessage());
-                return;
-            }
-            resetInactivityTimer();
-        }
-    });
+    // Runtime settings now sync from Supabase realtime updates.
 });
 
 /* =======================================

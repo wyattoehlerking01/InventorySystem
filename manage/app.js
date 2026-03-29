@@ -1594,7 +1594,24 @@ function startKioskVersionRealtimeListener(targetKioskId = kioskId) {
                 organization_id: payload?.new?.organization_id,
                 is_locked: payload?.new?.is_locked ?? payload?.new?.kiosk_locked,
                 lock_screen: payload?.new?.lock_screen || payload?.new?.kiosk_lock_screen,
-                debug_menu_pin_hash: payload?.new?.debug_menu_pin_hash || payload?.new?.debug_menu_pin
+                debug_menu_pin_hash: payload?.new?.debug_menu_pin_hash || payload?.new?.debug_menu_pin,
+                session_timeout: payload?.new?.session_timeout,
+                session_timeout_minutes: payload?.new?.session_timeout_minutes,
+                no_activity_expiry: payload?.new?.no_activity_expiry,
+                no_activity_expiry_minutes: payload?.new?.no_activity_expiry_minutes,
+                start_time: payload?.new?.start_time,
+                operating_start_time: payload?.new?.operating_start_time,
+                end_time: payload?.new?.end_time,
+                operating_end_time: payload?.new?.operating_end_time,
+                enforce_hours: payload?.new?.enforce_hours,
+                enforce_privilege_unlock: payload?.new?.enforce_privilege_unlock,
+                show_order_form: payload?.new?.show_order_form,
+                show_credential_request: payload?.new?.show_credential_request,
+                branding_text: payload?.new?.branding_text,
+                door_unlock_duration: payload?.new?.door_unlock_duration,
+                door_unlock_duration_seconds: payload?.new?.door_unlock_duration_seconds,
+                settings: payload?.new?.settings,
+                settings_json: payload?.new?.settings_json
             };
             await handleRemoteKioskSettingsChange(next);
         })
@@ -10456,31 +10473,13 @@ function getDefaultKioskSettings() {
     };
 }
 
-function loadKioskSettings() {
-    const stored = localStorage.getItem(KIOSK_CONFIG_STORAGE_KEY);
-    if (stored) {
-        try {
-            const config = JSON.parse(stored);
-            return { ...getDefaultKioskSettings(), ...config };
-        } catch (e) {
-            console.error('Failed to load kiosk settings:', e);
-        }
-    }
-    return getDefaultKioskSettings();
+async function loadKioskSettings() {
+    const remote = await fetchKioskSettings(kioskId);
+    return resolveKioskRuntimeSettings(remote?.row || remote || {});
 }
 
-function saveKioskSettings(settings) {
-    try {
-        localStorage.setItem(KIOSK_CONFIG_STORAGE_KEY, JSON.stringify(settings));
-        return true;
-    } catch (e) {
-        console.error('Failed to save kiosk settings:', e);
-        return false;
-    }
-}
-
-function renderKioskSettings() {
-    const settings = loadKioskSettings();
+async function renderKioskSettings() {
+    const settings = await loadKioskSettings();
     
     // Populate form fields
     document.getElementById('kiosk-session-timeout').value = settings.sessionTimeout;
@@ -10533,18 +10532,31 @@ async function handleSaveKioskSettings() {
     }
 
     if (settings.enforceHours) {
-        const startHour = parseInt(settings.startTime.split(':')[0]);
-        const endHour = parseInt(settings.endTime.split(':')[0]);
-        if (startHour >= endHour) {
+        const startMinutes = parseTimeToMinutes(settings.startTime);
+        const endMinutes = parseTimeToMinutes(settings.endTime);
+        if (startMinutes === null || endMinutes === null) {
+            showToast('Start and end time must be valid.', 'error');
+            return;
+        }
+        if (startMinutes === endMinutes) {
             showToast('End time must be after start time.', 'error');
             return;
         }
     }
 
-    if (saveKioskSettings(settings)) {
+    const result = await saveKioskSettingsToSupabase(settings, kioskId);
+    if (result.ok) {
+        kioskManageConfig.brandingText = settings.brandingText;
+        kioskManageConfig.location = settings.brandingText;
+        kioskManageConfig.featureFlags = {
+            ...kioskManageConfig.featureFlags,
+            showLoginHelpRequest: settings.showCredentialRequest
+        };
+        applyKioskManageBranding();
+        applyLoginHelpVisibility();
         showToast('Kiosk settings saved successfully.', 'success');
     } else {
-        showToast('Failed to save kiosk settings.', 'error');
+        showToast(`Failed to save kiosk settings: ${result.error}`, 'error');
     }
 }
 
