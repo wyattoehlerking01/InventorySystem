@@ -226,6 +226,10 @@ function clearFailedLoginAttempts() {
     loginRateLimit.attempts = [];
 }
 
+function checkLoginRateLimit() {
+    return canAttemptLogin();
+}
+
 let loginRequestInFlight = false;
 
 async function completeAuthenticatedSession(user) {

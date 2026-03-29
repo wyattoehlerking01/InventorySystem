@@ -226,6 +226,10 @@ function clearFailedLoginAttempts() {
     loginRateLimit.attempts = [];
 }
 
+function checkLoginRateLimit() {
+    return canAttemptLogin();
+}
+
 function parseTimeToMinutes(timeString) {
     const [hours, minutes] = String(timeString || '').split(':').map(Number);
     if (Number.isNaN(hours) || Number.isNaN(minutes)) return null;
