@@ -1885,12 +1885,6 @@ async function handleManageCredentialLogin(rawUsername, rawPassword) {
             return;
         }
 
-        if (user.role === 'student') {
-            recordFailedLoginAttempt();
-            showToast('Management console access is restricted to teachers and developers.', 'error');
-            return;
-        }
-
         if (user.status === 'Suspended' && !isSuspensionBypassedUser(user)) {
             showToast('Your account is suspended. Please contact a teacher.', 'error');
             return;
