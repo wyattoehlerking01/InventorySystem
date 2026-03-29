@@ -2256,7 +2256,9 @@ function getUserPrivilegedPasswordHash(user) {
     if (!user) return '';
 
     return String(
-        user.privileged_password_hash
+        user.auth_password_hash
+        || user.authentication_password_hash
+        || user.privileged_password_hash
         || user.privileged_auth_password_hash
         || user.staff_password_hash
         || ''

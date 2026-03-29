@@ -319,31 +319,35 @@
 
                 <!-- Orders Page -->
                 <div id="page-orders" class="page hidden">
-                    <div class="action-bar">
+                    <div class="action-bar operations-hub-header">
                         <h3>Operations Hub</h3>
-                        <div class="flex" style="gap:0.75rem;align-items:center;">
-                            <button class="btn btn-secondary orders-mode-btn active" data-mode="all">All Activity</button>
-                            <button class="btn btn-secondary orders-mode-btn" data-mode="orders">Orders</button>
-                            <button class="btn btn-secondary orders-mode-btn" data-mode="requests">Requests</button>
-                            <button class="btn btn-secondary orders-mode-btn" data-mode="flags">System Flags</button>
-                            <button class="btn btn-secondary orders-mode-btn" data-mode="kiosk">Kiosk Control</button>
-                            <button class="btn btn-secondary orders-mode-btn" data-mode="policy">Policy</button>
-                            <button class="btn btn-secondary orders-mode-btn" data-mode="audit">Audit Center</button>
-                            <button class="btn btn-secondary orders-mode-btn" data-mode="health">Health Alerts</button>
-                            <button class="btn btn-secondary orders-mode-btn" data-mode="recovery">Recovery</button>
-                            <select id="orders-status-filter" class="form-control" style="min-width:190px;">
-                                <option value="all">All Statuses</option>
-                                <option value="Pending">Pending</option>
-                                <option value="Approved">Approved</option>
-                                <option value="Denied">Denied</option>
-                                <option value="Ordered">Ordered</option>
-                            </select>
-                            <button class="btn btn-secondary hidden" id="configure-order-form-btn">
-                                <i class="ph ph-sliders-horizontal"></i> Customize Form
-                            </button>
-                            <button class="btn btn-primary" id="new-order-request-btn">
-                                <i class="ph ph-plus"></i> New Order Request
-                            </button>
+                        <div class="operations-hub-toolbar">
+                            <div class="operations-hub-mode-group">
+                                <button class="btn btn-secondary orders-mode-btn active" data-mode="all">All Activity</button>
+                                <button class="btn btn-secondary orders-mode-btn" data-mode="orders">Orders</button>
+                                <button class="btn btn-secondary orders-mode-btn" data-mode="requests">Requests</button>
+                                <button class="btn btn-secondary orders-mode-btn" data-mode="flags">System Flags</button>
+                                <button class="btn btn-secondary orders-mode-btn" data-mode="kiosk">Kiosk Control</button>
+                                <button class="btn btn-secondary orders-mode-btn" data-mode="policy">Policy</button>
+                                <button class="btn btn-secondary orders-mode-btn" data-mode="audit">Audit Center</button>
+                                <button class="btn btn-secondary orders-mode-btn" data-mode="health">Health Alerts</button>
+                                <button class="btn btn-secondary orders-mode-btn" data-mode="recovery">Recovery</button>
+                            </div>
+                            <div class="operations-hub-action-group">
+                                <select id="orders-status-filter" class="form-control operations-hub-status-filter">
+                                    <option value="all">All Statuses</option>
+                                    <option value="Pending">Pending</option>
+                                    <option value="Approved">Approved</option>
+                                    <option value="Denied">Denied</option>
+                                    <option value="Ordered">Ordered</option>
+                                </select>
+                                <button class="btn btn-secondary hidden" id="configure-order-form-btn">
+                                    <i class="ph ph-sliders-horizontal"></i> Customize Form
+                                </button>
+                                <button class="btn btn-primary" id="new-order-request-btn">
+                                    <i class="ph ph-plus"></i> New Order Request
+                                </button>
+                            </div>
                         </div>
                     </div>
 
@@ -427,12 +431,12 @@
                 <div id="page-users" class="page hidden">
                     <div class="action-bar">
                         <h3>System Users</h3>
-                        <div class="flex" style="gap: 1rem;">
+                        <div class="users-toolbar">
+                            <input type="text" class="form-control users-search-input" id="users-search-input"
+                                placeholder="Search users...">
                             <button class="btn btn-secondary" id="view-requests-btn">
                                 <i class="ph ph-lifebuoy"></i> Requests
                             </button>
-                            <input type="text" class="form-control" id="users-search-input" placeholder="Search users..."
-                                style="min-width: 220px;">
                             <div class="view-toggles"
                                 style="display: none; gap: 0.5rem; border-right: 1px solid var(--glass-border); padding-right: 1rem;">
                                 <button class="btn btn-secondary active-view" id="view-list-btn" title="List View">
