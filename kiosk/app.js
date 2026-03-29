@@ -3673,10 +3673,6 @@ document.getElementById('inventory-smart-search')?.addEventListener('keydown', e
     runInventorySearchAction();
 });
 
-document.getElementById('inventory-search-btn')?.addEventListener('click', () => {
-    runInventorySearchAction();
-});
-
 document.getElementById('request-item-btn')?.addEventListener('click', () => {
     openOrderRequestModal({
         initialName: document.getElementById('inventory-smart-search')?.value || ''

@@ -462,11 +462,16 @@ h6 {
 }
 
 .badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     font-size: 0.75rem;
+    line-height: 1;
     padding: 0.2rem 0.6rem;
     border-radius: 12px;
     background: rgba(255, 255, 255, 0.1);
     color: var(--text-secondary);
+    text-align: center;
     text-transform: uppercase;
     letter-spacing: 0.05em;
     font-weight: 500;

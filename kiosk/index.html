@@ -248,9 +248,6 @@
                                 <input type="text" id="inventory-smart-search" class="form-control inventory-smart-search-input"
                                     placeholder="Search items, SKU, or category..." autocomplete="off">
                             </div>
-                            <button class="btn btn-secondary inventory-toolbar-btn" id="inventory-search-btn" type="button">
-                                <i class="ph ph-magnifying-glass"></i> Search
-                            </button>
                         </div>
                         <div id="inventory-results-meta" class="inventory-results-meta text-muted">Loading inventory...</div>
                         <div class="inventory-secondary-controls" style="display:flex;gap:1rem;">
@@ -420,7 +417,7 @@
                         <h3>System Users</h3>
                         <div class="flex" style="gap: 1rem;">
                             <button class="btn btn-secondary" id="view-requests-btn">
-                                <i class="ph ph-lifebuoy"></i> Open Requests Tab
+                                <i class="ph ph-lifebuoy"></i> Requests
                             </button>
                             <div class="view-toggles"
                                 style="display: none; gap: 0.5rem; border-right: 1px solid var(--glass-border); padding-right: 1rem;">
@@ -430,22 +427,6 @@
                                 <button class="btn btn-secondary" id="view-grid-btn" title="Grid View">
                                     <i class="ph ph-squares-four"></i>
                                 </button>
-                            </div>
-                            <div class="bulk-actions-menu-wrap" id="users-bulk-actions-wrap">
-                                <button class="btn btn-secondary" id="users-bulk-actions-btn" type="button">
-                                    <i class="ph ph-list-checks"></i> Bulk Actions
-                                </button>
-                                <div class="bulk-actions-menu hidden" id="users-bulk-actions-menu">
-                                    <button class="btn btn-secondary bulk-action-item" id="bulk-action-import" type="button">
-                                        <i class="ph ph-users-three"></i> Bulk Import Users
-                                    </button>
-                                    <button class="btn btn-danger bulk-action-item" id="bulk-action-delete" type="button">
-                                        <i class="ph ph-trash"></i> Bulk Delete Selected
-                                    </button>
-                                    <button class="btn btn-secondary bulk-action-item" id="bulk-action-suspend" type="button">
-                                        <i class="ph ph-user-minus"></i> Bulk Suspend/Activate
-                                    </button>
-                                </div>
                             </div>
                             <button class="btn btn-secondary" id="bulk-users-btn" style="display:none;">
                                 <i class="ph ph-users-three"></i> Bulk Import

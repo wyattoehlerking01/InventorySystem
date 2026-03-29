@@ -4077,10 +4077,6 @@ document.getElementById('inventory-smart-search')?.addEventListener('keydown', e
     runInventorySearchAction();
 });
 
-document.getElementById('inventory-search-btn')?.addEventListener('click', () => {
-    runInventorySearchAction();
-});
-
 document.getElementById('request-item-btn')?.addEventListener('click', () => {
     openOrderRequestModal({
         initialName: document.getElementById('inventory-smart-search')?.value || ''
@@ -6686,32 +6682,6 @@ document.getElementById('add-user-btn')?.addEventListener('click', async () => {
     const authOk = await ensurePrivilegedActionAuth('adding users');
     if (!authOk) return;
     openUserModal();
-});
-
-document.getElementById('users-bulk-actions-btn')?.addEventListener('click', () => {
-    document.getElementById('users-bulk-actions-menu')?.classList.toggle('hidden');
-});
-
-document.getElementById('bulk-action-import')?.addEventListener('click', () => {
-    document.getElementById('users-bulk-actions-menu')?.classList.add('hidden');
-    document.getElementById('bulk-users-btn')?.click();
-});
-
-document.getElementById('bulk-action-delete')?.addEventListener('click', () => {
-    document.getElementById('users-bulk-actions-menu')?.classList.add('hidden');
-    document.getElementById('bulk-delete-users-btn')?.click();
-});
-
-document.getElementById('bulk-action-suspend')?.addEventListener('click', () => {
-    document.getElementById('users-bulk-actions-menu')?.classList.add('hidden');
-    document.getElementById('bulk-suspend-users-btn')?.click();
-});
-
-document.addEventListener('click', (e) => {
-    const wrap = document.getElementById('users-bulk-actions-wrap');
-    const menu = document.getElementById('users-bulk-actions-menu');
-    if (!wrap || !menu) return;
-    if (!wrap.contains(e.target)) menu.classList.add('hidden');
 });
 
 document.getElementById('view-requests-btn')?.addEventListener('click', () => {
