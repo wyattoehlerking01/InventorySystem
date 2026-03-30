@@ -62,6 +62,8 @@ function getDefaultKioskRuntimeSettings() {
     return {
         sessionTimeout: 30,
         noActivityExpiry: 3,
+        showOrderForm: true,
+        showCredentialRequest: true,
         startTime: '08:00',
         endTime: '16:00',
         enforceHours: true
@@ -124,8 +126,12 @@ function readKioskTimeSetting(values, fallback) {
     return fallback;
 }
 
-function resolveKioskRuntimeSettings(source = {}) {
+function resolveKioskRuntimeSettings(source = {}, fallbackOverrides = null) {
     const defaults = getDefaultKioskRuntimeSettings();
+    const fallback = {
+        ...defaults,
+        ...(fallbackOverrides && typeof fallbackOverrides === 'object' ? fallbackOverrides : {})
+    };
     const blob = resolveKioskSettingsBlob(source);
     const merged = { ...blob, ...source };
 
@@ -134,26 +140,34 @@ function resolveKioskRuntimeSettings(source = {}) {
             merged.sessionTimeout,
             merged.session_timeout,
             merged.session_timeout_minutes
-        ], defaults.sessionTimeout, 5, 480)),
+        ], fallback.sessionTimeout, 5, 480)),
         noActivityExpiry: Math.round(readKioskNumberSetting([
             merged.noActivityExpiry,
             merged.no_activity_expiry,
             merged.no_activity_expiry_minutes
-        ], defaults.noActivityExpiry, 1, 60)),
+        ], fallback.noActivityExpiry, 1, 60)),
+        showOrderForm: readKioskBooleanSetting([
+            merged.showOrderForm,
+            merged.show_order_form
+        ], fallback.showOrderForm),
+        showCredentialRequest: readKioskBooleanSetting([
+            merged.showCredentialRequest,
+            merged.show_credential_request
+        ], fallback.showCredentialRequest),
         startTime: readKioskTimeSetting([
             merged.startTime,
             merged.start_time,
             merged.operating_start_time
-        ], defaults.startTime),
+        ], fallback.startTime),
         endTime: readKioskTimeSetting([
             merged.endTime,
             merged.end_time,
             merged.operating_end_time
-        ], defaults.endTime),
+        ], fallback.endTime),
         enforceHours: readKioskBooleanSetting([
             merged.enforceHours,
             merged.enforce_hours
-        ], defaults.enforceHours)
+        ], fallback.enforceHours)
     };
 }
 
@@ -1284,10 +1298,11 @@ async function handleRemoteKioskSettingsChange(nextSettings = {}) {
         await applyKioskLock(remoteLocked, remoteLockScreen);
     }
 
-    const nextRuntimeSettings = resolveKioskRuntimeSettings(nextSettings);
+    const nextRuntimeSettings = resolveKioskRuntimeSettings(nextSettings, kioskRuntimeSettings);
     const changed = JSON.stringify(nextRuntimeSettings) !== JSON.stringify(kioskRuntimeSettings);
     if (changed) {
         kioskRuntimeSettings = nextRuntimeSettings;
+        applyRuntimeFeatureVisibility();
         const outOfHoursLocked = await syncOperatingHoursLockState();
         if (currentUser) {
             if (outOfHoursLocked && currentUser.role === 'student') {
@@ -1708,8 +1723,16 @@ async function fetchDoorStatus() {
         if (!response.ok) throw new Error(`Status ${response.status}`);
         return await response.json();
     } catch {
-        return { status: 'unavailable', held_open: false };
+        return { status: 'unavailable', held_open: false, door_position: 'unknown' };
     }
+}
+
+function formatDoorDuration(totalSeconds) {
+    const seconds = Math.max(0, Math.floor(Number(totalSeconds) || 0));
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    if (mins <= 0) return `${secs}s`;
+    return `${mins}m ${secs.toString().padStart(2, '0')}s`;
 }
 
 async function requestManualDoorUnlockAndLogAccess(reason = 'manual debug control') {
@@ -1741,11 +1764,10 @@ async function requestManualDoorUnlockAndLogAccess(reason = 'manual debug contro
 }
 
 function renderDoorPage() {
-    const openBtn = document.getElementById('door-open-btn');
+    const normalBtn = document.getElementById('door-normal-btn');
     const holdBtn = document.getElementById('door-hold-btn');
-    const releaseBtn = document.getElementById('door-release-btn');
     const statusEl = document.getElementById('door-status-text');
-    if (!openBtn || !holdBtn || !releaseBtn || !statusEl) return;
+    if (!normalBtn || !holdBtn || !statusEl) return;
 
     const setStatus = (text) => {
         statusEl.textContent = text;
@@ -1757,12 +1779,41 @@ function renderDoorPage() {
             setStatus('Door service unavailable.');
             return;
         }
-        setStatus(status.held_open ? 'Door is currently held open.' : 'Door is secured (normal mode).');
-    };
 
-    openBtn.onclick = async () => {
-        await requestManualDoorUnlockAndLogAccess('kiosk door page pulse open');
-        await refreshStatus();
+        const doorPosition = String(status.door_position || 'unknown');
+        const isOpen = doorPosition === 'open';
+        const isClosed = doorPosition === 'closed';
+        const openFor = formatDoorDuration(status.door_open_seconds);
+        const userFor = formatDoorDuration(status.active_user_seconds);
+        const lastVisit = formatDoorDuration(status.last_visit_duration_seconds);
+
+        if (isOpen) {
+            let message = `Door NOT closed. Open for ${openFor}.`;
+            if (status.active_user_id) {
+                message += ` Current user ${status.active_user_id} in supply room for ${userFor}.`;
+            }
+            if (status.left_open_too_long) {
+                message += ` Warning: door has been open longer than ${formatDoorDuration(status.door_open_alert_seconds)}.`;
+            }
+            setStatus(message);
+            return;
+        }
+
+        if (isClosed) {
+            let message = status.held_open
+                ? 'Door sensor closed, but hold-open relay is still active.'
+                : 'Door is closed and secured.';
+
+            if (status.last_visit_duration_seconds) {
+                const who = status.last_visit_user_id ? ` by ${status.last_visit_user_id}` : '';
+                message += ` Last supply-room visit${who}: ${lastVisit}.`;
+            }
+
+            setStatus(message);
+            return;
+        }
+
+        setStatus(status.held_open ? 'Door relay is held open (sensor status unavailable).' : 'Door status unavailable (sensor not configured).');
     };
 
     holdBtn.onclick = async () => {
@@ -1770,10 +1821,17 @@ function renderDoorPage() {
         await refreshStatus();
     };
 
-    releaseBtn.onclick = async () => {
-        await requestDoorReleaseAndLogAccess('kiosk door page release');
+    normalBtn.onclick = async () => {
+        await requestDoorReleaseAndLogAccess('kiosk door page normal operation mode');
         await refreshStatus();
     };
+
+    if (window.__doorStatusPollTimer) {
+        clearInterval(window.__doorStatusPollTimer);
+    }
+    window.__doorStatusPollTimer = setInterval(() => {
+        void refreshStatus();
+    }, 1000);
 
     void refreshStatus();
 }
@@ -2031,7 +2089,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     const kioskSettings = await fetchKioskSettings(kioskId);
-    kioskRuntimeSettings = resolveKioskRuntimeSettings(kioskSettings?.row || kioskSettings || {});
+    kioskRuntimeSettings = resolveKioskRuntimeSettings(kioskSettings?.row || kioskSettings || {}, kioskRuntimeSettings);
     debugConfig.pinHash = String(kioskSettings.debug_menu_pin_hash || '').trim() || null;
     if (!debugConfig.pinHash) {
         try {
@@ -2044,6 +2102,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const verification = await verifyOrganizationLicense(organizationId);
     setRuntimeAppVersion(kioskSettings.app_version);
     await applyKioskLock(!!kioskSettings.is_locked, kioskSettings.lock_screen || 'systemLocked');
+    applyRuntimeFeatureVisibility();
     await syncOperatingHoursLockState();
     startOperatingHoursEnforcer();
     startKioskVersionRealtimeListener(kioskId);
@@ -2095,6 +2154,11 @@ document.addEventListener('DOMContentLoaded', async () => {
    ======================================= */
 // Help toggles
 showHelpBtn?.addEventListener('click', () => {
+    if (!isCredentialRequestEnabled()) {
+        showToast('Credential requests are currently disabled.', 'error');
+        return;
+    }
+
     loginView.classList.remove('active');
     setTimeout(() => {
         loginView.classList.add('hidden');
@@ -2376,8 +2440,13 @@ function getRoleIcon(role) {
 
 function canCurrentUserViewOrders() {
     if (!currentUser) return false;
+    if (kioskRuntimeSettings?.showOrderForm === false) return false;
     if (currentUser.role === 'student') return ordersStudentViewEnabled;
     return true;
+}
+
+function isCredentialRequestEnabled() {
+    return kioskRuntimeSettings?.showCredentialRequest !== false;
 }
 
 function isSuspensionBypassedUser(user) {
@@ -2396,6 +2465,22 @@ function applyOrdersNavVisibility() {
     if (!navOrders) return;
     if (canCurrentUserViewOrders()) navOrders.classList.remove('hidden');
     else navOrders.classList.add('hidden');
+}
+
+function applyRuntimeFeatureVisibility() {
+    if (showHelpBtn) {
+        showHelpBtn.classList.toggle('hidden', !isCredentialRequestEnabled());
+    }
+
+    applyOrdersNavVisibility();
+
+    if (!isCredentialRequestEnabled() && loginHelpView && !loginHelpView.classList.contains('hidden')) {
+        loginHelpView.classList.remove('active');
+        loginHelpView.classList.add('hidden');
+        loginView.classList.remove('hidden');
+        loginView.classList.add('active');
+        barcodeInput?.focus();
+    }
 }
 
 function setProfilePrivilegedActionState(isEnabled) {

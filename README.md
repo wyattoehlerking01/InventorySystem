@@ -69,7 +69,7 @@ Implementation notes:
 GitHub Pages usage:
 
 - Publish the repository as static files, then open `.../kiosk/` or `.../manage/` directly.
-- Root (`/`) behavior is unchanged in this first implementation step.
+- Root (`/`) is now a lightweight redirect entry that forwards to `.../kiosk/`.
 
 How-To User Manuals
 

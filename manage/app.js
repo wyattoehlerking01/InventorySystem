@@ -164,6 +164,8 @@ let ordersStudentViewEnabled = localStorage.getItem(ordersStudentViewStorageKey)
 let inventorySmartSearchTerm = '';
 let inventorySearchDebounceTimer = null;
 let ordersTabMode = 'all';
+let kioskRuntimeSettings = getDefaultKioskSettings();
+let sessionStartedAtMs = null;
 
 // Modals & Toasts
 const modalContainer = document.getElementById('modal-container');
@@ -175,14 +177,30 @@ let lastModalClipboardInteractionAt = 0;
 let inactivityTimeRemaining = 3 * 60; // seconds
 let countdownInterval;
 
+function getNoActivityExpirySeconds() {
+    return Math.max(1, parseInt(kioskRuntimeSettings?.noActivityExpiry, 10) || 3) * 60;
+}
+
+function getSessionTimeoutSeconds() {
+    return Math.max(5, parseInt(kioskRuntimeSettings?.sessionTimeout, 10) || 30) * 60;
+}
+
 function startCountdown() {
     if (countdownInterval) clearInterval(countdownInterval);
-    inactivityTimeRemaining = 3 * 60;
+    inactivityTimeRemaining = getNoActivityExpirySeconds();
+    sessionStartedAtMs = Date.now();
     updateTimerUI();
 
     countdownInterval = setInterval(() => {
         if (!currentUser) {
             clearInterval(countdownInterval);
+            return;
+        }
+
+        const elapsedSeconds = Math.floor((Date.now() - (sessionStartedAtMs || Date.now())) / 1000);
+        if (elapsedSeconds >= getSessionTimeoutSeconds()) {
+            clearInterval(countdownInterval);
+            logout('Session timed out. Please sign in again.');
             return;
         }
 
@@ -218,7 +236,7 @@ function updateTimerUI() {
 
 function resetInactivityTimer() {
     if (currentUser) {
-        inactivityTimeRemaining = 3 * 60;
+        inactivityTimeRemaining = getNoActivityExpirySeconds();
         updateTimerUI();
     }
 }
@@ -522,7 +540,8 @@ function applyKioskManageBranding() {
 
 function applyLoginHelpVisibility() {
     if (!showHelpBtn) return;
-    const isVisible = !!kioskManageConfig.featureFlags?.showLoginHelpRequest;
+    const isVisible = !!kioskManageConfig.featureFlags?.showLoginHelpRequest
+        && kioskRuntimeSettings?.showCredentialRequest !== false;
     showHelpBtn.classList.toggle('hidden', !isVisible);
 }
 
@@ -1329,8 +1348,12 @@ function readKioskTimeSetting(values, fallback) {
     return fallback;
 }
 
-function resolveKioskRuntimeSettings(source = {}) {
+function resolveKioskRuntimeSettings(source = {}, fallbackOverrides = null) {
     const defaults = getDefaultKioskSettings();
+    const fallback = {
+        ...defaults,
+        ...(fallbackOverrides && typeof fallbackOverrides === 'object' ? fallbackOverrides : {})
+    };
     const blob = resolveKioskSettingsBlob(source);
     const merged = { ...blob, ...source };
 
@@ -1339,24 +1362,24 @@ function resolveKioskRuntimeSettings(source = {}) {
             merged.sessionTimeout,
             merged.session_timeout,
             merged.session_timeout_minutes
-        ], defaults.sessionTimeout, 5, 480)),
+        ], fallback.sessionTimeout, 5, 480)),
         noActivityExpiry: Math.round(readKioskNumberSetting([
             merged.noActivityExpiry,
             merged.no_activity_expiry,
             merged.no_activity_expiry_minutes
-        ], defaults.noActivityExpiry, 1, 60)),
+        ], fallback.noActivityExpiry, 1, 60)),
         enforcePrivilegeUnlock: readKioskBooleanSetting([
             merged.enforcePrivilegeUnlock,
             merged.enforce_privilege_unlock
-        ], defaults.enforcePrivilegeUnlock),
+        ], fallback.enforcePrivilegeUnlock),
         showOrderForm: readKioskBooleanSetting([
             merged.showOrderForm,
             merged.show_order_form
-        ], defaults.showOrderForm),
+        ], fallback.showOrderForm),
         showCredentialRequest: readKioskBooleanSetting([
             merged.showCredentialRequest,
             merged.show_credential_request
-        ], defaults.showCredentialRequest),
+        ], fallback.showCredentialRequest),
         brandingText: String(
             merged.brandingText
             ?? merged.branding_text
@@ -1367,21 +1390,21 @@ function resolveKioskRuntimeSettings(source = {}) {
             merged.startTime,
             merged.start_time,
             merged.operating_start_time
-        ], defaults.startTime),
+        ], fallback.startTime),
         endTime: readKioskTimeSetting([
             merged.endTime,
             merged.end_time,
             merged.operating_end_time
-        ], defaults.endTime),
+        ], fallback.endTime),
         enforceHours: readKioskBooleanSetting([
             merged.enforceHours,
             merged.enforce_hours
-        ], defaults.enforceHours),
+        ], fallback.enforceHours),
         doorUnlockDuration: readKioskNumberSetting([
             merged.doorUnlockDuration,
             merged.door_unlock_duration,
             merged.door_unlock_duration_seconds
-        ], defaults.doorUnlockDuration, 0.5, 10)
+        ], fallback.doorUnlockDuration, 0.5, 10)
     };
 }
 
@@ -1557,6 +1580,20 @@ async function handleRemoteKioskSettingsChange(nextSettings = {}) {
         kioskLiveStatus.lastKnownLockScreen = remoteLockScreen;
         kioskLiveStatus.lastSyncAt = new Date().toISOString();
         await applyKioskLock(remoteLocked, remoteLockScreen);
+    }
+
+    const nextRuntimeSettings = resolveKioskRuntimeSettings(nextSettings, kioskRuntimeSettings);
+    const runtimeChanged = JSON.stringify(nextRuntimeSettings) !== JSON.stringify(kioskRuntimeSettings);
+    if (runtimeChanged) {
+        kioskRuntimeSettings = nextRuntimeSettings;
+        kioskManageConfig.featureFlags = {
+            ...kioskManageConfig.featureFlags,
+            showLoginHelpRequest: kioskRuntimeSettings.showCredentialRequest !== false
+        };
+        applyLoginHelpVisibility();
+        if (currentUser) {
+            resetInactivityTimer();
+        }
     }
 
     if (Object.prototype.hasOwnProperty.call(nextSettings || {}, 'debug_menu_pin_hash')) {
@@ -2023,16 +2060,23 @@ async function fetchDoorStatus() {
         if (!response.ok) throw new Error(`Status ${response.status}`);
         return await response.json();
     } catch {
-        return { status: 'unavailable', held_open: false };
+        return { status: 'unavailable', held_open: false, door_position: 'unknown' };
     }
 }
 
+function formatDoorDuration(totalSeconds) {
+    const seconds = Math.max(0, Math.floor(Number(totalSeconds) || 0));
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    if (mins <= 0) return `${secs}s`;
+    return `${mins}m ${secs.toString().padStart(2, '0')}s`;
+}
+
 function renderDoorPage() {
-    const openBtn = document.getElementById('door-open-btn');
+    const normalBtn = document.getElementById('door-normal-btn');
     const holdBtn = document.getElementById('door-hold-btn');
-    const releaseBtn = document.getElementById('door-release-btn');
     const statusEl = document.getElementById('door-status-text');
-    if (!openBtn || !holdBtn || !releaseBtn || !statusEl) return;
+    if (!normalBtn || !holdBtn || !statusEl) return;
 
     const setStatus = (text) => {
         statusEl.textContent = text;
@@ -2044,12 +2088,41 @@ function renderDoorPage() {
             setStatus('Door service unavailable.');
             return;
         }
-        setStatus(status.held_open ? 'Door is currently held open.' : 'Door is secured (normal mode).');
-    };
 
-    openBtn.onclick = async () => {
-        await requestManualDoorUnlockAndLogAccess('manage door page pulse open');
-        await refreshStatus();
+        const doorPosition = String(status.door_position || 'unknown');
+        const isOpen = doorPosition === 'open';
+        const isClosed = doorPosition === 'closed';
+        const openFor = formatDoorDuration(status.door_open_seconds);
+        const userFor = formatDoorDuration(status.active_user_seconds);
+        const lastVisit = formatDoorDuration(status.last_visit_duration_seconds);
+
+        if (isOpen) {
+            let message = `Door NOT closed. Open for ${openFor}.`;
+            if (status.active_user_id) {
+                message += ` Current user ${status.active_user_id} in supply room for ${userFor}.`;
+            }
+            if (status.left_open_too_long) {
+                message += ` Warning: door has been open longer than ${formatDoorDuration(status.door_open_alert_seconds)}.`;
+            }
+            setStatus(message);
+            return;
+        }
+
+        if (isClosed) {
+            let message = status.held_open
+                ? 'Door sensor closed, but hold-open relay is still active.'
+                : 'Door is closed and secured.';
+
+            if (status.last_visit_duration_seconds) {
+                const who = status.last_visit_user_id ? ` by ${status.last_visit_user_id}` : '';
+                message += ` Last supply-room visit${who}: ${lastVisit}.`;
+            }
+
+            setStatus(message);
+            return;
+        }
+
+        setStatus(status.held_open ? 'Door relay is held open (sensor status unavailable).' : 'Door status unavailable (sensor not configured).');
     };
 
     holdBtn.onclick = async () => {
@@ -2057,10 +2130,17 @@ function renderDoorPage() {
         await refreshStatus();
     };
 
-    releaseBtn.onclick = async () => {
-        await requestDoorReleaseAndLogAccess('manage door page release');
+    normalBtn.onclick = async () => {
+        await requestDoorReleaseAndLogAccess('manage door page normal operation mode');
         await refreshStatus();
     };
+
+    if (window.__doorStatusPollTimer) {
+        clearInterval(window.__doorStatusPollTimer);
+    }
+    window.__doorStatusPollTimer = setInterval(() => {
+        void refreshStatus();
+    }, 1000);
 
     void refreshStatus();
 }
@@ -2334,6 +2414,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     const kioskSettings = await fetchKioskSettings(kioskId);
+    kioskRuntimeSettings = resolveKioskRuntimeSettings(kioskSettings?.row || kioskSettings || {}, kioskRuntimeSettings);
     kioskLiveStatus.lastSyncAt = new Date().toISOString();
     kioskLiveStatus.lastSettingsVersion = String(kioskSettings.app_version || '').trim();
     kioskLiveStatus.lastKnownLockState = !!kioskSettings.is_locked;
@@ -10600,6 +10681,7 @@ async function loadKioskSettings() {
 
 async function renderKioskSettings() {
     const settings = await loadKioskSettings();
+    kioskRuntimeSettings = resolveKioskRuntimeSettings(settings, kioskRuntimeSettings);
     
     // Populate form fields
     document.getElementById('kiosk-session-timeout').value = settings.sessionTimeout;
@@ -10666,6 +10748,7 @@ async function handleSaveKioskSettings() {
 
     const result = await saveKioskSettingsToSupabase(settings, kioskId);
     if (result.ok) {
+        kioskRuntimeSettings = resolveKioskRuntimeSettings(settings, kioskRuntimeSettings);
         kioskManageConfig.brandingText = settings.brandingText;
         kioskManageConfig.location = settings.brandingText;
         kioskManageConfig.featureFlags = {
@@ -10674,6 +10757,9 @@ async function handleSaveKioskSettings() {
         };
         applyKioskManageBranding();
         applyLoginHelpVisibility();
+        if (currentUser) {
+            resetInactivityTimer();
+        }
         showToast('Kiosk settings saved successfully.', 'success');
     } else {
         showToast(`Failed to save kiosk settings: ${result.error}`, 'error');

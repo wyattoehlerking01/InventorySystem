@@ -5,7 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 function loadDataContext({ withSupabase = false, supabaseKey = 'test-key' } = {}) {
-  const dataJsPath = path.join(__dirname, '..', 'data.js');
+  const dataJsPath = path.join(__dirname, '..', 'kiosk', 'data.js');
   const source = fs.readFileSync(dataJsPath, 'utf8');
 
   const context = {

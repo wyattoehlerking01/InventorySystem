@@ -19,15 +19,38 @@ PORT = 8080
 DOOR_UNLOCK_PIN = 17 # Replace with your actual GPIO pin number
 UNLOCK_DURATION = 3.0 # Seconds to keep the door unlocked
 HOLD_OPEN_MAX_SECONDS = float(os.getenv('HOLD_OPEN_MAX_SECONDS', '0'))
+DOOR_SENSOR_PIN = int(os.getenv('DOOR_SENSOR_PIN', '-1'))
+DOOR_SENSOR_OPEN_STATE = str(os.getenv('DOOR_SENSOR_OPEN_STATE', 'HIGH')).strip().upper()
+DOOR_SENSOR_PULL = str(os.getenv('DOOR_SENSOR_PULL', 'UP')).strip().upper()
+DOOR_OPEN_ALERT_SECONDS = float(os.getenv('DOOR_OPEN_ALERT_SECONDS', '30'))
+ASSIGN_ACTOR_WINDOW_SECONDS = float(os.getenv('ASSIGN_ACTOR_WINDOW_SECONDS', '30'))
 # ---------------------
 
 door_held_open = False
 door_hold_started_at = None
+door_position = 'unknown'
+door_position_changed_at = None
+door_open_started_at = None
+door_last_closed_at = None
+door_open_alerted = False
+door_active_user_id = None
+door_active_user_started_at = None
+door_last_visit = None
+door_last_actor_id = None
+door_last_actor_recorded_at = None
 
 if GPIO_AVAILABLE:
     GPIO.setmode(GPIO.BCM)
     GPIO.setup(DOOR_UNLOCK_PIN, GPIO.OUT)
     GPIO.output(DOOR_UNLOCK_PIN, GPIO.LOW)
+
+    if DOOR_SENSOR_PIN >= 0:
+        if DOOR_SENSOR_PULL == 'UP':
+            GPIO.setup(DOOR_SENSOR_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+        elif DOOR_SENSOR_PULL == 'DOWN':
+            GPIO.setup(DOOR_SENSOR_PIN, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+        else:
+            GPIO.setup(DOOR_SENSOR_PIN, GPIO.IN)
 
 def _set_door_pin_high():
     if GPIO_AVAILABLE:
@@ -36,6 +59,89 @@ def _set_door_pin_high():
 def _set_door_pin_low():
     if GPIO_AVAILABLE:
         GPIO.output(DOOR_UNLOCK_PIN, GPIO.LOW)
+
+def _normalize_sensor_open_state(raw_state):
+    normalized = str(raw_state or '').strip().lower()
+    if normalized in ('1', 'true', 'high', 'open'):
+        return GPIO.HIGH
+    return GPIO.LOW
+
+def _read_door_position():
+    if not GPIO_AVAILABLE or DOOR_SENSOR_PIN < 0:
+        return 'unknown'
+
+    try:
+        raw_state = GPIO.input(DOOR_SENSOR_PIN)
+    except Exception as error:
+        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Failed to read door sensor pin {DOOR_SENSOR_PIN}: {error}")
+        return 'unknown'
+
+    sensor_open_state = _normalize_sensor_open_state(DOOR_SENSOR_OPEN_STATE)
+    return 'open' if raw_state == sensor_open_state else 'closed'
+
+def _record_last_actor(actor_id):
+    global door_last_actor_id, door_last_actor_recorded_at
+
+    normalized = str(actor_id or '').strip()
+    if not normalized:
+        return
+
+    door_last_actor_id = normalized
+    door_last_actor_recorded_at = time.time()
+
+def _update_door_sensor_state():
+    global door_position, door_position_changed_at, door_open_started_at
+    global door_last_closed_at, door_open_alerted, door_active_user_id
+    global door_active_user_started_at, door_last_visit
+
+    current_position = _read_door_position()
+    now = time.time()
+
+    if current_position == 'unknown':
+        return
+
+    if door_position == current_position:
+        if current_position == 'open' and DOOR_OPEN_ALERT_SECONDS > 0 and door_open_started_at:
+            elapsed = max(0.0, now - door_open_started_at)
+            if elapsed >= DOOR_OPEN_ALERT_SECONDS and not door_open_alerted:
+                door_open_alerted = True
+                print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Warning: door has remained open for {elapsed:.1f}s.")
+        return
+
+    previous_position = door_position
+    door_position = current_position
+    door_position_changed_at = now
+
+    if current_position == 'open':
+        door_open_started_at = now
+        door_open_alerted = False
+
+        actor_is_recent = (
+            bool(door_last_actor_id)
+            and bool(door_last_actor_recorded_at)
+            and (now - door_last_actor_recorded_at) <= ASSIGN_ACTOR_WINDOW_SECONDS
+        )
+        door_active_user_id = door_last_actor_id if actor_is_recent else None
+        door_active_user_started_at = now if door_active_user_id else None
+        who = f" by {door_active_user_id}" if door_active_user_id else ''
+        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Door sensor indicates OPEN{who}.")
+
+    elif current_position == 'closed':
+        if previous_position == 'open' and door_open_started_at:
+            elapsed = max(0.0, now - door_open_started_at)
+            door_last_visit = {
+                'user_id': door_active_user_id,
+                'duration_seconds': round(elapsed, 3),
+                'closed_at': now
+            }
+            who = f" by {door_active_user_id}" if door_active_user_id else ''
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Door sensor indicates CLOSED after {elapsed:.1f}s open{who}.")
+
+        door_open_started_at = None
+        door_open_alerted = False
+        door_last_closed_at = now
+        door_active_user_id = None
+        door_active_user_started_at = None
 
 def _json_response(handler, status_code, payload):
     handler.send_response(status_code)
@@ -91,11 +197,22 @@ class UnlockRequestHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         """Handle door status checks."""
         _enforce_hold_safety_timeout()
+        _update_door_sensor_state()
 
         if self.path != '/status':
             self.send_response(404)
             self.end_headers()
             return
+
+        door_open_seconds = 0.0
+        active_user_seconds = 0.0
+        left_open_too_long = False
+        if door_position == 'open' and door_open_started_at:
+            door_open_seconds = max(0.0, time.time() - door_open_started_at)
+            left_open_too_long = DOOR_OPEN_ALERT_SECONDS > 0 and door_open_seconds >= DOOR_OPEN_ALERT_SECONDS
+
+        if door_position == 'open' and door_active_user_id and door_active_user_started_at:
+            active_user_seconds = max(0.0, time.time() - door_active_user_started_at)
 
         payload = {
             'status': 'success',
@@ -103,7 +220,20 @@ class UnlockRequestHandler(http.server.SimpleHTTPRequestHandler):
             'held_open_seconds': round(_get_hold_elapsed_seconds(), 3),
             'gpio_available': GPIO_AVAILABLE,
             'unlock_duration_seconds': UNLOCK_DURATION,
-            'hold_open_max_seconds': HOLD_OPEN_MAX_SECONDS
+            'hold_open_max_seconds': HOLD_OPEN_MAX_SECONDS,
+            'door_sensor_enabled': GPIO_AVAILABLE and DOOR_SENSOR_PIN >= 0,
+            'door_sensor_pin': DOOR_SENSOR_PIN,
+            'door_sensor_open_state': DOOR_SENSOR_OPEN_STATE,
+            'door_position': door_position,
+            'door_position_changed_at': door_position_changed_at,
+            'door_open_seconds': round(door_open_seconds, 3),
+            'door_open_alert_seconds': DOOR_OPEN_ALERT_SECONDS,
+            'left_open_too_long': left_open_too_long,
+            'active_user_id': door_active_user_id,
+            'active_user_seconds': round(active_user_seconds, 3),
+            'last_visit_user_id': (door_last_visit or {}).get('user_id'),
+            'last_visit_duration_seconds': (door_last_visit or {}).get('duration_seconds', 0.0),
+            'last_visit_closed_at': (door_last_visit or {}).get('closed_at')
         }
         _json_response(self, 200, payload)
 
@@ -112,6 +242,7 @@ class UnlockRequestHandler(http.server.SimpleHTTPRequestHandler):
         global door_held_open, door_hold_started_at
 
         _enforce_hold_safety_timeout()
+        _update_door_sensor_state()
 
         if self.path in ['/unlock', '/hold-open', '/release']:
             try:
@@ -120,6 +251,9 @@ class UnlockRequestHandler(http.server.SimpleHTTPRequestHandler):
                 item_name = data.get('itemName', 'Unknown')
                 category = data.get('category', 'Unknown')
                 reason = data.get('reason', 'No reason provided')
+                actor_id = data.get('userId')
+
+                _record_last_actor(actor_id)
                 
                 if self.path == '/unlock':
                     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Unlock request received!")
@@ -152,6 +286,7 @@ class UnlockRequestHandler(http.server.SimpleHTTPRequestHandler):
                         'held_open': False,
                         'held_open_seconds': 0.0
                     }
+                    _update_door_sensor_state()
                     _json_response(self, 200, response)
                     return
 
@@ -171,6 +306,7 @@ class UnlockRequestHandler(http.server.SimpleHTTPRequestHandler):
                         'held_open_seconds': 0.0,
                         'hold_open_max_seconds': HOLD_OPEN_MAX_SECONDS
                     }
+                    _update_door_sensor_state()
                     _json_response(self, 200, response)
                     return
 
@@ -190,6 +326,7 @@ class UnlockRequestHandler(http.server.SimpleHTTPRequestHandler):
                         'held_open': False,
                         'held_open_seconds': round(elapsed, 3)
                     }
+                    _update_door_sensor_state()
                     _json_response(self, 200, response)
                     return
                 
