@@ -359,7 +359,7 @@
                             <div class="operations-hub-heading-row">
                                 <div class="operations-hub-heading-copy">
                                     <h3>Operations Hub</h3>
-                                    <p class="operations-hub-subtitle">Use Queue Views for daily flow and Admin Views for system controls.</p>
+                                    <p class="operations-hub-subtitle">Track item orders and incoming requests in one place.</p>
                                 </div>
                             </div>
 
@@ -367,14 +367,8 @@
                                 <div class="operations-hub-nav-group">
                                     <span class="operations-hub-group-title">Queue Views</span>
                                     <div class="operations-hub-mode-group">
-                                        <button class="btn btn-secondary orders-mode-btn active" data-mode="all">Orders + Requests</button>
-                                        <button class="btn btn-secondary orders-mode-btn" data-mode="flags">System Flags</button>
-                                    </div>
-                                </div>
-                                <div class="operations-hub-nav-group">
-                                    <span class="operations-hub-group-title">Admin Views</span>
-                                    <div class="operations-hub-mode-group">
-                                        <button class="btn btn-secondary orders-mode-btn" data-mode="kiosk">Kiosk Control</button>
+                                        <button class="btn btn-secondary orders-mode-btn active" data-mode="orders">Orders</button>
+                                        <button class="btn btn-secondary orders-mode-btn" data-mode="requests">Requests</button>
                                     </div>
                                 </div>
                             </div>
@@ -623,13 +617,6 @@
                                     <input type="number" id="kiosk-door-unlock-duration" class="form-control" min="0.5" max="10" step="0.5" value="2" placeholder="e.g. 2">
                                     <small class="text-muted" style="display: block; margin-top: 0.3rem;">How long the door solenoid stays unlocked</small>
                                 </div>
-                                <div class="form-group">
-                                    <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
-                                        <input type="checkbox" id="kiosk-require-door-unlock-signout" checked>
-                                        Require Door Unlock For Student Sign-outs
-                                    </label>
-                                    <small class="text-muted" style="display: block; margin-top: 0.3rem;">Turn off for items not behind a door or when hardware script is unavailable</small>
-                                </div>
                             </div>
                         </div>
 
@@ -660,7 +647,6 @@
                 <div id="page-door" class="page hidden">
                     <div class="action-bar" style="gap: 1rem; margin-bottom: 1.5rem; align-items: center;">
                         <h3 style="margin: 0; flex: 1;"><i class="ph ph-door-open"></i> Door Control</h3>
-                        <span class="text-muted text-sm">Teacher/Developer Access</span>
                     </div>
                     <div class="glass-panel" style="padding: 1.5rem; max-width: 700px;">
                         <p class="text-muted" id="door-status-text" style="margin-bottom: 1rem;">Checking door status...</p>

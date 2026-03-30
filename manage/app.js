@@ -163,7 +163,7 @@ let ordersStudentViewEnabled = localStorage.getItem(ordersStudentViewStorageKey)
 
 let inventorySmartSearchTerm = '';
 let inventorySearchDebounceTimer = null;
-let ordersTabMode = 'all';
+let ordersTabMode = 'orders';
 let kioskRuntimeSettings = getDefaultKioskSettings();
 let sessionStartedAtMs = null;
 
@@ -1380,10 +1380,6 @@ function resolveKioskRuntimeSettings(source = {}, fallbackOverrides = null) {
             merged.showCredentialRequest,
             merged.show_credential_request
         ], fallback.showCredentialRequest),
-        requireDoorUnlockForSignout: readKioskBooleanSetting([
-            merged.requireDoorUnlockForSignout,
-            merged.require_door_unlock_for_signout
-        ], fallback.requireDoorUnlockForSignout),
         brandingText: String(
             merged.brandingText
             ?? merged.branding_text
@@ -1444,7 +1440,6 @@ async function saveKioskSettingsToSupabase(settings, targetKioskId = kioskId) {
             enforce_privilege_unlock: settings.enforcePrivilegeUnlock,
             show_order_form: settings.showOrderForm,
             show_credential_request: settings.showCredentialRequest,
-            require_door_unlock_for_signout: settings.requireDoorUnlockForSignout,
             branding_text: settings.brandingText,
             door_unlock_duration: settings.doorUnlockDuration,
             start_time: settings.startTime,
@@ -1458,7 +1453,6 @@ async function saveKioskSettingsToSupabase(settings, targetKioskId = kioskId) {
             enforce_privilege_unlock: settings.enforcePrivilegeUnlock,
             show_order_form: settings.showOrderForm,
             show_credential_request: settings.showCredentialRequest,
-            require_door_unlock_for_signout: settings.requireDoorUnlockForSignout,
             branding_text: settings.brandingText,
             door_unlock_duration_seconds: settings.doorUnlockDuration,
             operating_start_time: settings.startTime,
@@ -1473,7 +1467,6 @@ async function saveKioskSettingsToSupabase(settings, targetKioskId = kioskId) {
                 enforcePrivilegeUnlock: settings.enforcePrivilegeUnlock,
                 showOrderForm: settings.showOrderForm,
                 showCredentialRequest: settings.showCredentialRequest,
-                requireDoorUnlockForSignout: settings.requireDoorUnlockForSignout,
                 brandingText: settings.brandingText,
                 doorUnlockDuration: settings.doorUnlockDuration,
                 startTime: settings.startTime,
@@ -1489,7 +1482,6 @@ async function saveKioskSettingsToSupabase(settings, targetKioskId = kioskId) {
                 enforcePrivilegeUnlock: settings.enforcePrivilegeUnlock,
                 showOrderForm: settings.showOrderForm,
                 showCredentialRequest: settings.showCredentialRequest,
-                requireDoorUnlockForSignout: settings.requireDoorUnlockForSignout,
                 brandingText: settings.brandingText,
                 doorUnlockDuration: settings.doorUnlockDuration,
                 startTime: settings.startTime,
@@ -1957,6 +1949,11 @@ async function requestDoorUnlockAndLogAccess({ actionType, item, quantity = 1, p
     const itemName = item?.name || 'Unknown Item';
     const itemId = item?.id || 'Unknown ID';
 
+    if ((actionType === 'sign-in' || actionType === 'sign-out') && !itemRequiresDoorUnlock(item)) {
+        addLog(actorId, 'Door Access Bypassed', `Door unlock skipped for ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName} [role=${actorRole}]`);
+        return true;
+    }
+
     try {
         await fetch('http://localhost:8080/unlock', {
             method: 'POST',
@@ -1979,6 +1976,11 @@ async function requestDoorUnlockAndLogAccess({ actionType, item, quantity = 1, p
         showToast('Warning: Hardware unlock script unreachable.', 'warning');
         return false;
     }
+}
+
+function itemRequiresDoorUnlock(item) {
+    if (!item) return true;
+    return !!(item.requiresDoorUnlock ?? item.requires_door_unlock ?? true);
 }
 
 async function requestManualDoorUnlockAndLogAccess(reason = 'manual door control') {
@@ -2276,21 +2278,27 @@ async function checkoutBasket() {
         }
     }
 
-    if (currentUser?.role === 'student' && kioskRuntimeSettings?.requireDoorUnlockForSignout !== false) {
-        const firstBasketItem = inventoryBasket[0];
-        const firstItem = inventoryItems.find(i => i.id === firstBasketItem?.id);
-        const totalQty = inventoryBasket.reduce((sum, entry) => sum + entry.qty, 0);
+    if (currentUser?.role === 'student') {
+        const selectedBasketItems = inventoryBasket
+            .map(entry => inventoryItems.find(i => i.id === entry.id))
+            .filter(Boolean);
+        const hasDoorProtectedItem = selectedBasketItems.some(item => itemRequiresDoorUnlock(item));
 
-        const unlocked = await requestDoorUnlockAndLogAccess({
-            actionType: 'sign-out',
-            item: firstItem,
-            quantity: totalQty,
-            projectName: project?.name || 'Personal'
-        });
+        if (hasDoorProtectedItem) {
+            const firstDoorItem = selectedBasketItems.find(item => itemRequiresDoorUnlock(item)) || selectedBasketItems[0] || null;
+            const totalQty = inventoryBasket.reduce((sum, entry) => sum + entry.qty, 0);
 
-        if (!unlocked) {
-            showToast('Door unlock denied. Checkout canceled.', 'error');
-            return;
+            const unlocked = await requestDoorUnlockAndLogAccess({
+                actionType: 'sign-out',
+                item: firstDoorItem,
+                quantity: totalQty,
+                projectName: project?.name || 'Personal'
+            });
+
+            if (!unlocked) {
+                showToast('Door unlock denied. Checkout canceled.', 'error');
+                return;
+            }
         }
     }
 
@@ -3546,7 +3554,7 @@ async function switchPage(targetId, title) {
     if (targetId === 'requests') {
         targetId = 'orders';
         title = 'Operations Hub';
-        ordersTabMode = 'all';
+        ordersTabMode = 'orders';
     }
 
     if (targetId === 'orders' && !canCurrentUserViewOrders()) {
@@ -6133,7 +6141,7 @@ async function openSignOutModal(itemId) {
                 }
             }
 
-            if (currentUser?.role === 'student' && kioskRuntimeSettings?.requireDoorUnlockForSignout !== false) {
+            if (currentUser?.role === 'student' && itemRequiresDoorUnlock(item)) {
                 const unlocked = await requestDoorUnlockAndLogAccess({
                     actionType: 'sign-out',
                     item,
@@ -6696,17 +6704,36 @@ function renderClassDisplay() {
     const itemsByUser = {};
     const now = new Date();
 
+    const resolveStudentDisplayUser = (proj, outItem) => {
+        const assignedId = outItem.assignedToUserId || proj.ownerId;
+        const signedOutById = outItem.signedOutByUserId;
+        const projectOwnerId = proj.ownerId;
+
+        const assignedUser = mockUsers.find(u => u.id === assignedId);
+        const signedOutByUser = mockUsers.find(u => u.id === signedOutById);
+        const ownerUser = mockUsers.find(u => u.id === projectOwnerId);
+
+        // Prefer student identities for class display.
+        if (assignedUser?.role === 'student') return assignedUser;
+        if (signedOutByUser?.role === 'student') return signedOutByUser;
+        if (ownerUser?.role === 'student') return ownerUser;
+
+        // Fallback chain to avoid dropping records when role data is incomplete.
+        return assignedUser || signedOutByUser || ownerUser || null;
+    };
+
     projects.forEach(proj => {
         // Skip personal projects (PERS-*)
         if (String(proj.id || '').startsWith('PERS-')) return;
 
         proj.itemsOut.forEach(outItem => {
-            const assignedUserId = outItem.assignedToUserId || proj.ownerId;
-            const assignedUser = mockUsers.find(u => u.id === assignedUserId);
-            const userName = assignedUser ? assignedUser.name : assignedUserId;
+            const displayUser = resolveStudentDisplayUser(proj, outItem);
+            const fallbackId = outItem.assignedToUserId || outItem.signedOutByUserId || proj.ownerId || 'Unknown User';
+            const displayUserId = displayUser?.id || fallbackId;
+            const userName = displayUser?.name || displayUserId;
 
-            if (!itemsByUser[assignedUserId]) {
-                itemsByUser[assignedUserId] = {
+            if (!itemsByUser[displayUserId]) {
+                itemsByUser[displayUserId] = {
                     name: userName,
                     items: []
                 };
@@ -6717,7 +6744,7 @@ function renderClassDisplay() {
             const isOverdue = dueDate < now;
             const signoutId = outItem.id || `${outItem.itemId}-${outItem.signoutDate}-${outItem.quantity}`;
 
-            itemsByUser[assignedUserId].items.push({
+            itemsByUser[displayUserId].items.push({
                 quantity: outItem.quantity,
                 itemName: item ? item.name : 'Unknown Item',
                 itemSku: item ? item.sku : 'N/A',
@@ -7653,7 +7680,7 @@ document.getElementById('users-search-input')?.addEventListener('input', () => {
 });
 
 document.getElementById('view-requests-btn')?.addEventListener('click', () => {
-    ordersTabMode = 'all';
+    ordersTabMode = 'orders';
     switchPage('orders', 'Operations Hub').catch(err => {
         console.error('Failed to open Orders/Requests view:', err);
         showToast('Unable to open operations hub.', 'error');
@@ -8338,6 +8365,13 @@ async function openAddItemModal() {
                 <small class="text-muted">Controls who can see this item based on class or role.</small>
             </div>
             <div class="form-group">
+                <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
+                    <input type="checkbox" id="add-requires-door-unlock" checked>
+                    Item Is Behind Door (Require Unlock On Student Sign-out)
+                </label>
+                <small class="text-muted">Turn off for items that are not physically behind the controlled door.</small>
+            </div>
+            <div class="form-group">
                 <label>Visibility Tags</label>
                 <small class="text-muted" style="display:block;margin-bottom:0.5rem">Add at least one tag for student visibility. Untagged items are hidden from students.</small>
                 <div class="glass-panel" style="padding:0.75rem">
@@ -8368,6 +8402,7 @@ async function openAddItemModal() {
         const supplierLink = document.getElementById('add-supplier-link')?.value.trim() || '';
         const itemType = document.getElementById('add-item-type')?.value || 'item';
         const visibilityLevel = document.getElementById('add-visibility-level')?.value || 'standard';
+        const requiresDoorUnlock = document.getElementById('add-requires-door-unlock')?.checked !== false;
         const stock = Math.max(0, parseInt(document.getElementById('add-stock').value, 10) || 0);
         const threshold = Math.max(0, parseInt(document.getElementById('add-threshold').value, 10) || 0);
         const selectedTags = Array.from(document.querySelectorAll('.add-item-tag-cb:checked')).map(cb => cb.value);
@@ -8403,6 +8438,7 @@ async function openAddItemModal() {
             supplier_listing_link: supplierLink || null,
             item_type: itemType,
             visibility_level: visibilityLevel,
+            requires_door_unlock: requiresDoorUnlock,
             visibilityTags: selectedTags
         };
 
@@ -9568,18 +9604,12 @@ function renderOrders() {
     if (!tbody || !currentUser) return;
 
     ordersModeButtons.forEach(btn => {
-        const mode = btn.getAttribute('data-mode') || '';
-        if (currentUser.role === 'student' && mode === 'kiosk') {
-            btn.classList.add('hidden');
-            if (ordersTabMode === mode) ordersTabMode = 'all';
-        } else {
-            btn.classList.remove('hidden');
-        }
+        btn.classList.remove('hidden');
 
         btn.classList.toggle('active', btn.getAttribute('data-mode') === ordersTabMode);
         if (!btn.dataset.bound) {
             btn.addEventListener('click', () => {
-                ordersTabMode = btn.getAttribute('data-mode') || 'all';
+                ordersTabMode = btn.getAttribute('data-mode') || 'orders';
                 renderOrders();
             });
             btn.dataset.bound = '1';
@@ -9591,11 +9621,9 @@ function renderOrders() {
         while (ordersHeaderRow.firstChild) {
             ordersHeaderRow.removeChild(ordersHeaderRow.firstChild);
         }
-        const headers = ordersTabMode === 'kiosk'
-            ? ['Operations Hub Control Center', '', '', '', '', '', '', '']
-            : ordersTabMode === 'flags'
-                ? ['Date', 'Flag Type', 'Actor', 'Details', 'Status', 'Actions', '', '']
-                : ['Date', 'Kind', 'From', 'Summary', 'Status', 'Actions', '', ''];
+        const headers = ordersTabMode === 'orders'
+            ? ['Date', 'Requested By', 'Part Name', 'Qty', 'Priority', 'Est. Total', 'Status', 'Actions']
+            : ['Date', 'Type', 'From', 'Details', 'Status', 'Actions', '', ''];
         headers.forEach(headerText => {
             const th = document.createElement('th');
             th.textContent = headerText;
@@ -9606,7 +9634,7 @@ function renderOrders() {
     if (filter) filter.style.display = 'none';
 
     if (toggleWrap) {
-        toggleWrap.style.display = (currentUser.role === 'student' || ordersTabMode !== 'all') ? 'none' : '';
+        toggleWrap.style.display = (currentUser.role === 'student' || ordersTabMode !== 'orders') ? 'none' : '';
     }
 
     if (toggle) {
@@ -9648,11 +9676,11 @@ function renderOrders() {
     }
 
     if (newOrderBtn) {
-        newOrderBtn.style.display = ordersTabMode === 'all' ? '' : 'none';
+        newOrderBtn.style.display = ordersTabMode === 'orders' ? '' : 'none';
     }
 
     if (configureFormBtn) {
-        configureFormBtn.classList.toggle('hidden', currentUser.role === 'student' || ordersTabMode !== 'all');
+        configureFormBtn.classList.toggle('hidden', currentUser.role === 'student' || ordersTabMode !== 'orders');
         if (!configureFormBtn.dataset.bound) {
             configureFormBtn.addEventListener('click', () => openOrderFormSettingsModal());
             configureFormBtn.dataset.bound = '1';
@@ -9671,24 +9699,8 @@ function renderOrders() {
         return;
     }
 
-    if (ordersTabMode === 'kiosk') {
-        renderOrdersKioskMode(tbody);
-        return;
-    }
-
-    if (ordersTabMode === 'all') {
+    if (ordersTabMode === 'requests') {
         const opsRows = [];
-
-        orderRequests.forEach(r => {
-            if (currentUser.role === 'student' && r.requestedByUserId !== currentUser.id) return;
-            opsRows.push({
-                kind: 'Order',
-                timestamp: r.timestamp,
-                from: r.requestedByName || r.requestedByUserId,
-                summary: `${r.itemName} (x${r.quantity || 1})`,
-                status: r.status || 'Pending'
-            });
-        });
 
         helpRequests.forEach(r => {
             opsRows.push({
@@ -9710,16 +9722,6 @@ function renderOrders() {
             });
         });
 
-        (systemFlags || []).filter(flag => flag.status !== 'Archived').forEach(flag => {
-            opsRows.push({
-                kind: 'Flag',
-                timestamp: flag.created_at || flag.timestamp,
-                from: flag.actor_user_id || 'System',
-                summary: flag.details || flag.flag_type || 'System flag',
-                status: flag.status || 'Open'
-            });
-        });
-
         opsRows.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
         // Clear tbody and build DOM-safe rows
@@ -9732,13 +9734,13 @@ function renderOrders() {
             const td = document.createElement('td');
             td.colSpan = 8;
             td.className = 'text-center text-muted';
-            td.textContent = 'No operations found.';
+            td.textContent = 'No requests found.';
             tr.appendChild(td);
             tbody.appendChild(tr);
         } else {
             opsRows.forEach(row => {
                 const tr = document.createElement('tr');
-                
+
                 const statusStyle = row.status === 'Approved' || row.status === 'Ordered' || row.status === 'Resolved'
                     ? 'background:rgba(16,185,129,0.2);color:var(--success)'
                     : row.status === 'Denied'
@@ -9746,36 +9748,31 @@ function renderOrders() {
                         : row.status === 'Archived'
                             ? 'background:rgba(107,114,128,0.2);color:var(--text-secondary)'
                             : 'background:rgba(245,158,11,0.2);color:var(--warning)';
-                
+
                 const kindLabel = escapeHtml(String(row.kind || '-'));
                 const fromLabel = escapeHtml(String(row.from || '-'));
                 const summaryLabel = escapeHtml(String(row.summary || '-'));
                 const statusLabel = escapeHtml(String(row.status || '-'));
-                
-                // Date column
+
                 const tdDate = document.createElement('td');
                 const smallDate = document.createElement('small');
                 smallDate.className = 'text-muted';
                 smallDate.textContent = new Date(row.timestamp).toLocaleDateString();
                 tdDate.appendChild(smallDate);
                 tr.appendChild(tdDate);
-                
-                // Kind column
+
                 const tdKind = document.createElement('td');
                 tdKind.textContent = kindLabel;
                 tr.appendChild(tdKind);
-                
-                // From column
+
                 const tdFrom = document.createElement('td');
                 tdFrom.textContent = fromLabel;
                 tr.appendChild(tdFrom);
-                
-                // Summary column
+
                 const tdSummary = document.createElement('td');
                 tdSummary.textContent = summaryLabel;
                 tr.appendChild(tdSummary);
-                
-                // Status column
+
                 const tdStatus = document.createElement('td');
                 const spanBadge = document.createElement('span');
                 spanBadge.className = 'badge';
@@ -9783,131 +9780,22 @@ function renderOrders() {
                 spanBadge.textContent = statusLabel;
                 tdStatus.appendChild(spanBadge);
                 tr.appendChild(tdStatus);
-                
-                // Actions column (empty)
+
                 const tdActions = document.createElement('td');
                 tdActions.textContent = '-';
                 tr.appendChild(tdActions);
-                
-                // Spacer columns
+
                 const tdSpacer1 = document.createElement('td');
                 tdSpacer1.textContent = '';
                 tr.appendChild(tdSpacer1);
-                
+
                 const tdSpacer2 = document.createElement('td');
                 tdSpacer2.textContent = '';
                 tr.appendChild(tdSpacer2);
-                
+
                 tbody.appendChild(tr);
             });
         }
-
-        return;
-    }
-
-    if (ordersTabMode === 'flags') {
-        const flags = Array.isArray(systemFlags) ? systemFlags.filter(flag => flag.status !== 'Archived') : [];
-
-        // Clear tbody and build DOM-safe rows
-        while (tbody.firstChild) {
-            tbody.removeChild(tbody.firstChild);
-        }
-
-        if (flags.length === 0) {
-            const tr = document.createElement('tr');
-            const td = document.createElement('td');
-            td.colSpan = 8;
-            td.className = 'text-center text-muted';
-            td.textContent = 'No system flags found. Run the SQL migration to enable flag storage.';
-            tr.appendChild(td);
-            tbody.appendChild(tr);
-        } else {
-            flags.forEach(flag => {
-                const tr = document.createElement('tr');
-                
-                const statusStyle = flag.status === 'Open'
-                    ? 'background:rgba(245,158,11,0.2);color:var(--warning)'
-                    : 'background:rgba(255,255,255,0.1);color:var(--text-secondary)';
-                
-                const flagType = escapeHtml(String(flag.flag_type || 'System'));
-                const actorId = escapeHtml(String(flag.actor_user_id || '-'));
-                const details = escapeHtml(String(flag.details || '-'));
-                const status = escapeHtml(String(flag.status || 'Open'));
-                const flagId = escapeHtml(String(flag.id || ''));
-                
-                // Date column
-                const tdDate = document.createElement('td');
-                const smallDate = document.createElement('small');
-                smallDate.className = 'text-muted';
-                smallDate.textContent = new Date(flag.created_at || flag.timestamp || Date.now()).toLocaleDateString();
-                tdDate.appendChild(smallDate);
-                tr.appendChild(tdDate);
-                
-                // Flag type column
-                const tdType = document.createElement('td');
-                tdType.textContent = flagType;
-                tr.appendChild(tdType);
-                
-                // Actor column
-                const tdActor = document.createElement('td');
-                tdActor.textContent = actorId;
-                tr.appendChild(tdActor);
-                
-                // Details column
-                const tdDetails = document.createElement('td');
-                tdDetails.textContent = details;
-                tr.appendChild(tdDetails);
-                
-                // Status column
-                const tdStatus = document.createElement('td');
-                const statusBadge = document.createElement('span');
-                statusBadge.className = 'badge';
-                statusBadge.style.cssText = statusStyle;
-                statusBadge.textContent = status;
-                tdStatus.appendChild(statusBadge);
-                tr.appendChild(tdStatus);
-                
-                // Actions column
-                const tdActions = document.createElement('td');
-                if (currentUser.role !== 'student') {
-                    const resolveBtn = document.createElement('button');
-                    resolveBtn.className = 'btn btn-secondary text-sm resolve-flag-btn';
-                    resolveBtn.style.cssText = 'padding:0.3rem 0.6rem;font-size:0.75rem;';
-                    resolveBtn.textContent = 'Resolve';
-                    resolveBtn.setAttribute('data-id', flagId);
-                    tdActions.appendChild(resolveBtn);
-                } else {
-                    tdActions.textContent = '-';
-                }
-                tr.appendChild(tdActions);
-                
-                // Spacer columns
-                const tdSpacer1 = document.createElement('td');
-                tdSpacer1.textContent = '';
-                tr.appendChild(tdSpacer1);
-                
-                const tdSpacer2 = document.createElement('td');
-                tdSpacer2.textContent = '';
-                tr.appendChild(tdSpacer2);
-                
-                tbody.appendChild(tr);
-            });
-        }
-
-        document.querySelectorAll('.resolve-flag-btn').forEach(btn => {
-            btn.addEventListener('click', async (e) => {
-                const flagId = e.currentTarget.getAttribute('data-id');
-                const updated = await updateSystemFlagStatusInSupabase(flagId, 'Archived');
-                if (!updated) {
-                    showToast('Failed to archive flag in database.', 'error');
-                    return;
-                }
-                await refreshRequestsFromSupabase();
-                addLog(currentUser.id, 'Archive Flag', `Archived system flag ${flagId}`);
-                showToast('System flag archived.', 'success');
-                renderOrders();
-            });
-        });
 
         return;
     }
@@ -10298,6 +10186,13 @@ async function openEditItemModal(itemId) {
                 </div>
             </div>
             <div class="form-group">
+                <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
+                    <input type="checkbox" id="edit-item-requires-door-unlock" ${(item.requiresDoorUnlock ?? item.requires_door_unlock ?? true) ? 'checked' : ''}>
+                    Item Is Behind Door (Require Unlock On Student Sign-out)
+                </label>
+                <small class="text-muted">Turn off for items that are not physically behind the controlled door.</small>
+            </div>
+            <div class="form-group">
                 <label>Visibility Tags</label>
                 <small class="text-muted" style="display:block;margin-bottom:0.5rem">Control which classes can see this item based on their allowed tags. Untagged items are hidden from students.</small>
                 <div class="glass-panel" style="padding:0.75rem">
@@ -10324,6 +10219,7 @@ async function openEditItemModal(itemId) {
         const supplierListingLink = document.getElementById('edit-item-supplier-link').value.trim();
         const stock = parseInt(document.getElementById('edit-item-stock').value) || 0;
         const threshold = parseInt(document.getElementById('edit-item-threshold').value) || 0;
+        const requiresDoorUnlock = document.getElementById('edit-item-requires-door-unlock')?.checked !== false;
         const selectedTags = Array.from(document.querySelectorAll('.edit-item-tag-cb:checked')).map(cb => cb.value);
 
         if (name) {
@@ -10348,7 +10244,8 @@ async function openEditItemModal(itemId) {
                 image_link: imageLink || null,
                 supplier_listing_link: supplierListingLink || null,
                 stock,
-                threshold
+                threshold,
+                requires_door_unlock: requiresDoorUnlock
             });
             if (!updated) {
                 showToast('Failed to update item in database.', 'error');
@@ -10680,7 +10577,6 @@ function getDefaultKioskSettings() {
         enforcePrivilegeUnlock: true,
         showOrderForm: true,
         showCredentialRequest: true,
-        requireDoorUnlockForSignout: true,
         brandingText: '',
         startTime: '08:00',
         endTime: '18:00',
@@ -10704,7 +10600,6 @@ async function renderKioskSettings() {
     document.getElementById('kiosk-enforce-privilege-unlock').checked = settings.enforcePrivilegeUnlock;
     document.getElementById('kiosk-show-order-form').checked = settings.showOrderForm;
     document.getElementById('kiosk-show-credential-request').checked = settings.showCredentialRequest;
-    document.getElementById('kiosk-require-door-unlock-signout').checked = settings.requireDoorUnlockForSignout !== false;
     document.getElementById('kiosk-branding-text').value = settings.brandingText;
     document.getElementById('kiosk-door-unlock-duration').value = settings.doorUnlockDuration;
     document.getElementById('kiosk-start-time').value = settings.startTime;
@@ -10726,7 +10621,6 @@ async function handleSaveKioskSettings() {
         enforcePrivilegeUnlock: document.getElementById('kiosk-enforce-privilege-unlock').checked,
         showOrderForm: document.getElementById('kiosk-show-order-form').checked,
         showCredentialRequest: document.getElementById('kiosk-show-credential-request').checked,
-        requireDoorUnlockForSignout: document.getElementById('kiosk-require-door-unlock-signout').checked,
         brandingText: document.getElementById('kiosk-branding-text').value.trim(),
         doorUnlockDuration: parseFloat(document.getElementById('kiosk-door-unlock-duration').value) || 2,
         startTime: document.getElementById('kiosk-start-time').value,

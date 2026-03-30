@@ -1645,6 +1645,11 @@ async function requestDoorUnlockAndLogAccess({ actionType, item, quantity = 1, p
     const itemName = item?.name || 'Unknown Item';
     const itemId = item?.id || 'Unknown ID';
 
+    if ((actionType === 'sign-in' || actionType === 'sign-out') && !itemRequiresDoorUnlock(item)) {
+        addLog(actorId, 'Door Access Bypassed', `Door unlock skipped for ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName} [role=${actorRole}]`);
+        return true;
+    }
+
     try {
         await fetch('http://localhost:8080/unlock', {
             method: 'POST',
@@ -1667,6 +1672,11 @@ async function requestDoorUnlockAndLogAccess({ actionType, item, quantity = 1, p
         showToast('Warning: Hardware unlock script unreachable.', 'warning');
         return false;
     }
+}
+
+function itemRequiresDoorUnlock(item) {
+    if (!item) return true;
+    return !!(item.requiresDoorUnlock ?? item.requires_door_unlock ?? true);
 }
 
 async function requestDoorHoldOpenAndLogAccess(reason = 'manual door hold-open') {
@@ -1954,21 +1964,27 @@ async function checkoutBasket() {
         }
     }
 
-    if (currentUser?.role === 'student' && kioskRuntimeSettings?.requireDoorUnlockForSignout !== false) {
-        const firstBasketItem = inventoryBasket[0];
-        const firstItem = inventoryItems.find(i => i.id === firstBasketItem?.id);
-        const totalQty = inventoryBasket.reduce((sum, entry) => sum + entry.qty, 0);
+    if (currentUser?.role === 'student') {
+        const selectedBasketItems = inventoryBasket
+            .map(entry => inventoryItems.find(i => i.id === entry.id))
+            .filter(Boolean);
+        const hasDoorProtectedItem = selectedBasketItems.some(item => itemRequiresDoorUnlock(item));
 
-        const unlocked = await requestDoorUnlockAndLogAccess({
-            actionType: 'sign-out',
-            item: firstItem,
-            quantity: totalQty,
-            projectName: project?.name || 'Personal'
-        });
+        if (hasDoorProtectedItem) {
+            const firstDoorItem = selectedBasketItems.find(item => itemRequiresDoorUnlock(item)) || selectedBasketItems[0] || null;
+            const totalQty = inventoryBasket.reduce((sum, entry) => sum + entry.qty, 0);
 
-        if (!unlocked) {
-            showToast('Door unlock denied. Checkout canceled.', 'error');
-            return;
+            const unlocked = await requestDoorUnlockAndLogAccess({
+                actionType: 'sign-out',
+                item: firstDoorItem,
+                quantity: totalQty,
+                projectName: project?.name || 'Personal'
+            });
+
+            if (!unlocked) {
+                showToast('Door unlock denied. Checkout canceled.', 'error');
+                return;
+            }
         }
     }
 
@@ -5550,7 +5566,7 @@ async function openSignOutModal(itemId) {
                 }
             }
 
-            if (currentUser?.role === 'student' && kioskRuntimeSettings?.requireDoorUnlockForSignout !== false) {
+            if (currentUser?.role === 'student' && itemRequiresDoorUnlock(item)) {
                 const unlocked = await requestDoorUnlockAndLogAccess({
                     actionType: 'sign-out',
                     item,
@@ -7454,6 +7470,13 @@ async function openAddItemModal() {
                 <small class="text-muted">Controls who can see this item based on class or role.</small>
             </div>
             <div class="form-group">
+                <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
+                    <input type="checkbox" id="add-requires-door-unlock" checked>
+                    Item Is Behind Door (Require Unlock On Student Sign-out)
+                </label>
+                <small class="text-muted">Turn off for items that are not physically behind the controlled door.</small>
+            </div>
+            <div class="form-group">
                 <label>Visibility Tags</label>
                 <small class="text-muted" style="display:block;margin-bottom:0.5rem">Add at least one tag for student visibility. Untagged items are hidden from students.</small>
                 <div class="glass-panel" style="padding:0.75rem">
@@ -7484,6 +7507,7 @@ async function openAddItemModal() {
         const supplierLink = document.getElementById('add-supplier-link')?.value.trim() || '';
         const itemType = document.getElementById('add-item-type')?.value || 'item';
         const visibilityLevel = document.getElementById('add-visibility-level')?.value || 'standard';
+        const requiresDoorUnlock = document.getElementById('add-requires-door-unlock')?.checked !== false;
         const stock = Math.max(0, parseInt(document.getElementById('add-stock').value, 10) || 0);
         const threshold = Math.max(0, parseInt(document.getElementById('add-threshold').value, 10) || 0);
         const selectedTags = Array.from(document.querySelectorAll('.add-item-tag-cb:checked')).map(cb => cb.value);
@@ -7519,6 +7543,7 @@ async function openAddItemModal() {
             supplier_listing_link: supplierLink || null,
             item_type: itemType,
             visibility_level: visibilityLevel,
+            requires_door_unlock: requiresDoorUnlock,
             visibilityTags: selectedTags
         };
 
@@ -9164,6 +9189,13 @@ async function openEditItemModal(itemId) {
                 </div>
             </div>
             <div class="form-group">
+                <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
+                    <input type="checkbox" id="edit-item-requires-door-unlock" ${(item.requiresDoorUnlock ?? item.requires_door_unlock ?? true) ? 'checked' : ''}>
+                    Item Is Behind Door (Require Unlock On Student Sign-out)
+                </label>
+                <small class="text-muted">Turn off for items that are not physically behind the controlled door.</small>
+            </div>
+            <div class="form-group">
                 <label>Visibility Tags</label>
                 <small class="text-muted" style="display:block;margin-bottom:0.5rem">Control which classes can see this item based on their allowed tags. Untagged items are hidden from students.</small>
                 <div class="glass-panel" style="padding:0.75rem">
@@ -9190,6 +9222,7 @@ async function openEditItemModal(itemId) {
         const supplierListingLink = document.getElementById('edit-item-supplier-link').value.trim();
         const stock = parseInt(document.getElementById('edit-item-stock').value) || 0;
         const threshold = parseInt(document.getElementById('edit-item-threshold').value) || 0;
+        const requiresDoorUnlock = document.getElementById('edit-item-requires-door-unlock')?.checked !== false;
         const selectedTags = Array.from(document.querySelectorAll('.edit-item-tag-cb:checked')).map(cb => cb.value);
 
         if (name) {
@@ -9214,7 +9247,8 @@ async function openEditItemModal(itemId) {
                 image_link: imageLink || null,
                 supplier_listing_link: supplierListingLink || null,
                 stock,
-                threshold
+                threshold,
+                requires_door_unlock: requiresDoorUnlock
             });
             if (!updated) {
                 showToast('Failed to update item in database.', 'error');

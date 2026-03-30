@@ -268,7 +268,8 @@ async function loadInventoryItems() {
         ...row,
         storageLocation: row.storageLocation ?? row.storage_location ?? row.location ?? null,
         imageLink: row.imageLink ?? row.image_link ?? null,
-        supplierListingLink: row.supplierListingLink ?? row.supplier_listing_link ?? null
+        supplierListingLink: row.supplierListingLink ?? row.supplier_listing_link ?? null,
+        requiresDoorUnlock: row.requiresDoorUnlock ?? row.requires_door_unlock ?? true
     }));
     console.log(`Loaded ${inventoryItems.length} inventory items`);
 }
@@ -1130,7 +1131,8 @@ async function addItemToSupabase(item) {
         image_link: item.image_link || item.imageLink || null,
         supplier_listing_link: item.supplier_listing_link || item.supplierListingLink || null,
         item_type: item.item_type || 'item',
-        visibility_level: item.visibility_level || 'standard'
+        visibility_level: item.visibility_level || 'standard',
+        requires_door_unlock: item.requires_door_unlock ?? item.requiresDoorUnlock ?? true
     };
 
     let { data, error } = await dbClient.from('inventory_items').insert([payload]).select();
@@ -1152,7 +1154,8 @@ async function addItemToSupabase(item) {
                 image_link: undefined,
                 supplier: undefined,
                 brand: undefined,
-                location: undefined
+                location: undefined,
+                requires_door_unlock: undefined
             },
             {
                 id: item.id,
@@ -1207,6 +1210,8 @@ async function updateItemInSupabase(itemId, updates) {
         delete safeUpdates.supplier;
         delete safeUpdates.image_link;
         delete safeUpdates.supplier_listing_link;
+        delete safeUpdates.requires_door_unlock;
+        delete safeUpdates.requiresDoorUnlock;
 
         ({ data, error } = await dbClient.from('inventory_items')
             .update(safeUpdates)
