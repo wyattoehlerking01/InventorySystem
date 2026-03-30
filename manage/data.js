@@ -1384,9 +1384,22 @@ async function updateItemInSupabase(itemId, updates) {
             || msg.includes('undefined_column');
     };
 
+    const isMissingDoorUnlockColumnError = (err) => {
+        const msg = String(err?.message || '').toLowerCase();
+        return isSchemaColumnError(err) && msg.includes('requires_door_unlock');
+    };
+
+    const wantsDoorUnlockUpdate = Object.prototype.hasOwnProperty.call(updates || {}, 'requires_door_unlock')
+        || Object.prototype.hasOwnProperty.call(updates || {}, 'requiresDoorUnlock');
+
     let { data, error } = await dbClient.from('inventory_items')
         .update(updates)
         .eq('id', itemId).select();
+
+    if (error && wantsDoorUnlockUpdate && isMissingDoorUnlockColumnError(error)) {
+        console.error('Error updating item: inventory_items.requires_door_unlock column is missing. Run SQL migration 20260330_add_requires_door_unlock.sql.', error);
+        return null;
+    }
 
     if (error && isSchemaColumnError(error)) {
         const safeUpdates = { ...updates };
@@ -1402,6 +1415,11 @@ async function updateItemInSupabase(itemId, updates) {
         ({ data, error } = await dbClient.from('inventory_items')
             .update(safeUpdates)
             .eq('id', itemId).select());
+
+        if (error && wantsDoorUnlockUpdate && isMissingDoorUnlockColumnError(error)) {
+            console.error('Error updating item: inventory_items.requires_door_unlock column is missing. Run SQL migration 20260330_add_requires_door_unlock.sql.', error);
+            return null;
+        }
     }
     
     if (error) {
