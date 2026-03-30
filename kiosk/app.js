@@ -64,6 +64,7 @@ function getDefaultKioskRuntimeSettings() {
         noActivityExpiry: 3,
         showOrderForm: true,
         showCredentialRequest: true,
+        requireDoorUnlockForSignout: true,
         startTime: '08:00',
         endTime: '16:00',
         enforceHours: true
@@ -154,6 +155,10 @@ function resolveKioskRuntimeSettings(source = {}, fallbackOverrides = null) {
             merged.showCredentialRequest,
             merged.show_credential_request
         ], fallback.showCredentialRequest),
+        requireDoorUnlockForSignout: readKioskBooleanSetting([
+            merged.requireDoorUnlockForSignout,
+            merged.require_door_unlock_for_signout
+        ], fallback.requireDoorUnlockForSignout),
         startTime: readKioskTimeSetting([
             merged.startTime,
             merged.start_time,
@@ -1949,7 +1954,7 @@ async function checkoutBasket() {
         }
     }
 
-    if (currentUser?.role === 'student') {
+    if (currentUser?.role === 'student' && kioskRuntimeSettings?.requireDoorUnlockForSignout !== false) {
         const firstBasketItem = inventoryBasket[0];
         const firstItem = inventoryItems.find(i => i.id === firstBasketItem?.id);
         const totalQty = inventoryBasket.reduce((sum, entry) => sum + entry.qty, 0);
@@ -5545,7 +5550,7 @@ async function openSignOutModal(itemId) {
                 }
             }
 
-            if (currentUser?.role === 'student') {
+            if (currentUser?.role === 'student' && kioskRuntimeSettings?.requireDoorUnlockForSignout !== false) {
                 const unlocked = await requestDoorUnlockAndLogAccess({
                     actionType: 'sign-out',
                     item,

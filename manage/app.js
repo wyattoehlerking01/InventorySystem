@@ -1380,6 +1380,10 @@ function resolveKioskRuntimeSettings(source = {}, fallbackOverrides = null) {
             merged.showCredentialRequest,
             merged.show_credential_request
         ], fallback.showCredentialRequest),
+        requireDoorUnlockForSignout: readKioskBooleanSetting([
+            merged.requireDoorUnlockForSignout,
+            merged.require_door_unlock_for_signout
+        ], fallback.requireDoorUnlockForSignout),
         brandingText: String(
             merged.brandingText
             ?? merged.branding_text
@@ -1440,6 +1444,7 @@ async function saveKioskSettingsToSupabase(settings, targetKioskId = kioskId) {
             enforce_privilege_unlock: settings.enforcePrivilegeUnlock,
             show_order_form: settings.showOrderForm,
             show_credential_request: settings.showCredentialRequest,
+            require_door_unlock_for_signout: settings.requireDoorUnlockForSignout,
             branding_text: settings.brandingText,
             door_unlock_duration: settings.doorUnlockDuration,
             start_time: settings.startTime,
@@ -1453,6 +1458,7 @@ async function saveKioskSettingsToSupabase(settings, targetKioskId = kioskId) {
             enforce_privilege_unlock: settings.enforcePrivilegeUnlock,
             show_order_form: settings.showOrderForm,
             show_credential_request: settings.showCredentialRequest,
+            require_door_unlock_for_signout: settings.requireDoorUnlockForSignout,
             branding_text: settings.brandingText,
             door_unlock_duration_seconds: settings.doorUnlockDuration,
             operating_start_time: settings.startTime,
@@ -1467,6 +1473,7 @@ async function saveKioskSettingsToSupabase(settings, targetKioskId = kioskId) {
                 enforcePrivilegeUnlock: settings.enforcePrivilegeUnlock,
                 showOrderForm: settings.showOrderForm,
                 showCredentialRequest: settings.showCredentialRequest,
+                requireDoorUnlockForSignout: settings.requireDoorUnlockForSignout,
                 brandingText: settings.brandingText,
                 doorUnlockDuration: settings.doorUnlockDuration,
                 startTime: settings.startTime,
@@ -1482,6 +1489,7 @@ async function saveKioskSettingsToSupabase(settings, targetKioskId = kioskId) {
                 enforcePrivilegeUnlock: settings.enforcePrivilegeUnlock,
                 showOrderForm: settings.showOrderForm,
                 showCredentialRequest: settings.showCredentialRequest,
+                requireDoorUnlockForSignout: settings.requireDoorUnlockForSignout,
                 brandingText: settings.brandingText,
                 doorUnlockDuration: settings.doorUnlockDuration,
                 startTime: settings.startTime,
@@ -2268,7 +2276,7 @@ async function checkoutBasket() {
         }
     }
 
-    if (currentUser?.role === 'student') {
+    if (currentUser?.role === 'student' && kioskRuntimeSettings?.requireDoorUnlockForSignout !== false) {
         const firstBasketItem = inventoryBasket[0];
         const firstItem = inventoryItems.find(i => i.id === firstBasketItem?.id);
         const totalQty = inventoryBasket.reduce((sum, entry) => sum + entry.qty, 0);
@@ -6125,7 +6133,7 @@ async function openSignOutModal(itemId) {
                 }
             }
 
-            if (currentUser?.role === 'student') {
+            if (currentUser?.role === 'student' && kioskRuntimeSettings?.requireDoorUnlockForSignout !== false) {
                 const unlocked = await requestDoorUnlockAndLogAccess({
                     actionType: 'sign-out',
                     item,
@@ -10672,6 +10680,7 @@ function getDefaultKioskSettings() {
         enforcePrivilegeUnlock: true,
         showOrderForm: true,
         showCredentialRequest: true,
+        requireDoorUnlockForSignout: true,
         brandingText: '',
         startTime: '08:00',
         endTime: '18:00',
@@ -10695,6 +10704,7 @@ async function renderKioskSettings() {
     document.getElementById('kiosk-enforce-privilege-unlock').checked = settings.enforcePrivilegeUnlock;
     document.getElementById('kiosk-show-order-form').checked = settings.showOrderForm;
     document.getElementById('kiosk-show-credential-request').checked = settings.showCredentialRequest;
+    document.getElementById('kiosk-require-door-unlock-signout').checked = settings.requireDoorUnlockForSignout !== false;
     document.getElementById('kiosk-branding-text').value = settings.brandingText;
     document.getElementById('kiosk-door-unlock-duration').value = settings.doorUnlockDuration;
     document.getElementById('kiosk-start-time').value = settings.startTime;
@@ -10716,6 +10726,7 @@ async function handleSaveKioskSettings() {
         enforcePrivilegeUnlock: document.getElementById('kiosk-enforce-privilege-unlock').checked,
         showOrderForm: document.getElementById('kiosk-show-order-form').checked,
         showCredentialRequest: document.getElementById('kiosk-show-credential-request').checked,
+        requireDoorUnlockForSignout: document.getElementById('kiosk-require-door-unlock-signout').checked,
         brandingText: document.getElementById('kiosk-branding-text').value.trim(),
         doorUnlockDuration: parseFloat(document.getElementById('kiosk-door-unlock-duration').value) || 2,
         startTime: document.getElementById('kiosk-start-time').value,
