@@ -185,6 +185,7 @@ const navLogs = document.getElementById('nav-logs');
 const navUsers = document.getElementById('nav-users');
 const navClasses = document.getElementById('nav-classes');
 const navOrders = document.getElementById('nav-orders');
+const navDoor = document.getElementById('nav-door');
 
 // DOM Elements - Pages
 const pages = document.querySelectorAll('.page');
@@ -208,6 +209,7 @@ let lastModalClipboardInteractionAt = 0;
 // Inactivity Timer (3 minutes)
 let inactivityTimeRemaining = 3 * 60; // seconds
 let countdownInterval;
+let operatingHoursInterval = null;
 
 function isWithinKioskOperatingHours(settings = kioskRuntimeSettings, now = new Date()) {
     if (!settings?.enforceHours) return true;
@@ -229,6 +231,39 @@ function isWithinKioskOperatingHours(settings = kioskRuntimeSettings, now = new 
 
 function getOperatingHoursClosedMessage() {
     return `Kiosk is closed. Available from ${kioskRuntimeSettings.startTime} to ${kioskRuntimeSettings.endTime}.`;
+}
+
+function canBypassOperatingHours(user = currentUser) {
+    return user?.role === 'teacher' || user?.role === 'developer';
+}
+
+function shouldShowOutOfHoursLock(user = currentUser) {
+    return !isWithinKioskOperatingHours() && !canBypassOperatingHours(user);
+}
+
+async function syncOperatingHoursLockState(user = currentUser) {
+    const shouldLock = shouldShowOutOfHoursLock(user);
+    const hasManualLock = debugConfig.kioskLocked && debugConfig.kioskLockScreen !== 'outOfHours';
+
+    if (shouldLock && !hasManualLock) {
+        if (!debugConfig.kioskLocked || debugConfig.kioskLockScreen === 'outOfHours') {
+            await applyKioskLock(true, 'outOfHours');
+        }
+        return true;
+    }
+
+    if (!shouldLock && debugConfig.kioskLocked && debugConfig.kioskLockScreen === 'outOfHours') {
+        await applyKioskLock(false, 'outOfHours');
+    }
+
+    return false;
+}
+
+function startOperatingHoursEnforcer() {
+    if (operatingHoursInterval) clearInterval(operatingHoursInterval);
+    operatingHoursInterval = setInterval(() => {
+        void syncOperatingHoursLockState();
+    }, 30 * 1000);
 }
 
 function refreshKioskRuntimeSettings() {
@@ -258,9 +293,12 @@ function startCountdown() {
 
         refreshKioskRuntimeSettings();
 
-        if (!isWithinKioskOperatingHours()) {
+        if (shouldShowOutOfHoursLock()) {
             clearInterval(countdownInterval);
-            logout(getOperatingHoursClosedMessage());
+            void syncOperatingHoursLockState();
+            if (currentUser && currentUser.role === 'student') {
+                logout(getOperatingHoursClosedMessage());
+            }
             return;
         }
 
@@ -1250,8 +1288,9 @@ async function handleRemoteKioskSettingsChange(nextSettings = {}) {
     const changed = JSON.stringify(nextRuntimeSettings) !== JSON.stringify(kioskRuntimeSettings);
     if (changed) {
         kioskRuntimeSettings = nextRuntimeSettings;
+        const outOfHoursLocked = await syncOperatingHoursLockState();
         if (currentUser) {
-            if (!isWithinKioskOperatingHours()) {
+            if (outOfHoursLocked && currentUser.role === 'student') {
                 logout(getOperatingHoursClosedMessage());
                 return;
             }
@@ -1610,6 +1649,69 @@ async function requestDoorUnlockAndLogAccess({ actionType, item, quantity = 1, p
     }
 }
 
+async function requestDoorHoldOpenAndLogAccess(reason = 'manual door hold-open') {
+    const actorId = currentUser?.id || 'SYSTEM';
+    const actorRole = currentUser?.role || 'system';
+
+    try {
+        await fetch('http://localhost:8080/hold-open', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                actionType: 'doorHoldOpen',
+                userId: actorId,
+                reason
+            })
+        });
+
+        addLog(actorId, 'Door Hold Open', `Door hold-open enabled by ${actorId} [role=${actorRole}] (${reason}).`);
+        showToast('Door set to hold-open mode.', 'success');
+        return true;
+    } catch (err) {
+        addLog(actorId, 'Door Hold Open Failed', `Door hold-open failed for ${actorId}. Error: ${err.message || err}`);
+        showToast('Warning: Hardware unlock script unreachable.', 'warning');
+        return false;
+    }
+}
+
+async function requestDoorReleaseAndLogAccess(reason = 'manual door release') {
+    const actorId = currentUser?.id || 'SYSTEM';
+    const actorRole = currentUser?.role || 'system';
+
+    try {
+        await fetch('http://localhost:8080/release', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                actionType: 'doorRelease',
+                userId: actorId,
+                reason
+            })
+        });
+
+        addLog(actorId, 'Door Release', `Door release triggered by ${actorId} [role=${actorRole}] (${reason}).`);
+        showToast('Door lock restored.', 'success');
+        return true;
+    } catch (err) {
+        addLog(actorId, 'Door Release Failed', `Door release failed for ${actorId}. Error: ${err.message || err}`);
+        showToast('Warning: Hardware unlock script unreachable.', 'warning');
+        return false;
+    }
+}
+
+async function fetchDoorStatus() {
+    try {
+        const response = await fetch('http://localhost:8080/status', {
+            method: 'GET',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        if (!response.ok) throw new Error(`Status ${response.status}`);
+        return await response.json();
+    } catch {
+        return { status: 'unavailable', held_open: false };
+    }
+}
+
 async function requestManualDoorUnlockAndLogAccess(reason = 'manual debug control') {
     const actorId = currentUser?.id || 'SYSTEM';
     const actorRole = currentUser?.role || 'system';
@@ -1636,6 +1738,44 @@ async function requestManualDoorUnlockAndLogAccess(reason = 'manual debug contro
         showToast('Warning: Hardware unlock script unreachable.', 'warning');
         return false;
     }
+}
+
+function renderDoorPage() {
+    const openBtn = document.getElementById('door-open-btn');
+    const holdBtn = document.getElementById('door-hold-btn');
+    const releaseBtn = document.getElementById('door-release-btn');
+    const statusEl = document.getElementById('door-status-text');
+    if (!openBtn || !holdBtn || !releaseBtn || !statusEl) return;
+
+    const setStatus = (text) => {
+        statusEl.textContent = text;
+    };
+
+    const refreshStatus = async () => {
+        const status = await fetchDoorStatus();
+        if (status.status === 'unavailable') {
+            setStatus('Door service unavailable.');
+            return;
+        }
+        setStatus(status.held_open ? 'Door is currently held open.' : 'Door is secured (normal mode).');
+    };
+
+    openBtn.onclick = async () => {
+        await requestManualDoorUnlockAndLogAccess('kiosk door page pulse open');
+        await refreshStatus();
+    };
+
+    holdBtn.onclick = async () => {
+        await requestDoorHoldOpenAndLogAccess('kiosk door page hold-open');
+        await refreshStatus();
+    };
+
+    releaseBtn.onclick = async () => {
+        await requestDoorReleaseAndLogAccess('kiosk door page release');
+        await refreshStatus();
+    };
+
+    void refreshStatus();
 }
 
 function openCheckoutReviewModal() {
@@ -1904,6 +2044,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     const verification = await verifyOrganizationLicense(organizationId);
     setRuntimeAppVersion(kioskSettings.app_version);
     await applyKioskLock(!!kioskSettings.is_locked, kioskSettings.lock_screen || 'systemLocked');
+    await syncOperatingHoursLockState();
+    startOperatingHoursEnforcer();
     startKioskVersionRealtimeListener(kioskId);
 
     if (!verification.valid) {
@@ -2028,10 +2170,7 @@ async function handleBarcodeLogin(rawId) {
         return;
     }
 
-    if (!isWithinKioskOperatingHours()) {
-        showToast(getOperatingHoursClosedMessage(), 'error');
-        return;
-    }
+    await syncOperatingHoursLockState();
 
     if (typeof fetchUserByIdFromSupabase !== 'function') {
         showToast('Data module is not loaded. Refresh and verify script loading.', 'error');
@@ -2051,6 +2190,11 @@ async function handleBarcodeLogin(rawId) {
 
         const user = loginResult.user || null;
         if (user) {
+            await syncOperatingHoursLockState(user);
+            if (shouldShowOutOfHoursLock(user)) {
+                showToast(getOperatingHoursClosedMessage(), 'error');
+                return;
+            }
             await completeAuthenticatedSession(user);
             return;
         }
@@ -2302,6 +2446,7 @@ function login(user) {
         navLogs?.classList.add('hidden');
         navUsers?.classList.add('hidden');
         navClasses?.classList.add('hidden');
+        navDoor?.classList.add('hidden');
         navRequests?.classList.add('hidden');
         applyOrdersNavVisibility();
         document.getElementById('manage-categories-btn')?.classList.add('hidden');
@@ -2313,6 +2458,7 @@ function login(user) {
         navLogs?.classList.remove('hidden');
         navUsers?.classList.remove('hidden');
         navClasses?.classList.remove('hidden');
+        navDoor?.classList.remove('hidden');
         navRequests?.classList.add('hidden');
         applyOrdersNavVisibility();
         document.getElementById('manage-categories-btn')?.classList.remove('hidden');
@@ -2347,6 +2493,7 @@ function login(user) {
     const versionOverlay = document.querySelector('.app-version-overlay');
     if (versionOverlay) versionOverlay.style.display = 'none';
     updateAppInfoOverlayVisibility();
+    void syncOperatingHoursLockState(user);
 
     showToast(`Welcome, ${user.name}`);
 
@@ -2869,6 +3016,11 @@ async function switchPage(targetId, title) {
         return;
     }
 
+    if (targetId === 'door' && currentUser?.role === 'student') {
+        showToast('You do not have access to that page.', 'error');
+        return;
+    }
+
     if (targetId === 'orders' && !canCurrentUserViewOrders()) {
         showToast('Orders view is disabled for students.', 'error');
         return;
@@ -2924,6 +3076,7 @@ async function switchPage(targetId, title) {
     if (targetId === 'classes') renderClasses();
     if (targetId === 'requests') renderRequests();
     if (targetId === 'orders') renderOrders();
+    if (targetId === 'door') renderDoorPage();
 }
 
 /* =======================================
@@ -9439,6 +9592,12 @@ const KIOSK_LOCK_SCREENS = {
         icon: 'desktop-tower',
         title: 'Kiosk Unavailable',
         description: 'This kiosk is temporarily unavailable. Please check back shortly.'
+    },
+    outOfHours: {
+        label: 'Out of Hours',
+        icon: 'clock-clockwise',
+        title: 'Out of Hours',
+        description: 'Kiosk is currently outside operating hours.'
     }
 };
 
@@ -9458,7 +9617,7 @@ function getKioskLockMarkup(screenKey) {
     const screen = getKioskLockScreen(screenKey);
     const description = screenKey === 'kioskUnavailable' && kioskUnavailableDescriptionOverride
         ? kioskUnavailableDescriptionOverride
-        : screen.description;
+        : (screenKey === 'outOfHours' ? getOperatingHoursClosedMessage() : screen.description);
     return `<div class="kiosk-lock-card" style="text-align:center;">
         <i class="ph ph-${screen.icon} kiosk-lock-icon"></i>
         <h2 class="kiosk-lock-title">${screen.title}</h2>

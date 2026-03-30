@@ -150,6 +150,7 @@ const navUsers = document.getElementById('nav-users');
 const navClasses = document.getElementById('nav-classes');
 const navClassDisplay = document.getElementById('nav-class-display');
 const navOrders = document.getElementById('nav-orders');
+const navDoor = document.getElementById('nav-door');
 
 // DOM Elements - Pages
 const pages = document.querySelectorAll('.page');
@@ -1935,6 +1936,135 @@ async function requestDoorUnlockAndLogAccess({ actionType, item, quantity = 1, p
     }
 }
 
+async function requestManualDoorUnlockAndLogAccess(reason = 'manual door control') {
+    const actorId = currentUser?.id || 'SYSTEM';
+    const actorRole = currentUser?.role || 'system';
+
+    try {
+        await fetch('http://localhost:8080/unlock', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                itemId: 'MANUAL',
+                itemName: 'Manual Door Open',
+                category: 'system',
+                actionType: 'manualDoorOpen',
+                userId: actorId,
+                reason
+            })
+        });
+
+        addLog(actorId, 'Door Access', `Manual door open approved by ${actorId} [role=${actorRole}] (${reason}).`);
+        showToast('Door unlock triggered.', 'success');
+        return true;
+    } catch (err) {
+        addLog(actorId, 'Door Access Failed', `Manual door open failed for ${actorId}. Error: ${err.message || err}`);
+        showToast('Warning: Hardware unlock script unreachable.', 'warning');
+        return false;
+    }
+}
+
+async function requestDoorHoldOpenAndLogAccess(reason = 'manual door hold-open') {
+    const actorId = currentUser?.id || 'SYSTEM';
+    const actorRole = currentUser?.role || 'system';
+
+    try {
+        await fetch('http://localhost:8080/hold-open', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                actionType: 'doorHoldOpen',
+                userId: actorId,
+                reason
+            })
+        });
+
+        addLog(actorId, 'Door Hold Open', `Door hold-open enabled by ${actorId} [role=${actorRole}] (${reason}).`);
+        showToast('Door set to hold-open mode.', 'success');
+        return true;
+    } catch (err) {
+        addLog(actorId, 'Door Hold Open Failed', `Door hold-open failed for ${actorId}. Error: ${err.message || err}`);
+        showToast('Warning: Hardware unlock script unreachable.', 'warning');
+        return false;
+    }
+}
+
+async function requestDoorReleaseAndLogAccess(reason = 'manual door release') {
+    const actorId = currentUser?.id || 'SYSTEM';
+    const actorRole = currentUser?.role || 'system';
+
+    try {
+        await fetch('http://localhost:8080/release', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                actionType: 'doorRelease',
+                userId: actorId,
+                reason
+            })
+        });
+
+        addLog(actorId, 'Door Release', `Door release triggered by ${actorId} [role=${actorRole}] (${reason}).`);
+        showToast('Door lock restored.', 'success');
+        return true;
+    } catch (err) {
+        addLog(actorId, 'Door Release Failed', `Door release failed for ${actorId}. Error: ${err.message || err}`);
+        showToast('Warning: Hardware unlock script unreachable.', 'warning');
+        return false;
+    }
+}
+
+async function fetchDoorStatus() {
+    try {
+        const response = await fetch('http://localhost:8080/status', {
+            method: 'GET',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        if (!response.ok) throw new Error(`Status ${response.status}`);
+        return await response.json();
+    } catch {
+        return { status: 'unavailable', held_open: false };
+    }
+}
+
+function renderDoorPage() {
+    const openBtn = document.getElementById('door-open-btn');
+    const holdBtn = document.getElementById('door-hold-btn');
+    const releaseBtn = document.getElementById('door-release-btn');
+    const statusEl = document.getElementById('door-status-text');
+    if (!openBtn || !holdBtn || !releaseBtn || !statusEl) return;
+
+    const setStatus = (text) => {
+        statusEl.textContent = text;
+    };
+
+    const refreshStatus = async () => {
+        const status = await fetchDoorStatus();
+        if (status.status === 'unavailable') {
+            setStatus('Door service unavailable.');
+            return;
+        }
+        setStatus(status.held_open ? 'Door is currently held open.' : 'Door is secured (normal mode).');
+    };
+
+    openBtn.onclick = async () => {
+        await requestManualDoorUnlockAndLogAccess('manage door page pulse open');
+        await refreshStatus();
+    };
+
+    holdBtn.onclick = async () => {
+        await requestDoorHoldOpenAndLogAccess('manage door page hold-open');
+        await refreshStatus();
+    };
+
+    releaseBtn.onclick = async () => {
+        await requestDoorReleaseAndLogAccess('manage door page release');
+        await refreshStatus();
+    };
+
+    void refreshStatus();
+}
+
 function openCheckoutReviewModal() {
     if (inventoryBasket.length === 0) {
         showToast('Your basket is empty.', 'error');
@@ -2743,6 +2873,7 @@ function login(user) {
         navLogs.classList.add('hidden');
         navUsers.classList.add('hidden');
         navClasses.classList.add('hidden');
+        navDoor?.classList.add('hidden');
         navClassDisplay?.classList.add('hidden');
         navRequests?.classList.add('hidden');
         applyOrdersNavVisibility();
@@ -2756,6 +2887,7 @@ function login(user) {
         navLogs.classList.remove('hidden');
         navUsers.classList.remove('hidden');
         navClasses.classList.remove('hidden');
+        navDoor?.classList.remove('hidden');
         navClassDisplay?.classList.remove('hidden');
         navRequests?.classList.add('hidden');
         applyOrdersNavVisibility();
@@ -3327,7 +3459,7 @@ async function switchPage(targetId, title) {
         return;
     }
 
-    if (['users', 'classes', 'logs'].includes(targetId)) {
+    if (['users', 'classes', 'logs', 'door'].includes(targetId)) {
         if (currentUser?.role === 'student') {
             showToast('You do not have access to that page.', 'error');
             return;
@@ -3378,6 +3510,7 @@ async function switchPage(targetId, title) {
     if (targetId === 'classes') renderClasses();
     if (targetId === 'orders') renderOrders();
     if (targetId === 'kiosk-settings') renderKioskSettings();
+    if (targetId === 'door') renderDoorPage();
 }
 
 /* =======================================

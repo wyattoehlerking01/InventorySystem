@@ -165,6 +165,9 @@
                 <button class="nav-btn restricted" id="nav-users" data-target="users">
                     <i class="ph ph-users"></i> Users
                 </button>
+                <button class="nav-btn restricted" id="nav-door" data-target="door">
+                    <i class="ph ph-door-open"></i> Door
+                </button>
                 <button class="nav-btn restricted hidden" id="nav-requests" data-target="requests">
                     <i class="ph ph-envelope-open"></i> Requests
                 </button>
@@ -475,6 +478,22 @@
                                 <!-- Injected via JS -->
                             </tbody>
                         </table>
+                    </div>
+                </div>
+
+                <div id="page-door" class="page hidden">
+                    <div class="action-bar" style="gap: 1rem; margin-bottom: 1.5rem; align-items: center;">
+                        <h3 style="margin: 0; flex: 1;"><i class="ph ph-door-open"></i> Door Control</h3>
+                        <span class="text-muted text-sm">Teacher/Developer Access</span>
+                    </div>
+                    <div class="glass-panel" style="padding: 1.5rem; max-width: 700px;">
+                        <p class="text-muted" id="door-status-text" style="margin-bottom: 1rem;">Checking door status...</p>
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.75rem;">
+                            <button class="btn btn-primary" id="door-open-btn"><i class="ph ph-door-open"></i> Pulse Open</button>
+                            <button class="btn btn-secondary" id="door-hold-btn"><i class="ph ph-lock-open"></i> Hold Open</button>
+                            <button class="btn btn-danger" id="door-release-btn"><i class="ph ph-lock"></i> Release</button>
+                        </div>
+                        <small class="text-muted" style="display:block;margin-top:0.75rem;">Hold Open keeps the door unlocked until Release is selected (or safety timeout on the hardware service).</small>
                     </div>
                 </div>
             </div>
