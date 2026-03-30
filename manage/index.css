@@ -998,10 +998,17 @@ h6 {
 
 .inventory-action-bar {
     align-items: flex-start;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: var(--bg-primary);
+    padding: 1rem;
+    border-radius: var(--radius-md);
 }
 
 .inventory-smart-toolbar {
     gap: 1rem;
+    flex-wrap: wrap;
 }
 
 .inventory-smart-search-row {
@@ -1181,11 +1188,10 @@ h6 {
 
 .inventory-secondary-controls-redesign {
     width: 100%;
-    justify-content: space-between;
+    justify-content: flex-start;
     align-items: center;
     gap: 0.85rem;
-    flex-wrap: nowrap;
-    overflow-x: auto;
+    flex-wrap: wrap;
     padding-bottom: 0.15rem;
 }
 
