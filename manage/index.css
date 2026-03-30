@@ -1570,7 +1570,7 @@ h6 {
     bottom: 0;
     background: rgba(0, 0, 0, 0.7);
     backdrop-filter: blur(5px);
-    z-index: 100;
+    z-index: 1200;
     display: flex;
     align-items: center;
     justify-content: center;

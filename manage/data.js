@@ -404,12 +404,81 @@ async function loadAllData() {
  * Load users from public.users table
  */
 async function loadUsers() {
+    const isSchemaEntityError = (err) => {
+        const message = String(err?.message || '').toLowerCase();
+        const code = String(err?.code || '').toUpperCase();
+        return message.includes('does not exist')
+            || message.includes('schema cache')
+            || message.includes('could not find')
+            || code === '42703'
+            || code === '42P01'
+            || code === 'PGRST204';
+    };
+
+    const normalizePerms = (value, role = 'student') => {
+        if (role !== 'student') {
+            return {
+                canCreateProjects: true,
+                canJoinProjects: true,
+                canSignOut: true
+            };
+        }
+
+        const source = value || {};
+        return {
+            canCreateProjects: !!source.canCreateProjects,
+            canJoinProjects: source.canJoinProjects ?? true,
+            canSignOut: !!source.canSignOut
+        };
+    };
+
     const { data, error } = await dbClient.from('users').select('*');
     if (error) {
         console.error('Error loading users:', error);
         return;
     }
-    mockUsers = data || [];
+
+    let permissionsByUserId = {};
+    const { data: userPermissionsData, error: userPermissionsError } = await dbClient
+        .from('user_permissions')
+        .select('user_id, can_create_projects, can_join_projects, can_sign_out');
+
+    if (userPermissionsError && !isSchemaEntityError(userPermissionsError)) {
+        console.error('Error loading user_permissions:', userPermissionsError);
+    }
+
+    if (!userPermissionsError && Array.isArray(userPermissionsData)) {
+        permissionsByUserId = userPermissionsData.reduce((acc, row) => {
+            acc[row.user_id] = {
+                canCreateProjects: !!row.can_create_projects,
+                canJoinProjects: !!row.can_join_projects,
+                canSignOut: !!row.can_sign_out
+            };
+            return acc;
+        }, {});
+    }
+
+    mockUsers = (data || []).map(user => {
+        const role = String(user?.role || '').toLowerCase();
+        const permsFromJson = (user?.perms && typeof user.perms === 'object') ? user.perms : null;
+        const permsFromColumns = (
+            Object.prototype.hasOwnProperty.call(user || {}, 'can_create_projects')
+            || Object.prototype.hasOwnProperty.call(user || {}, 'can_join_projects')
+            || Object.prototype.hasOwnProperty.call(user || {}, 'can_sign_out')
+        ) ? {
+            canCreateProjects: !!user.can_create_projects,
+            canJoinProjects: !!user.can_join_projects,
+            canSignOut: !!user.can_sign_out
+        } : null;
+
+        const permsFromTable = permissionsByUserId[user.id] || null;
+        const normalizedPerms = normalizePerms(permsFromJson || permsFromColumns || permsFromTable, role || 'student');
+
+        return {
+            ...user,
+            perms: normalizedPerms
+        };
+    });
     console.log(`Loaded ${mockUsers.length} users`);
 }
 
@@ -1179,6 +1248,96 @@ async function updateUserInSupabase(userId, updates) {
         data: data?.[0],
         error: null
     };
+}
+
+/**
+ * Persist per-user permission overrides.
+ * Tries users.perms JSON first, then users boolean columns, then user_permissions table.
+ */
+async function saveUserPermissionsToSupabase(userId, perms) {
+    const isSchemaEntityError = (err) => {
+        const message = String(err?.message || '').toLowerCase();
+        const code = String(err?.code || '').toUpperCase();
+        return message.includes('does not exist')
+            || message.includes('schema cache')
+            || message.includes('could not find')
+            || code === '42703'
+            || code === '42P01'
+            || code === 'PGRST204';
+    };
+
+    const normalizedPerms = {
+        canCreateProjects: !!perms?.canCreateProjects,
+        canJoinProjects: !!perms?.canJoinProjects,
+        canSignOut: !!perms?.canSignOut
+    };
+
+    // Preferred: JSON permissions payload directly on users row.
+    {
+        const { error } = await dbClient
+            .from('users')
+            .update({ perms: normalizedPerms })
+            .eq('id', userId)
+            .select('id')
+            .maybeSingle();
+
+        if (!error) {
+            return { data: null, error: null, persisted: true, strategy: 'users.perms' };
+        }
+
+        if (!isSchemaEntityError(error)) {
+            console.error('Error updating users.perms:', error);
+            return { data: null, error, persisted: false };
+        }
+    }
+
+    // Fallback: explicit boolean columns on users.
+    {
+        const { error } = await dbClient
+            .from('users')
+            .update({
+                can_create_projects: normalizedPerms.canCreateProjects,
+                can_join_projects: normalizedPerms.canJoinProjects,
+                can_sign_out: normalizedPerms.canSignOut
+            })
+            .eq('id', userId)
+            .select('id')
+            .maybeSingle();
+
+        if (!error) {
+            return { data: null, error: null, persisted: true, strategy: 'users.boolean_columns' };
+        }
+
+        if (!isSchemaEntityError(error)) {
+            console.error('Error updating users permission columns:', error);
+            return { data: null, error, persisted: false };
+        }
+    }
+
+    // Final fallback: dedicated user_permissions table.
+    {
+        const { error } = await dbClient
+            .from('user_permissions')
+            .upsert([
+                {
+                    user_id: userId,
+                    can_create_projects: normalizedPerms.canCreateProjects,
+                    can_join_projects: normalizedPerms.canJoinProjects,
+                    can_sign_out: normalizedPerms.canSignOut
+                }
+            ], { onConflict: 'user_id' });
+
+        if (!error) {
+            return { data: null, error: null, persisted: true, strategy: 'user_permissions_table' };
+        }
+
+        if (isSchemaEntityError(error)) {
+            return { data: null, error: null, persisted: false, unsupported: true };
+        }
+
+        console.error('Error persisting user permissions:', error);
+        return { data: null, error, persisted: false };
+    }
 }
 
 /**

@@ -1355,7 +1355,10 @@ function resolveKioskRuntimeSettings(source = {}, fallbackOverrides = null) {
         ...(fallbackOverrides && typeof fallbackOverrides === 'object' ? fallbackOverrides : {})
     };
     const blob = resolveKioskSettingsBlob(source);
-    const merged = { ...blob, ...source };
+    const sourceDefined = Object.fromEntries(
+        Object.entries(source || {}).filter(([, value]) => value !== undefined)
+    );
+    const merged = { ...blob, ...sourceDefined };
 
     return {
         sessionTimeout: Math.round(readKioskNumberSetting([
@@ -6998,10 +7001,12 @@ function updateUsersBulkSelectionState() {
 
     const bulkDeleteBtn = document.getElementById('bulk-delete-users-btn');
     const bulkSuspendBtn = document.getElementById('bulk-suspend-users-btn');
+    const bulkPermsBtn = document.getElementById('bulk-user-perms-btn');
     const selectAllUsersCb = document.getElementById('select-all-users');
 
     const defaultDeleteLabel = '<i class="ph ph-trash"></i> Bulk Delete';
     const defaultSuspendLabel = '<i class="ph ph-user-minus"></i> Bulk Suspend';
+    const defaultPermsLabel = '<i class="ph ph-sliders-horizontal"></i> Bulk Permissions';
 
     if (bulkDeleteBtn) {
         bulkDeleteBtn.classList.remove('hidden');
@@ -7019,12 +7024,28 @@ function updateUsersBulkSelectionState() {
             : defaultSuspendLabel;
     }
 
+    if (bulkPermsBtn) {
+        bulkPermsBtn.classList.remove('hidden');
+        bulkPermsBtn.disabled = selectedCount === 0;
+        bulkPermsBtn.innerHTML = selectedCount > 0
+            ? `<i class="ph ph-sliders-horizontal"></i> Bulk Permissions (${selectedCount})`
+            : defaultPermsLabel;
+    }
+
     if (selectAllUsersCb) {
         const totalCount = userCheckboxes.length;
         selectAllUsersCb.disabled = totalCount === 0;
         selectAllUsersCb.checked = totalCount > 0 && selectedCount === totalCount;
         selectAllUsersCb.indeterminate = selectedCount > 0 && selectedCount < totalCount;
     }
+}
+
+function normalizeStudentPermissions(perms) {
+    return {
+        canCreateProjects: !!perms?.canCreateProjects,
+        canJoinProjects: perms?.canJoinProjects ?? true,
+        canSignOut: !!perms?.canSignOut
+    };
 }
 
 function renderUsers() {
@@ -8111,6 +8132,120 @@ document.getElementById('bulk-suspend-users-btn')?.addEventListener('click', asy
         addLog(currentUser.id, 'Bulk Suspend', `Changed suspension for ${targetUsers.length - failureCount} students via selection.`);
         renderUsers();
     }
+});
+
+document.getElementById('bulk-user-perms-btn')?.addEventListener('click', async () => {
+    const selectedCbs = Array.from(document.querySelectorAll('.user-select-cb:checked'));
+    if (selectedCbs.length === 0) {
+        showToast('Please select users to update permissions.', 'error');
+        return;
+    }
+
+    const selectedIds = selectedCbs.map(cb => cb.getAttribute('data-id'));
+    const selectedUsers = mockUsers.filter(u => selectedIds.includes(u.id));
+    const studentUsers = selectedUsers.filter(u => u.role === 'student');
+    const excludedCount = selectedUsers.length - studentUsers.length;
+
+    if (studentUsers.length === 0) {
+        showToast('Only student accounts support granular permission overrides.', 'error');
+        return;
+    }
+
+    const authOk = await ensureBulkDeletionAuth('bulk updating user permissions');
+    if (!authOk) return;
+
+    const html = `
+        <div class="modal-header">
+            <h3>Bulk Update Permissions</h3>
+            <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
+        </div>
+        <div class="modal-body">
+            <p class="text-secondary mb-3">
+                Apply permission changes to <strong>${studentUsers.length}</strong> selected student(s)
+                ${excludedCount > 0 ? `(${excludedCount} non-student account(s) ignored)` : ''}.
+            </p>
+            <div class="form-group">
+                <label>Action</label>
+                <select id="bulk-perm-action" class="form-control">
+                    <option value="add">Add / Enable selected permissions</option>
+                    <option value="remove">Remove / Disable selected permissions</option>
+                </select>
+            </div>
+            <div class="form-group" style="margin-top: 1rem;">
+                <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer; margin: 0.35rem 0;">
+                    <input type="checkbox" id="bulk-perm-create"> Can Create Projects
+                </label>
+                <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer; margin: 0.35rem 0;">
+                    <input type="checkbox" id="bulk-perm-join"> Can Join Projects
+                </label>
+                <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer; margin: 0.35rem 0;">
+                    <input type="checkbox" id="bulk-perm-signout"> Can Sign Out Items
+                </label>
+            </div>
+            <small class="text-muted">Choose one or more permissions, then select add or remove.</small>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            <button class="btn btn-primary" id="confirm-bulk-perms-btn">Apply Changes</button>
+        </div>
+    `;
+
+    openModal(html);
+
+    document.getElementById('confirm-bulk-perms-btn')?.addEventListener('click', async () => {
+        const action = document.getElementById('bulk-perm-action')?.value || 'add';
+        const updateCreate = !!document.getElementById('bulk-perm-create')?.checked;
+        const updateJoin = !!document.getElementById('bulk-perm-join')?.checked;
+        const updateSignout = !!document.getElementById('bulk-perm-signout')?.checked;
+
+        if (!updateCreate && !updateJoin && !updateSignout) {
+            showToast('Select at least one permission to update.', 'error');
+            return;
+        }
+
+        let updatedCount = 0;
+        let failedCount = 0;
+        let localOnlyCount = 0;
+
+        for (const user of studentUsers) {
+            const previousPerms = normalizeStudentPermissions(user.perms);
+            const nextPerms = { ...previousPerms };
+
+            if (updateCreate) nextPerms.canCreateProjects = action === 'add';
+            if (updateJoin) nextPerms.canJoinProjects = action === 'add';
+            if (updateSignout) nextPerms.canSignOut = action === 'add';
+
+            user.perms = nextPerms;
+
+            const saveResult = await saveUserPermissionsToSupabase(user.id, nextPerms);
+            if (saveResult?.error) {
+                user.perms = previousPerms;
+                failedCount++;
+                continue;
+            }
+
+            if (saveResult?.persisted === false) {
+                localOnlyCount++;
+            }
+
+            updatedCount++;
+        }
+
+        closeModal();
+        renderUsers();
+
+        const actionLabel = action === 'add' ? 'enabled' : 'disabled';
+        let message = `Updated permissions for ${updatedCount} student(s).`;
+        if (failedCount > 0) {
+            message += ` ${failedCount} update(s) failed.`;
+        }
+        if (localOnlyCount > 0) {
+            message += ` ${localOnlyCount} saved in-session only (no permission columns/table detected).`;
+        }
+
+        showToast(message, failedCount > 0 ? 'warning' : 'success');
+        addLog(currentUser.id, 'Bulk Permission Update', `${actionLabel} selected permissions for ${updatedCount} students.`);
+    });
 });
 
 
@@ -10744,7 +10879,8 @@ async function processBulkUserImport() {
         return;
     }
 
-    const lines = csvText.split('\\n').filter(l => l.trim());
+    // Support both Unix and Windows newlines when users paste CSV text.
+    const lines = csvText.split(/\r?\n/).filter(l => l.trim());
     const users = [];
     const errors = [];
 

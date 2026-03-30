@@ -134,7 +134,10 @@ function resolveKioskRuntimeSettings(source = {}, fallbackOverrides = null) {
         ...(fallbackOverrides && typeof fallbackOverrides === 'object' ? fallbackOverrides : {})
     };
     const blob = resolveKioskSettingsBlob(source);
-    const merged = { ...blob, ...source };
+    const sourceDefined = Object.fromEntries(
+        Object.entries(source || {}).filter(([, value]) => value !== undefined)
+    );
+    const merged = { ...blob, ...sourceDefined };
 
     return {
         sessionTimeout: Math.round(readKioskNumberSetting([
