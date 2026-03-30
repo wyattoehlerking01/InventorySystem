@@ -6700,7 +6700,7 @@ function renderClassDisplay() {
     const container = document.getElementById('class-display-container');
     if (!container) return;
 
-    // Collect all items out from non-personal projects, grouped by user
+    // Collect all items out (including personal My Items projects), grouped by user
     const itemsByUser = {};
     const now = new Date();
 
@@ -6723,9 +6723,6 @@ function renderClassDisplay() {
     };
 
     projects.forEach(proj => {
-        // Skip personal projects (PERS-*)
-        if (String(proj.id || '').startsWith('PERS-')) return;
-
         proj.itemsOut.forEach(outItem => {
             const displayUser = resolveStudentDisplayUser(proj, outItem);
             const fallbackId = outItem.assignedToUserId || outItem.signedOutByUserId || proj.ownerId || 'Unknown User';
