@@ -1223,8 +1223,6 @@ async function updateItemInSupabase(itemId, updates) {
         delete safeUpdates.supplier;
         delete safeUpdates.image_link;
         delete safeUpdates.supplier_listing_link;
-        delete safeUpdates.requires_door_unlock;
-        delete safeUpdates.requiresDoorUnlock;
 
         ({ data, error } = await dbClient.from('inventory_items')
             .update(safeUpdates)
