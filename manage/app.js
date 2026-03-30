@@ -1770,7 +1770,7 @@ function toggleBasket(forceOpen = null) {
 }
 
 function addToBasket(itemId) {
-    if (currentUser.role === 'student' && !currentUser.perms?.canSignOut) {
+    if (currentUser.role === 'student' && !canCurrentStudentSignOut()) {
         showToast('You do not have permission to sign out items.', 'error');
         return;
     }
@@ -2875,6 +2875,12 @@ function canCurrentUserViewOrders() {
     if (!currentUser) return false;
     if (currentUser.role === 'student') return ordersStudentViewEnabled;
     return true;
+}
+
+function canCurrentStudentSignOut() {
+    if (!currentUser) return false;
+    if (currentUser.role !== 'student') return true;
+    return !!getMergedPermissionsForStudent(currentUser)?.canSignOut;
 }
 
 function isSuspensionBypassedUser(user) {
@@ -5925,7 +5931,7 @@ function renderProjects() {
 }
 
 async function openSignOutModal(itemId) {
-    if (currentUser.role === 'student' && !currentUser.perms?.canSignOut) {
+    if (currentUser.role === 'student' && !canCurrentStudentSignOut()) {
         showToast('You do not have permission to sign out items.', 'error');
         return;
     }

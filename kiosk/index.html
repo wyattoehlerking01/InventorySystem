@@ -247,29 +247,32 @@
                             </div>
                         </div>
                         <div id="inventory-results-meta" class="inventory-results-meta text-muted">Loading inventory...</div>
-                        <div class="inventory-secondary-controls" style="display:flex;gap:1rem;">
-                            <button class="btn btn-secondary" id="request-item-btn">
-                                <i class="ph ph-package"></i> Request Item
-                            </button>
-                            <button class="btn btn-secondary" id="manage-categories-btn">
-                                <i class="ph ph-tag"></i> Manage Categories
-                            </button>
-                            <button class="btn btn-secondary" id="manage-visibility-tags-btn">
-                                <i class="ph ph-eye"></i> Visibility Tags
-                            </button>
-                            <button class="btn btn-secondary" id="bulk-manage-items-btn">
-                                <i class="ph ph-stack"></i> Bulk Tags/Categories
-                            </button>
-                            <button class="btn btn-secondary" id="bulk-import-items-btn">
-                                <i class="ph ph-upload"></i> Bulk Import
-                            </button>
-                            <button class="btn btn-secondary" id="open-basket-btn"
-                                style="background: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid rgba(10, 185, 129, 0.2)">
-                                <i class="ph ph-shopping-cart"></i> Basket (<span id="basket-count">0</span>)
-                            </button>
-                            <button class="btn btn-primary" id="add-item-btn">
-                                <i class="ph ph-plus"></i> Add Item
-                            </button>
+                        <div class="inventory-secondary-controls inventory-secondary-controls-redesign">
+                            <div class="inventory-action-group inventory-action-group-student">
+                                <button class="btn btn-secondary inventory-toolbar-btn" id="request-item-btn">
+                                    <i class="ph ph-package"></i> Request Item
+                                </button>
+                                <button class="btn btn-secondary inventory-toolbar-btn inventory-basket-btn" id="open-basket-btn">
+                                    <i class="ph ph-shopping-cart"></i> Basket (<span id="basket-count">0</span>)
+                                </button>
+                            </div>
+                            <div class="inventory-action-group inventory-action-group-admin">
+                                <button class="btn btn-secondary inventory-toolbar-btn" id="manage-categories-btn">
+                                    <i class="ph ph-tag"></i> Manage Categories
+                                </button>
+                                <button class="btn btn-secondary inventory-toolbar-btn" id="manage-visibility-tags-btn">
+                                    <i class="ph ph-eye"></i> Visibility Tags
+                                </button>
+                                <button class="btn btn-secondary inventory-toolbar-btn" id="bulk-manage-items-btn">
+                                    <i class="ph ph-stack"></i> Bulk Tags/Categories
+                                </button>
+                                <button class="btn btn-secondary inventory-toolbar-btn" id="bulk-import-items-btn">
+                                    <i class="ph ph-upload"></i> Bulk Import
+                                </button>
+                                <button class="btn btn-primary inventory-toolbar-btn" id="add-item-btn">
+                                    <i class="ph ph-plus"></i> Add Item
+                                </button>
+                            </div>
                         </div>
                     </div>
 

@@ -1480,7 +1480,7 @@ function toggleBasket(forceOpen = null) {
 }
 
 function addToBasket(itemId) {
-    if (currentUser.role === 'student' && !currentUser.perms?.canSignOut) {
+    if (currentUser.role === 'student' && !canCurrentStudentSignOut()) {
         showToast('You do not have permission to sign out items.', 'error');
         return;
     }
@@ -2445,6 +2445,21 @@ function canCurrentUserViewOrders() {
     return true;
 }
 
+function canCurrentStudentSignOut() {
+    if (!currentUser) return false;
+    if (currentUser.role !== 'student') return true;
+    return !!getMergedPermissionsForStudent(currentUser)?.canSignOut;
+}
+
+function canCurrentUserRequestItems() {
+    if (!currentUser) return false;
+    if (kioskRuntimeSettings?.showOrderForm === false) return false;
+    // Non-students can always request items (they manage requests)
+    if (currentUser.role !== 'student') return true;
+    // Students can request items if orders are enabled
+    return ordersStudentViewEnabled;
+}
+
 function isCredentialRequestEnabled() {
     return kioskRuntimeSettings?.showCredentialRequest !== false;
 }
@@ -2467,12 +2482,20 @@ function applyOrdersNavVisibility() {
     else navOrders.classList.add('hidden');
 }
 
+function applyRequestItemBtnVisibility() {
+    const requestItemBtn = document.getElementById('request-item-btn');
+    if (!requestItemBtn) return;
+    if (canCurrentUserRequestItems()) requestItemBtn.classList.remove('hidden');
+    else requestItemBtn.classList.add('hidden');
+}
+
 function applyRuntimeFeatureVisibility() {
     if (showHelpBtn) {
         showHelpBtn.classList.toggle('hidden', !isCredentialRequestEnabled());
     }
 
     applyOrdersNavVisibility();
+    applyRequestItemBtnVisibility();
 
     if (!isCredentialRequestEnabled() && loginHelpView && !loginHelpView.classList.contains('hidden')) {
         loginHelpView.classList.remove('active');
@@ -2534,6 +2557,7 @@ function login(user) {
         navDoor?.classList.add('hidden');
         navRequests?.classList.add('hidden');
         applyOrdersNavVisibility();
+        applyRequestItemBtnVisibility();
         document.getElementById('manage-categories-btn')?.classList.add('hidden');
         document.getElementById('manage-visibility-tags-btn')?.classList.add('hidden');
         document.getElementById('bulk-manage-items-btn')?.classList.add('hidden');
@@ -2546,6 +2570,7 @@ function login(user) {
         navDoor?.classList.remove('hidden');
         navRequests?.classList.add('hidden');
         applyOrdersNavVisibility();
+        applyRequestItemBtnVisibility();
         document.getElementById('manage-categories-btn')?.classList.remove('hidden');
         document.getElementById('manage-visibility-tags-btn')?.classList.remove('hidden');
         // Bulk actions disabled in kiosk
@@ -5335,7 +5360,7 @@ function renderProjects() {
 }
 
 async function openSignOutModal(itemId) {
-    if (currentUser.role === 'student' && !currentUser.perms?.canSignOut) {
+    if (currentUser.role === 'student' && !canCurrentStudentSignOut()) {
         showToast('You do not have permission to sign out items.', 'error');
         return;
     }

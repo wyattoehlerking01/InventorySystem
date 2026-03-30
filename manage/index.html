@@ -185,9 +185,6 @@
                 <button class="nav-btn restricted" id="nav-users" data-target="users">
                     <i class="ph ph-users"></i> Users
                 </button>
-                <button class="nav-btn restricted" id="nav-kiosk-settings" data-target="kiosk-settings">
-                    <i class="ph ph-gear-six"></i> Kiosk Settings
-                </button>
                 <button class="nav-btn restricted" id="nav-door" data-target="door">
                     <i class="ph ph-door-open"></i> Door
                 </button>
@@ -197,6 +194,9 @@
             </nav>
 
             <div class="sidebar-footer">
+                <button class="nav-btn restricted" id="nav-kiosk-settings" data-target="kiosk-settings">
+                    <i class="ph ph-gear-six"></i> Kiosk Settings
+                </button>
                 <button class="nav-btn text-danger" id="logout-btn">
                     <i class="ph ph-sign-out"></i> Sign Out
                 </button>
@@ -270,32 +270,35 @@
                             </div>
                         </div>
                         <div id="inventory-results-meta" class="inventory-results-meta text-muted">Loading inventory...</div>
-                        <div class="inventory-secondary-controls" style="display:flex;gap:1rem;">
-                            <button class="btn btn-secondary" id="manage-categories-btn">
-                                <i class="ph ph-tag"></i> Manage Categories
-                            </button>
-                            <button class="btn btn-secondary" id="manage-visibility-tags-btn">
-                                <i class="ph ph-eye"></i> Visibility Tags
-                            </button>
-                            <button class="btn btn-secondary" id="bulk-manage-items-btn">
-                                <i class="ph ph-stack"></i> Bulk Tags/Categories
-                            </button>
-                            <button class="btn btn-danger" id="bulk-delete-items-btn">
-                                <i class="ph ph-trash"></i> Bulk Delete
-                            </button>
-                            <button class="btn btn-secondary" id="bulk-import-items-btn">
-                                <i class="ph ph-upload"></i> Bulk Import
-                            </button>
-                            <button class="btn btn-secondary" id="generate-barcode-labels-btn">
-                                <i class="ph ph-barcode"></i> Barcode Labels
-                            </button>
-                            <button class="btn btn-secondary" id="open-basket-btn"
-                                style="background: rgba(148, 163, 184, 0.08); color: var(--text-secondary); border: 1px solid var(--glass-border)">
-                                <i class="ph ph-shopping-cart"></i> Basket (<span id="basket-count">0</span>)
-                            </button>
-                            <button class="btn btn-primary" id="add-item-btn">
-                                <i class="ph ph-plus"></i> Add Item
-                            </button>
+                        <div class="inventory-secondary-controls inventory-secondary-controls-redesign">
+                            <div class="inventory-action-group inventory-action-group-student">
+                                <button class="btn btn-secondary inventory-toolbar-btn inventory-basket-btn" id="open-basket-btn">
+                                    <i class="ph ph-shopping-cart"></i> Basket (<span id="basket-count">0</span>)
+                                </button>
+                                <button class="btn btn-primary inventory-toolbar-btn" id="add-item-btn">
+                                    <i class="ph ph-plus"></i> Add Item
+                                </button>
+                            </div>
+                            <div class="inventory-action-group inventory-action-group-admin">
+                                <button class="btn btn-secondary inventory-toolbar-btn" id="manage-categories-btn">
+                                    <i class="ph ph-tag"></i> Manage Categories
+                                </button>
+                                <button class="btn btn-secondary inventory-toolbar-btn" id="manage-visibility-tags-btn">
+                                    <i class="ph ph-eye"></i> Visibility Tags
+                                </button>
+                                <button class="btn btn-secondary inventory-toolbar-btn" id="bulk-manage-items-btn">
+                                    <i class="ph ph-stack"></i> Bulk Tags/Categories
+                                </button>
+                                <button class="btn btn-secondary inventory-toolbar-btn" id="bulk-import-items-btn">
+                                    <i class="ph ph-upload"></i> Bulk Import
+                                </button>
+                                <button class="btn btn-secondary inventory-toolbar-btn" id="generate-barcode-labels-btn">
+                                    <i class="ph ph-barcode"></i> Barcode Labels
+                                </button>
+                                <button class="btn btn-danger inventory-toolbar-btn" id="bulk-delete-items-btn">
+                                    <i class="ph ph-trash"></i> Bulk Delete
+                                </button>
+                            </div>
                         </div>
                     </div>
 
