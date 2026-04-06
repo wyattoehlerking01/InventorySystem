@@ -917,6 +917,15 @@ function isSafeHttpUrl(value) {
     }
 }
 
+function getDoorRequestHeaders() {
+    const headers = { 'Content-Type': 'application/json' };
+    const token = String(window.APP_ENV?.GPIO_DOOR_TOKEN ?? envConfig.GPIO_DOOR_TOKEN ?? '').trim();
+    if (token) {
+        headers['X-Door-Token'] = token;
+    }
+    return headers;
+}
+
 function normalizeSkuToken(value) {
     return String(value || '').trim().toUpperCase().replace(/[^A-Z0-9-]/g, '');
 }
@@ -1960,7 +1969,7 @@ async function requestDoorUnlockAndLogAccess({ actionType, item, quantity = 1, p
     try {
         await fetch('http://localhost:8080/unlock', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getDoorRequestHeaders(),
             body: JSON.stringify({
                 itemId: item?.id,
                 itemName: item?.name,
@@ -1993,7 +2002,7 @@ async function requestManualDoorUnlockAndLogAccess(reason = 'manual door control
     try {
         await fetch('http://localhost:8080/unlock', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getDoorRequestHeaders(),
             body: JSON.stringify({
                 itemId: 'MANUAL',
                 itemName: 'Manual Door Open',
@@ -2021,7 +2030,7 @@ async function requestDoorHoldOpenAndLogAccess(reason = 'manual door hold-open')
     try {
         await fetch('http://localhost:8080/hold-open', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getDoorRequestHeaders(),
             body: JSON.stringify({
                 actionType: 'doorHoldOpen',
                 userId: actorId,
@@ -2046,7 +2055,7 @@ async function requestDoorReleaseAndLogAccess(reason = 'manual door release') {
     try {
         await fetch('http://localhost:8080/release', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getDoorRequestHeaders(),
             body: JSON.stringify({
                 actionType: 'doorRelease',
                 userId: actorId,
@@ -2068,7 +2077,7 @@ async function fetchDoorStatus() {
     try {
         const response = await fetch('http://localhost:8080/status', {
             method: 'GET',
-            headers: { 'Content-Type': 'application/json' }
+            headers: getDoorRequestHeaders()
         });
         if (!response.ok) throw new Error(`Status ${response.status}`);
         return await response.json();

@@ -10,6 +10,8 @@ window.APP_ENV = {
     ORGANIZATION_ID: '4339f9a2-dc08-4232-851a-cf993eba2e67',
     APP_UPDATE_ACTION: 'overlay',
     ALLOW_STUDENT_ORDER_VIEW: false,
+    GPIO_SERVER_URL: 'http://10.0.0.125:8080/unlock',
+    GPIO_DOOR_TOKEN: '',
     INFO_POPUP_HEADING: 'System Information',
     INFO_POPUP_SUBHEADING_1: 'Platform Release Overview',
     INFO_POPUP_DESCRIPTION_1: 'The LCHS Electro-Tech Inventory Management System is built on the OehlerOS platform, a custom platform designed to meet the specific needs that cookie cutter solutions cannot.',

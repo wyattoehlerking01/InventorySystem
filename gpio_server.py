@@ -4,6 +4,7 @@ import socketserver
 import json
 import time
 import os
+import hmac
 
 # Try importing RPi.GPIO to see if it's available.
 # This prevents crashes if testing on a regular PC instead of a Pi.
@@ -16,7 +17,7 @@ except ImportError:
 
 # --- CONFIGURATION ---
 PORT = 8080
-DOOR_UNLOCK_PIN = 17 # Replace with your actual GPIO pin number
+DOOR_UNLOCK_PIN = int(os.getenv('DOOR_UNLOCK_PIN', '27'))  # BCM numbering; GPIO27 is physical pin 13
 UNLOCK_DURATION = 3.0 # Seconds to keep the door unlocked
 HOLD_OPEN_MAX_SECONDS = float(os.getenv('HOLD_OPEN_MAX_SECONDS', '0'))
 DOOR_SENSOR_PIN = int(os.getenv('DOOR_SENSOR_PIN', '-1'))
@@ -24,7 +25,15 @@ DOOR_SENSOR_OPEN_STATE = str(os.getenv('DOOR_SENSOR_OPEN_STATE', 'HIGH')).strip(
 DOOR_SENSOR_PULL = str(os.getenv('DOOR_SENSOR_PULL', 'UP')).strip().upper()
 DOOR_OPEN_ALERT_SECONDS = float(os.getenv('DOOR_OPEN_ALERT_SECONDS', '30'))
 ASSIGN_ACTOR_WINDOW_SECONDS = float(os.getenv('ASSIGN_ACTOR_WINDOW_SECONDS', '30'))
+DOOR_API_TOKEN = str(os.getenv('DOOR_API_TOKEN', '')).strip()
+DOOR_ALLOWED_ORIGINS_RAW = str(os.getenv('DOOR_ALLOWED_ORIGINS', '')).strip()
 # ---------------------
+
+DOOR_ALLOWED_ORIGINS = {
+    origin.strip()
+    for origin in DOOR_ALLOWED_ORIGINS_RAW.split(',')
+    if origin.strip()
+}
 
 door_held_open = False
 door_hold_started_at = None
@@ -146,9 +155,30 @@ def _update_door_sensor_state():
 def _json_response(handler, status_code, payload):
     handler.send_response(status_code)
     handler.send_header('Content-type', 'application/json')
-    handler.send_header('Access-Control-Allow-Origin', '*')
+    _add_cors_headers(handler)
     handler.end_headers()
     handler.wfile.write(json.dumps(payload).encode('utf-8'))
+
+def _is_allowed_origin(origin):
+    if not origin:
+        return False
+    if not DOOR_ALLOWED_ORIGINS:
+        return False
+    return origin in DOOR_ALLOWED_ORIGINS
+
+def _add_cors_headers(handler):
+    origin = str(handler.headers.get('Origin', '')).strip()
+    if _is_allowed_origin(origin):
+        handler.send_header('Access-Control-Allow-Origin', origin)
+        handler.send_header('Vary', 'Origin')
+        handler.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        handler.send_header('Access-Control-Allow-Headers', 'X-Requested-With, Content-Type, X-Door-Token')
+
+def _request_has_valid_token(handler):
+    if not DOOR_API_TOKEN:
+        return True
+    provided = str(handler.headers.get('X-Door-Token', '')).strip()
+    return hmac.compare_digest(provided, DOOR_API_TOKEN)
 
 def _get_hold_elapsed_seconds():
     if not door_hold_started_at:
@@ -188,10 +218,14 @@ def _read_json_body(handler):
 class UnlockRequestHandler(http.server.SimpleHTTPRequestHandler):
     def do_OPTIONS(self):
         """Handle CORS preflight requests."""
+        origin = str(self.headers.get('Origin', '')).strip()
+        if origin and not _is_allowed_origin(origin):
+            self.send_response(403)
+            self.end_headers()
+            return
+
         self.send_response(200, "ok")
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header("Access-Control-Allow-Headers", "X-Requested-With, Content-Type")
+        _add_cors_headers(self)
         self.end_headers()
 
     def do_GET(self):
@@ -245,6 +279,10 @@ class UnlockRequestHandler(http.server.SimpleHTTPRequestHandler):
         _update_door_sensor_state()
 
         if self.path in ['/unlock', '/hold-open', '/release']:
+            if not _request_has_valid_token(self):
+                _json_response(self, 401, {'status': 'error', 'message': 'Unauthorized'})
+                return
+
             try:
                 data = _read_json_body(self)
                 item_id = data.get('itemId', 'Unknown')
@@ -342,6 +380,11 @@ class UnlockRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
 
 if __name__ == '__main__':
+    if not DOOR_API_TOKEN:
+        print('Warning: DOOR_API_TOKEN is not set. Door endpoints are running without token authentication.')
+    if not DOOR_ALLOWED_ORIGINS:
+        print('Warning: DOOR_ALLOWED_ORIGINS is not set. Browser CORS requests will be denied.')
+
     with socketserver.TCPServer(("", PORT), UnlockRequestHandler) as httpd:
         print(f"Inventory Hardware Server started at port {PORT}")
         print("Waiting for unlock requests from the Web App...")
@@ -351,4 +394,6 @@ if __name__ == '__main__':
             print("\nShutting down server...")
         finally:
             if GPIO_AVAILABLE:
+                # Keep relay de-energized on service stop.
+                _set_door_pin_low()
                 GPIO.cleanup()

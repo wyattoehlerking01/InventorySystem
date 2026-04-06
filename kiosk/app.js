@@ -65,6 +65,7 @@ function getDefaultKioskRuntimeSettings() {
         showOrderForm: true,
         showCredentialRequest: true,
         requireDoorUnlockForSignout: true,
+        doorCallingEnabled: true,
         startTime: '08:00',
         endTime: '16:00',
         enforceHours: true
@@ -162,6 +163,11 @@ function resolveKioskRuntimeSettings(source = {}, fallbackOverrides = null) {
             merged.requireDoorUnlockForSignout,
             merged.require_door_unlock_for_signout
         ], fallback.requireDoorUnlockForSignout),
+        doorCallingEnabled: readKioskBooleanSetting([
+            merged.doorCallingEnabled,
+            merged.door_calling_enabled,
+            merged.door_unlock_enabled
+        ], fallback.doorCallingEnabled),
         startTime: readKioskTimeSetting([
             merged.startTime,
             merged.start_time,
@@ -232,6 +238,7 @@ let lastModalClipboardInteractionAt = 0;
 let inactivityTimeRemaining = 3 * 60; // seconds
 let countdownInterval;
 let operatingHoursInterval = null;
+let activityLogFlushInterval = null;
 
 function isWithinKioskOperatingHours(settings = kioskRuntimeSettings, now = new Date()) {
     if (!settings?.enforceHours) return true;
@@ -862,6 +869,74 @@ function isSafeHttpUrl(value) {
     }
 }
 
+function getConfiguredGpioServerBaseUrl() {
+    const rawUrl = String(
+        window.APP_ENV?.GPIO_SERVER_URL
+        ?? envConfig.GPIO_SERVER_URL
+        ?? ''
+    ).trim();
+
+    if (!rawUrl) return null;
+
+    try {
+        const parsed = new URL(rawUrl);
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+
+        let normalizedPath = parsed.pathname.replace(/\/+$/, '');
+        const endpointSuffixes = ['/unlock', '/hold-open', '/release', '/status'];
+
+        for (const suffix of endpointSuffixes) {
+            if (normalizedPath.toLowerCase().endsWith(suffix)) {
+                normalizedPath = normalizedPath.slice(0, -suffix.length) || '/';
+                break;
+            }
+        }
+
+        const pathSegment = normalizedPath && normalizedPath !== '/' ? normalizedPath : '';
+        return `${parsed.origin}${pathSegment}`;
+    } catch (_) {
+        return null;
+    }
+}
+
+function getDoorEndpointUrl(path) {
+    const baseUrl = getConfiguredGpioServerBaseUrl();
+    if (!baseUrl) return null;
+    const normalizedPath = String(path || '/').startsWith('/') ? String(path) : `/${String(path)}`;
+    return `${baseUrl}${normalizedPath}`;
+}
+
+async function readDoorEndpointErrorSummary(response) {
+    if (!response) return '';
+
+    try {
+        const text = (await response.text() || '').trim();
+        if (!text) return '';
+        return text.length > 160 ? `${text.slice(0, 157)}...` : text;
+    } catch (_) {
+        return '';
+    }
+}
+
+function triggerActivityLogQueueFlush() {
+    if (typeof flushActivityLogQueue !== 'function') return;
+    flushActivityLogQueue().catch(error => {
+        console.warn('Activity log queue flush failed:', error);
+    });
+}
+
+function startActivityLogAutoFlush() {
+    triggerActivityLogQueueFlush();
+
+    if (activityLogFlushInterval) {
+        clearInterval(activityLogFlushInterval);
+    }
+
+    activityLogFlushInterval = setInterval(() => {
+        triggerActivityLogQueueFlush();
+    }, 30000);
+}
+
 function normalizeSkuToken(value) {
     return String(value || '').trim().toUpperCase().replace(/[^A-Z0-9-]/g, '');
 }
@@ -1203,6 +1278,7 @@ async function fetchKioskSettings(targetKioskId = kioskId) {
         organization_id: runtimeOrganizationId,
         is_locked: false,
         lock_screen: 'systemLocked',
+        door_unlock_enabled: true,
         debug_menu_pin_hash: null
     };
 
@@ -1228,6 +1304,10 @@ async function fetchKioskSettings(targetKioskId = kioskId) {
             organization_id: String(data?.organization_id || runtimeOrganizationId || '').trim(),
             is_locked: !!(data?.is_locked ?? data?.kiosk_locked),
             lock_screen: String(data?.lock_screen || data?.kiosk_lock_screen || 'systemLocked'),
+            door_unlock_enabled: readKioskBooleanSetting([
+                data?.door_unlock_enabled,
+                data?.door_calling_enabled
+            ], true),
             debug_menu_pin_hash: String(data?.debug_menu_pin_hash || data?.debug_menu_pin || '').trim() || null,
             row: data || null
         };
@@ -1357,6 +1437,7 @@ function startKioskVersionRealtimeListener(targetKioskId = kioskId) {
                 organization_id: payload?.new?.organization_id,
                 is_locked: payload?.new?.is_locked ?? payload?.new?.kiosk_locked,
                 lock_screen: payload?.new?.lock_screen || payload?.new?.kiosk_lock_screen,
+                door_unlock_enabled: payload?.new?.door_unlock_enabled ?? payload?.new?.door_calling_enabled,
                 debug_menu_pin_hash: payload?.new?.debug_menu_pin_hash || payload?.new?.debug_menu_pin,
                 session_timeout: payload?.new?.session_timeout,
                 session_timeout_minutes: payload?.new?.session_timeout_minutes,
@@ -1409,6 +1490,42 @@ async function syncKioskLockStateToSupabase(lock, screenKey) {
     if (fallbackError) {
         console.warn('Failed to sync kiosk lock state to Supabase:', fallbackError);
     }
+}
+
+async function saveDoorCallingEnabledToSupabase(enabled, targetKioskId = kioskId) {
+    if (!targetKioskId) return false;
+
+    const client = getSettingsSupabaseClient();
+    if (!client) return false;
+
+    const payload = {
+        kiosk_id: targetKioskId,
+        door_unlock_enabled: !!enabled
+    };
+
+    const { error } = await client
+        .from('kiosk_settings')
+        .upsert([payload], { onConflict: 'kiosk_id' });
+
+    if (error) {
+        console.warn('Failed to save door calling setting to Supabase:', error);
+        return false;
+    }
+
+    return true;
+}
+
+function getDoorRequestHeaders() {
+    const headers = { 'Content-Type': 'application/json' };
+    const token = String(window.APP_ENV?.GPIO_DOOR_TOKEN ?? envConfig.GPIO_DOOR_TOKEN ?? '').trim();
+    if (token) {
+        headers['X-Door-Token'] = token;
+    }
+    return headers;
+}
+
+function isDoorCallingEnabled() {
+    return kioskRuntimeSettings?.doorCallingEnabled !== false;
 }
 
 async function hashDebugPin(pinValue) {
@@ -1653,10 +1770,23 @@ async function requestDoorUnlockAndLogAccess({ actionType, item, quantity = 1, p
         return true;
     }
 
+    if (!isDoorCallingEnabled()) {
+        addLog(actorId, 'Door Access Blocked', `Door calling disabled for ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName} [role=${actorRole}]`);
+        showToast('Door calling is disabled in Door settings.', 'warning');
+        return false;
+    }
+
+    const endpoint = getDoorEndpointUrl('/unlock');
+    if (!endpoint) {
+        addLog(actorId, 'Door Access Failed', `Door unlock failed during ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName}. Error: Invalid GPIO_SERVER_URL configuration.`);
+        showToast('Door endpoint not configured. Set APP_ENV.GPIO_SERVER_URL in env.js.', 'error');
+        return false;
+    }
+
     try {
-        await fetch('http://localhost:8080/unlock', {
+        const response = await fetch(endpoint, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getDoorRequestHeaders(),
             body: JSON.stringify({
                 itemId: item?.id,
                 itemName: item?.name,
@@ -1668,10 +1798,15 @@ async function requestDoorUnlockAndLogAccess({ actionType, item, quantity = 1, p
             })
         });
 
-        addLog(actorId, 'Door Access', `Door unlocked for student ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName} [role=${actorRole}]`);
+        if (!response.ok) {
+            const details = await readDoorEndpointErrorSummary(response);
+            throw new Error(`HTTP ${response.status}${details ? ` - ${details}` : ''}`);
+        }
+
+        addLog(actorId, 'Door Access', `Door unlocked for student ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName} [role=${actorRole}] via ${endpoint}`);
         return true;
     } catch (err) {
-        addLog(actorId, 'Door Access Failed', `Door unlock failed during ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName}. Error: ${err.message || err}`);
+        addLog(actorId, 'Door Access Failed', `Door unlock failed during ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName} via ${endpoint}. Error: ${err.message || err}`);
         showToast('Warning: Hardware unlock script unreachable.', 'warning');
         return false;
     }
@@ -1686,10 +1821,22 @@ async function requestDoorHoldOpenAndLogAccess(reason = 'manual door hold-open')
     const actorId = currentUser?.id || 'SYSTEM';
     const actorRole = currentUser?.role || 'system';
 
+    const endpoint = getDoorEndpointUrl('/hold-open');
+    if (!endpoint) {
+        addLog(actorId, 'Door Hold Open Failed', `Door hold-open failed for ${actorId}. Error: Invalid GPIO_SERVER_URL configuration.`);
+        showToast('Door endpoint not configured. Set APP_ENV.GPIO_SERVER_URL in env.js.', 'error');
+        return false;
+    }
+
+        addLog(actorId, 'Door Hold Open Blocked', `Door hold-open blocked for ${actorId} [role=${actorRole}] because door calling is disabled.`);
+        showToast('Door calling is disabled in Door settings.', 'warning');
+        return false;
+    }
+
     try {
-        await fetch('http://localhost:8080/hold-open', {
+        const response = await fetch(endpoint, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getDoorRequestHeaders(),
             body: JSON.stringify({
                 actionType: 'doorHoldOpen',
                 userId: actorId,
@@ -1697,11 +1844,16 @@ async function requestDoorHoldOpenAndLogAccess(reason = 'manual door hold-open')
             })
         });
 
-        addLog(actorId, 'Door Hold Open', `Door hold-open enabled by ${actorId} [role=${actorRole}] (${reason}).`);
+        if (!response.ok) {
+            const details = await readDoorEndpointErrorSummary(response);
+            throw new Error(`HTTP ${response.status}${details ? ` - ${details}` : ''}`);
+        }
+
+        addLog(actorId, 'Door Hold Open', `Door hold-open enabled by ${actorId} [role=${actorRole}] (${reason}) via ${endpoint}.`);
         showToast('Door set to hold-open mode.', 'success');
         return true;
     } catch (err) {
-        addLog(actorId, 'Door Hold Open Failed', `Door hold-open failed for ${actorId}. Error: ${err.message || err}`);
+        addLog(actorId, 'Door Hold Open Failed', `Door hold-open failed for ${actorId} via ${endpoint}. Error: ${err.message || err}`);
         showToast('Warning: Hardware unlock script unreachable.', 'warning');
         return false;
     }
@@ -1711,10 +1863,22 @@ async function requestDoorReleaseAndLogAccess(reason = 'manual door release') {
     const actorId = currentUser?.id || 'SYSTEM';
     const actorRole = currentUser?.role || 'system';
 
+    const endpoint = getDoorEndpointUrl('/release');
+    if (!endpoint) {
+        addLog(actorId, 'Door Release Failed', `Door release failed for ${actorId}. Error: Invalid GPIO_SERVER_URL configuration.`);
+        showToast('Door endpoint not configured. Set APP_ENV.GPIO_SERVER_URL in env.js.', 'error');
+        return false;
+    }
+
+        addLog(actorId, 'Door Release Blocked', `Door release blocked for ${actorId} [role=${actorRole}] because door calling is disabled.`);
+        showToast('Door calling is disabled in Door settings.', 'warning');
+        return false;
+    }
+
     try {
-        await fetch('http://localhost:8080/release', {
+        const response = await fetch(endpoint, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getDoorRequestHeaders(),
             body: JSON.stringify({
                 actionType: 'doorRelease',
                 userId: actorId,
@@ -1722,21 +1886,31 @@ async function requestDoorReleaseAndLogAccess(reason = 'manual door release') {
             })
         });
 
-        addLog(actorId, 'Door Release', `Door release triggered by ${actorId} [role=${actorRole}] (${reason}).`);
+        if (!response.ok) {
+            const details = await readDoorEndpointErrorSummary(response);
+            throw new Error(`HTTP ${response.status}${details ? ` - ${details}` : ''}`);
+        }
+
+        addLog(actorId, 'Door Release', `Door release triggered by ${actorId} [role=${actorRole}] (${reason}) via ${endpoint}.`);
         showToast('Door lock restored.', 'success');
         return true;
     } catch (err) {
-        addLog(actorId, 'Door Release Failed', `Door release failed for ${actorId}. Error: ${err.message || err}`);
+        addLog(actorId, 'Door Release Failed', `Door release failed for ${actorId} via ${endpoint}. Error: ${err.message || err}`);
         showToast('Warning: Hardware unlock script unreachable.', 'warning');
         return false;
     }
 }
 
 async function fetchDoorStatus() {
+    const endpoint = getDoorEndpointUrl('/status');
+    if (!endpoint) {
+        return { status: 'unavailable', held_open: false, door_position: 'unknown', message: 'Invalid GPIO_SERVER_URL configuration.' };
+    }
+
     try {
-        const response = await fetch('http://localhost:8080/status', {
+        const response = await fetch(endpoint, {
             method: 'GET',
-            headers: { 'Content-Type': 'application/json' }
+            headers: getDoorRequestHeaders()
         });
         if (!response.ok) throw new Error(`Status ${response.status}`);
         return await response.json();
@@ -1757,10 +1931,22 @@ async function requestManualDoorUnlockAndLogAccess(reason = 'manual debug contro
     const actorId = currentUser?.id || 'SYSTEM';
     const actorRole = currentUser?.role || 'system';
 
+    const endpoint = getDoorEndpointUrl('/unlock');
+    if (!endpoint) {
+        addLog(actorId, 'Door Access Failed', `Manual door open failed for ${actorId}. Error: Invalid GPIO_SERVER_URL configuration.`);
+        showToast('Door endpoint not configured. Set APP_ENV.GPIO_SERVER_URL in env.js.', 'error');
+        return false;
+    }
+
+        addLog(actorId, 'Door Access Blocked', `Manual door open blocked for ${actorId} [role=${actorRole}] because door calling is disabled.`);
+        showToast('Door calling is disabled in Door settings.', 'warning');
+        return false;
+    }
+
     try {
-        await fetch('http://localhost:8080/unlock', {
+        const response = await fetch(endpoint, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: getDoorRequestHeaders(),
             body: JSON.stringify({
                 itemId: 'MANUAL',
                 itemName: 'Manual Door Open',
@@ -1771,11 +1957,16 @@ async function requestManualDoorUnlockAndLogAccess(reason = 'manual debug contro
             })
         });
 
-        addLog(actorId, 'Door Access', `Manual door open approved by ${actorId} [role=${actorRole}] (${reason}).`);
+        if (!response.ok) {
+            const details = await readDoorEndpointErrorSummary(response);
+            throw new Error(`HTTP ${response.status}${details ? ` - ${details}` : ''}`);
+        }
+
+        addLog(actorId, 'Door Access', `Manual door open approved by ${actorId} [role=${actorRole}] (${reason}) via ${endpoint}.`);
         showToast('Door unlock triggered.', 'success');
         return true;
     } catch (err) {
-        addLog(actorId, 'Door Access Failed', `Manual door open failed for ${actorId}. Error: ${err.message || err}`);
+        addLog(actorId, 'Door Access Failed', `Manual door open failed for ${actorId} via ${endpoint}. Error: ${err.message || err}`);
         showToast('Warning: Hardware unlock script unreachable.', 'warning');
         return false;
     }
@@ -1784,8 +1975,12 @@ async function requestManualDoorUnlockAndLogAccess(reason = 'manual debug contro
 function renderDoorPage() {
     const normalBtn = document.getElementById('door-normal-btn');
     const holdBtn = document.getElementById('door-hold-btn');
+    const doorCallingToggle = document.getElementById('door-calling-enabled-toggle');
+    const doorCallingSaveBtn = document.getElementById('door-calling-save-btn');
     const statusEl = document.getElementById('door-status-text');
-    if (!normalBtn || !holdBtn || !statusEl) return;
+    if (!normalBtn || !holdBtn || !statusEl || !doorCallingToggle || !doorCallingSaveBtn) return;
+
+    doorCallingToggle.checked = isDoorCallingEnabled();
 
     const setStatus = (text) => {
         statusEl.textContent = text;
@@ -1841,6 +2036,24 @@ function renderDoorPage() {
 
     normalBtn.onclick = async () => {
         await requestDoorReleaseAndLogAccess('kiosk door page normal operation mode');
+        await refreshStatus();
+    };
+
+    doorCallingSaveBtn.onclick = async () => {
+        const enabled = !!doorCallingToggle.checked;
+        const saved = await saveDoorCallingEnabledToSupabase(enabled);
+        if (!saved) {
+            showToast('Failed to save door calling setting.', 'error');
+            return;
+        }
+
+        kioskRuntimeSettings = {
+            ...kioskRuntimeSettings,
+            doorCallingEnabled: enabled
+        };
+
+        addLog(currentUser?.id || 'SYSTEM', 'Door Setting Updated', `Door calling ${enabled ? 'enabled' : 'disabled'} by ${currentUser?.id || 'SYSTEM'}.`);
+        showToast(`Door calling ${enabled ? 'enabled' : 'disabled'}.`, 'success');
         await refreshStatus();
     };
 
@@ -2112,6 +2325,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
     }
 
+    startActivityLogAutoFlush();
+
     const kioskSettings = await fetchKioskSettings(kioskId);
     kioskRuntimeSettings = resolveKioskRuntimeSettings(kioskSettings?.row || kioskSettings || {}, kioskRuntimeSettings);
     debugConfig.pinHash = String(kioskSettings.debug_menu_pin_hash || '').trim() || null;
@@ -2143,6 +2358,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Load all data from Supabase tables before initializing the app
     try {
         await loadAllData();
+        triggerActivityLogQueueFlush();
     } catch (error) {
         console.error('Initial Supabase load failed:', error);
         showToast('Unable to load data from server. Login may not work until this is fixed.', 'error');
@@ -2545,6 +2761,7 @@ function login(user) {
     
     // Log the login event
     addLog(user.id, 'User Login', `${user.name} (${user.role}) logged in`);
+    triggerActivityLogQueueFlush();
 
     // Update Profile UI
     const profileAvatar = document.getElementById('user-avatar');

@@ -146,6 +146,91 @@ Support guidance:
 - Note the screen and action being performed.
 - Include timestamp and affected user ID when available.
 
+Raspberry Pi 5 GPIO Relay Setup (Port 8080)
+
+The repository includes `gpio_server.py`, which exposes:
+
+- `GET /status`
+- `POST /unlock`
+- `POST /hold-open`
+- `POST /release`
+
+For Raspberry Pi 5 relay control, the default unlock pin is now BCM GPIO 27 (physical pin 13).
+
+1) Hardware wiring
+
+- Relay IN -> GPIO27 (physical pin 13)
+- Relay GND -> Pi GND
+- Relay VCC -> board-appropriate logic power (verify your relay module specs)
+
+Important:
+
+- Use a relay module with proper isolation/driver stage.
+- Keep the relay load disconnected during first software tests.
+
+2) Install dependencies on Pi OS
+
+```bash
+sudo apt update
+sudo apt install -y python3 python3-rpi.gpio
+```
+
+3) Run server manually for validation
+
+```bash
+cd /opt/InventorySystem
+sudo DOOR_UNLOCK_PIN=27 python3 gpio_server.py
+```
+
+4) Validate status and unlock endpoint
+
+```bash
+curl http://127.0.0.1:8080/status
+curl -X POST http://127.0.0.1:8080/unlock \
+	-H "Content-Type: application/json" \
+	-d '{"userId":"test","reason":"validation"}'
+```
+
+Expected behavior:
+
+- Relay remains LOW at startup/idle.
+- Relay only energizes HIGH during unlock pulse.
+- `/status` should report `gpio_available: true` on hardware.
+
+5) Run at boot with systemd
+
+Create `/etc/systemd/system/inventory-gpio.service`:
+
+```ini
+[Unit]
+Description=Inventory GPIO Door Server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/InventorySystem
+Environment=DOOR_UNLOCK_PIN=27
+ExecStart=/usr/bin/python3 /opt/InventorySystem/gpio_server.py
+Restart=always
+RestartSec=2
+User=root
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now inventory-gpio.service
+sudo systemctl status inventory-gpio.service
+```
+
+6) LAN-only exposure
+
+If clients on your local subnet must reach the Pi at `http://<pi-ip>:8080/unlock`, allow only trusted LAN sources in firewall rules and block broader WAN exposure.
+
 Contributions
 
 At this stage, the project is in early development. Feedback, testing results, and improvement suggestions are welcome.

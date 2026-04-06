@@ -176,8 +176,168 @@ let orderRequests = [];
 let systemFlags = [];
 let lastProjectItemOutError = '';
 
+const ACTIVITY_LOG_QUEUE_KEY = 'kiosk.activityLogQueue.v1';
+const ACTIVITY_LOG_MAX_QUEUE_ITEMS = 500;
+const ACTIVITY_LOG_MAX_BACKOFF_MS = 5 * 60 * 1000;
+let activityLogQueue = loadActivityLogQueueFromStorage();
+let activityLogQueueFlushInFlight = false;
+let activityLogQueueFlushTimeoutId = null;
+
 function getLastProjectItemOutError() {
     return String(lastProjectItemOutError || '').trim();
+}
+
+function loadActivityLogQueueFromStorage() {
+    if (typeof localStorage === 'undefined') return [];
+
+    try {
+        const raw = localStorage.getItem(ACTIVITY_LOG_QUEUE_KEY);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+
+        return parsed
+            .map(entry => {
+                const log = entry?.log;
+                if (!log || !log.id) return null;
+
+                return {
+                    log: {
+                        id: String(log.id),
+                        timestamp: String(log.timestamp || new Date().toISOString()),
+                        userId: String(log.userId || 'SYSTEM'),
+                        action: String(log.action || 'Activity'),
+                        details: String(log.details || '')
+                    },
+                    attempts: Math.max(0, parseInt(entry?.attempts, 10) || 0),
+                    nextRetryAt: Math.max(0, parseInt(entry?.nextRetryAt, 10) || 0),
+                    lastError: String(entry?.lastError || '')
+                };
+            })
+            .filter(Boolean);
+    } catch (error) {
+        console.warn('Failed to load activity log queue from localStorage:', error);
+        return [];
+    }
+}
+
+function persistActivityLogQueue() {
+    if (typeof localStorage === 'undefined') return;
+
+    try {
+        localStorage.setItem(ACTIVITY_LOG_QUEUE_KEY, JSON.stringify(activityLogQueue));
+    } catch (error) {
+        console.warn('Failed to persist activity log queue:', error);
+    }
+}
+
+function getActivityLogBackoffMs(attempts) {
+    const expMs = Math.min(ACTIVITY_LOG_MAX_BACKOFF_MS, 1000 * (2 ** Math.min(8, attempts)));
+    const jitterMs = Math.floor(Math.random() * 300);
+    return Math.min(ACTIVITY_LOG_MAX_BACKOFF_MS, expMs + jitterMs);
+}
+
+function scheduleActivityLogQueueFlush(delayMs = 0) {
+    const delay = Math.max(0, parseInt(delayMs, 10) || 0);
+
+    if (activityLogQueueFlushTimeoutId) {
+        clearTimeout(activityLogQueueFlushTimeoutId);
+    }
+
+    activityLogQueueFlushTimeoutId = setTimeout(() => {
+        activityLogQueueFlushTimeoutId = null;
+        flushActivityLogQueue().catch(error => {
+            console.warn('Scheduled activity log queue flush failed:', error);
+        });
+    }, delay);
+}
+
+function queueActivityLog(log) {
+    const existingIndex = activityLogQueue.findIndex(entry => entry?.log?.id === log.id);
+    if (existingIndex >= 0) {
+        activityLogQueue[existingIndex].log = log;
+        persistActivityLogQueue();
+        return;
+    }
+
+    activityLogQueue.push({
+        log,
+        attempts: 0,
+        nextRetryAt: 0,
+        lastError: ''
+    });
+
+    if (activityLogQueue.length > ACTIVITY_LOG_MAX_QUEUE_ITEMS) {
+        activityLogQueue = activityLogQueue.slice(activityLogQueue.length - ACTIVITY_LOG_MAX_QUEUE_ITEMS);
+    }
+
+    persistActivityLogQueue();
+}
+
+async function flushActivityLogQueue(options = {}) {
+    if (activityLogQueueFlushInFlight) return false;
+    if (!Array.isArray(activityLogQueue) || activityLogQueue.length === 0) return true;
+
+    const maxBatch = Math.max(1, parseInt(options.maxBatch, 10) || 25);
+    const force = !!options.force;
+    const now = Date.now();
+    let processed = 0;
+    let changed = false;
+
+    activityLogQueueFlushInFlight = true;
+
+    try {
+        for (let i = 0; i < activityLogQueue.length && processed < maxBatch;) {
+            const entry = activityLogQueue[i];
+            if (!entry || !entry.log) {
+                activityLogQueue.splice(i, 1);
+                changed = true;
+                continue;
+            }
+
+            if (!force && entry.nextRetryAt > now) {
+                i += 1;
+                continue;
+            }
+
+            processed += 1;
+            const result = await addActivityLogToSupabase(entry.log);
+
+            if (result?.ok) {
+                activityLogQueue.splice(i, 1);
+                changed = true;
+                continue;
+            }
+
+            const attempts = (parseInt(entry.attempts, 10) || 0) + 1;
+            const retryable = result?.retryable !== false;
+            entry.attempts = attempts;
+            entry.lastError = String(result?.errorMessage || 'Unknown activity log persistence error.');
+            entry.nextRetryAt = retryable ? Date.now() + getActivityLogBackoffMs(attempts) : Date.now() + ACTIVITY_LOG_MAX_BACKOFF_MS;
+            activityLogQueue[i] = entry;
+            changed = true;
+            i += 1;
+        }
+    } finally {
+        activityLogQueueFlushInFlight = false;
+        if (changed) persistActivityLogQueue();
+    }
+
+    if (activityLogQueue.length > 0) {
+        let nextDelay = ACTIVITY_LOG_MAX_BACKOFF_MS;
+        const ts = Date.now();
+        for (const entry of activityLogQueue) {
+            const retryAt = Math.max(0, parseInt(entry?.nextRetryAt, 10) || 0);
+            if (retryAt <= ts) {
+                nextDelay = 0;
+                break;
+            }
+            nextDelay = Math.min(nextDelay, retryAt - ts);
+        }
+        scheduleActivityLogQueueFlush(nextDelay);
+    }
+
+    return activityLogQueue.length === 0;
 }
 
 /* =======================================
@@ -1529,19 +1689,65 @@ async function moveProjectItemOutToProjectInSupabase({
  * Add activity log to activity_logs table
  */
 async function addActivityLogToSupabase(log) {
-    const { data, error } = await dbClient.from('activity_logs').insert([{
-        id: log.id,
-        timestamp: log.timestamp,
-        user_id: log.userId,
-        action: log.action,
-        details: log.details
-    }]).select();
-    
-    if (error) {
-        console.error('Error adding activity log:', error);
-        return null;
+    if (!dbClient) {
+        return {
+            ok: false,
+            retryable: true,
+            errorCode: 'NO_CLIENT',
+            errorMessage: 'Supabase client unavailable.'
+        };
     }
-    return data?.[0] || log;
+
+    try {
+        const { data, error } = await dbClient.from('activity_logs').insert([{
+            id: log.id,
+            timestamp: log.timestamp,
+            user_id: log.userId,
+            action: log.action,
+            details: log.details
+        }]).select();
+
+        if (error) {
+            const errorCode = String(error.code || '').trim();
+            const errorMessage = String(error.message || 'Unknown Supabase insert error.');
+
+            // Duplicate insert means this log already reached the DB previously.
+            if (errorCode === '23505') {
+                return {
+                    ok: true,
+                    retryable: false,
+                    errorCode,
+                    errorMessage
+                };
+            }
+
+            const nonRetryableCodes = new Set(['22P02', '23502', '23503', '42501']);
+            const retryable = !nonRetryableCodes.has(errorCode);
+
+            console.error('Error adding activity log:', error);
+            return {
+                ok: false,
+                retryable,
+                errorCode,
+                errorMessage
+            };
+        }
+
+        return {
+            ok: true,
+            retryable: false,
+            data: data?.[0] || log
+        };
+    } catch (error) {
+        const errorMessage = String(error?.message || error || 'Unknown exception while adding activity log.');
+        console.error('Exception adding activity log:', error);
+        return {
+            ok: false,
+            retryable: true,
+            errorCode: 'EXCEPTION',
+            errorMessage
+        };
+    }
 }
 
 /**
@@ -1943,11 +2149,10 @@ function addLog(userId, action, details) {
     
     // Add to local array
     activityLogs.unshift(log);
-    
-    // Save to Supabase (fire and forget - don't await)
-    addActivityLogToSupabase(log).catch(err => {
-        console.error('Failed to log activity to Supabase:', err);
-    });
+
+    // Persist in queue and flush asynchronously for eventual delivery.
+    queueActivityLog(log);
+    scheduleActivityLogQueueFlush(0);
     
     return log;
 }
