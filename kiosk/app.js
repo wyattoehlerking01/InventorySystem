@@ -2191,27 +2191,25 @@ async function checkoutBasket() {
         }
     }
 
-    if (currentUser?.role === 'student') {
-        const selectedBasketItems = inventoryBasket
-            .map(entry => inventoryItems.find(i => i.id === entry.id))
-            .filter(Boolean);
-        const hasDoorProtectedItem = selectedBasketItems.some(item => itemRequiresDoorUnlock(item));
+    const selectedBasketItems = inventoryBasket
+        .map(entry => inventoryItems.find(i => i.id === entry.id))
+        .filter(Boolean);
+    const hasDoorProtectedItem = selectedBasketItems.some(item => itemRequiresDoorUnlock(item));
 
-        if (hasDoorProtectedItem) {
-            const firstDoorItem = selectedBasketItems.find(item => itemRequiresDoorUnlock(item)) || selectedBasketItems[0] || null;
-            const totalQty = inventoryBasket.reduce((sum, entry) => sum + entry.qty, 0);
+    if (hasDoorProtectedItem) {
+        const firstDoorItem = selectedBasketItems.find(item => itemRequiresDoorUnlock(item)) || selectedBasketItems[0] || null;
+        const totalQty = inventoryBasket.reduce((sum, entry) => sum + entry.qty, 0);
 
-            const unlocked = await requestDoorUnlockAndLogAccess({
-                actionType: 'sign-out',
-                item: firstDoorItem,
-                quantity: totalQty,
-                projectName: project?.name || 'Personal'
-            });
+        const unlocked = await requestDoorUnlockAndLogAccess({
+            actionType: 'sign-out',
+            item: firstDoorItem,
+            quantity: totalQty,
+            projectName: project?.name || 'Personal'
+        });
 
-            if (!unlocked) {
-                showToast('Door unlock denied. Checkout canceled.', 'error');
-                return;
-            }
+        if (!unlocked) {
+            showToast('Door unlock denied. Checkout canceled.', 'error');
+            return;
         }
     }
 
@@ -3616,7 +3614,7 @@ function loadDashboard() {
 
                 if (!confirm(`Are you sure you want to return ${item ? item.name : 'this item'} to ${projectName}?`)) return;
 
-                if (currentUser?.role === 'student') {
+                if (itemRequiresDoorUnlock(item)) {
                     const unlocked = await requestDoorUnlockAndLogAccess({
                         actionType: 'sign-in',
                         item,
@@ -5361,7 +5359,7 @@ async function returnProjectItem(projectId, signoutId, options = {}) {
         if (!confirmOnBehalf) return false;
     }
 
-    if (currentUser?.role === 'student') {
+    if (itemRequiresDoorUnlock(item)) {
         const unlocked = await requestDoorUnlockAndLogAccess({
             actionType: 'sign-in',
             item,
@@ -5797,7 +5795,7 @@ async function openSignOutModal(itemId) {
                 }
             }
 
-            if (currentUser?.role === 'student' && itemRequiresDoorUnlock(item)) {
+            if (itemRequiresDoorUnlock(item)) {
                 const unlocked = await requestDoorUnlockAndLogAccess({
                     actionType: 'sign-out',
                     item,

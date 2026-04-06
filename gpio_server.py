@@ -29,8 +29,12 @@ DOOR_API_TOKEN = str(os.getenv('DOOR_API_TOKEN', '')).strip()
 DOOR_ALLOWED_ORIGINS_RAW = str(os.getenv('DOOR_ALLOWED_ORIGINS', '')).strip()
 # ---------------------
 
+def _normalize_origin(origin):
+    value = str(origin or '').strip().rstrip('/')
+    return value.lower()
+
 DOOR_ALLOWED_ORIGINS = {
-    origin.strip()
+    _normalize_origin(origin)
     for origin in DOOR_ALLOWED_ORIGINS_RAW.split(',')
     if origin.strip()
 }
@@ -164,7 +168,11 @@ def _is_allowed_origin(origin):
         return True
     if not DOOR_ALLOWED_ORIGINS:
         return True
-    return origin in DOOR_ALLOWED_ORIGINS
+
+    normalized = _normalize_origin(origin)
+    if '*' in DOOR_ALLOWED_ORIGINS:
+        return True
+    return normalized in DOOR_ALLOWED_ORIGINS
 
 def _add_cors_headers(handler):
     origin = str(handler.headers.get('Origin', '')).strip()
