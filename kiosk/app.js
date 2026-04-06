@@ -918,6 +918,17 @@ async function readDoorEndpointErrorSummary(response) {
     }
 }
 
+function getDoorRequestFailureToastMessage(error) {
+    const message = String(error?.message || error || '').toLowerCase();
+    if (message.includes('http 401')) {
+        return 'Door API authentication failed. Check GPIO_DOOR_TOKEN on kiosk and DOOR_API_TOKEN on server.';
+    }
+    if (message.includes('failed to fetch') || message.includes('networkerror')) {
+        return 'Door request blocked by network/CORS. Check GPIO_SERVER_URL and DOOR_ALLOWED_ORIGINS.';
+    }
+    return 'Warning: Door endpoint unreachable.';
+}
+
 function triggerActivityLogQueueFlush() {
     if (typeof flushActivityLogQueue !== 'function') return;
     flushActivityLogQueue().catch(error => {
@@ -1807,7 +1818,7 @@ async function requestDoorUnlockAndLogAccess({ actionType, item, quantity = 1, p
         return true;
     } catch (err) {
         addLog(actorId, 'Door Access Failed', `Door unlock failed during ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName} via ${endpoint}. Error: ${err.message || err}`);
-        showToast('Warning: Hardware unlock script unreachable.', 'warning');
+        showToast(getDoorRequestFailureToastMessage(err), 'warning');
         return false;
     }
 }
@@ -1854,7 +1865,7 @@ async function requestDoorHoldOpenAndLogAccess(reason = 'manual door hold-open')
         return true;
     } catch (err) {
         addLog(actorId, 'Door Hold Open Failed', `Door hold-open failed for ${actorId} via ${endpoint}. Error: ${err.message || err}`);
-        showToast('Warning: Hardware unlock script unreachable.', 'warning');
+        showToast(getDoorRequestFailureToastMessage(err), 'warning');
         return false;
     }
 }
@@ -1896,7 +1907,7 @@ async function requestDoorReleaseAndLogAccess(reason = 'manual door release') {
         return true;
     } catch (err) {
         addLog(actorId, 'Door Release Failed', `Door release failed for ${actorId} via ${endpoint}. Error: ${err.message || err}`);
-        showToast('Warning: Hardware unlock script unreachable.', 'warning');
+        showToast(getDoorRequestFailureToastMessage(err), 'warning');
         return false;
     }
 }
@@ -1967,7 +1978,7 @@ async function requestManualDoorUnlockAndLogAccess(reason = 'manual debug contro
         return true;
     } catch (err) {
         addLog(actorId, 'Door Access Failed', `Manual door open failed for ${actorId} via ${endpoint}. Error: ${err.message || err}`);
-        showToast('Warning: Hardware unlock script unreachable.', 'warning');
+        showToast(getDoorRequestFailureToastMessage(err), 'warning');
         return false;
     }
 }

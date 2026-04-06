@@ -1985,7 +1985,7 @@ async function requestDoorUnlockAndLogAccess({ actionType, item, quantity = 1, p
         return true;
     } catch (err) {
         addLog(actorId, 'Door Access Failed', `Door unlock failed during ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName}. Error: ${err.message || err}`);
-        showToast('Warning: Hardware unlock script unreachable.', 'warning');
+        showToast('Warning: Door endpoint unreachable.', 'warning');
         return false;
     }
 }
@@ -2018,7 +2018,7 @@ async function requestManualDoorUnlockAndLogAccess(reason = 'manual door control
         return true;
     } catch (err) {
         addLog(actorId, 'Door Access Failed', `Manual door open failed for ${actorId}. Error: ${err.message || err}`);
-        showToast('Warning: Hardware unlock script unreachable.', 'warning');
+        showToast('Warning: Door endpoint unreachable.', 'warning');
         return false;
     }
 }
@@ -2043,7 +2043,7 @@ async function requestDoorHoldOpenAndLogAccess(reason = 'manual door hold-open')
         return true;
     } catch (err) {
         addLog(actorId, 'Door Hold Open Failed', `Door hold-open failed for ${actorId}. Error: ${err.message || err}`);
-        showToast('Warning: Hardware unlock script unreachable.', 'warning');
+        showToast('Warning: Door endpoint unreachable.', 'warning');
         return false;
     }
 }
@@ -2068,7 +2068,7 @@ async function requestDoorReleaseAndLogAccess(reason = 'manual door release') {
         return true;
     } catch (err) {
         addLog(actorId, 'Door Release Failed', `Door release failed for ${actorId}. Error: ${err.message || err}`);
-        showToast('Warning: Hardware unlock script unreachable.', 'warning');
+        showToast('Warning: Door endpoint unreachable.', 'warning');
         return false;
     }
 }

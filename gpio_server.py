@@ -161,14 +161,14 @@ def _json_response(handler, status_code, payload):
 
 def _is_allowed_origin(origin):
     if not origin:
-        return False
+        return True
     if not DOOR_ALLOWED_ORIGINS:
-        return False
+        return True
     return origin in DOOR_ALLOWED_ORIGINS
 
 def _add_cors_headers(handler):
     origin = str(handler.headers.get('Origin', '')).strip()
-    if _is_allowed_origin(origin):
+    if origin and _is_allowed_origin(origin):
         handler.send_header('Access-Control-Allow-Origin', origin)
         handler.send_header('Vary', 'Origin')
         handler.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
@@ -383,7 +383,7 @@ if __name__ == '__main__':
     if not DOOR_API_TOKEN:
         print('Warning: DOOR_API_TOKEN is not set. Door endpoints are running without token authentication.')
     if not DOOR_ALLOWED_ORIGINS:
-        print('Warning: DOOR_ALLOWED_ORIGINS is not set. Browser CORS requests will be denied.')
+        print('Warning: DOOR_ALLOWED_ORIGINS is not set. Any browser origin will be allowed (compatibility mode).')
 
     with socketserver.TCPServer(("", PORT), UnlockRequestHandler) as httpd:
         print(f"Inventory Hardware Server started at port {PORT}")
