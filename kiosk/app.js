@@ -2014,56 +2014,46 @@ async function requestDoorUnlockAndLogAccess({ actionType, item, quantity = 1, p
         return false;
     }
 
-    const linkStatus = await refreshDoorLinkHealth({ force: true });
-    if (!linkStatus.available) {
-        addLog(actorId, 'Door Access Failed', `Door unlock denied during ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName}. Link unavailable: ${linkStatus.lastError || 'Door endpoint unreachable/unavailable.'}`);
-        showToast(getDoorLinkUnavailableToastMessage(), 'warning');
-        return false;
-    }
+    const endpoints = [
+        'http://localhost:8080/unlock',
+        'http://10.0.0.125:8080/unlock'
+    ];
+    const payload = {
+        itemId,
+        itemName,
+        category: item?.category || null,
+        actionType: String(actionType || '').trim() || 'manual',
+        quantity: Math.max(1, parseInt(quantity, 10) || 1),
+        projectName: String(projectName || '').trim() || null,
+        userId: actorId
+    };
+    let lastError = 'Door unlock request failed.';
 
-    const endpoint = getDoorEndpointUrl('/unlock');
-    if (!endpoint) {
-        addLog(actorId, 'Door Access Failed', `Door unlock denied during ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName}. Error: Invalid GPIO_SERVER_URL configuration.`);
-        showToast('Door endpoint not configured. Set APP_ENV.GPIO_SERVER_URL in env.js.', 'error');
-        return false;
-    }
+    for (const endpoint of endpoints) {
+        try {
+            const response = await fetchWithTimeout(endpoint, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(payload)
+            }, 4500);
 
-    try {
-        showToast('Checking door access...', 'warning');
-        const response = await fetch(endpoint, {
-            method: 'POST',
-            headers: getDoorRequestHeaders(),
-            body: JSON.stringify({
-                itemId,
-                itemName,
-                category: item?.category || null,
-                actionType: String(actionType || '').trim() || 'manual',
-                quantity: Math.max(1, parseInt(quantity, 10) || 1),
-                projectName: String(projectName || '').trim() || null,
-                userId: actorId
-            })
-        });
+            if (response.ok) {
+                addLog(actorId, 'Door Access', `Door unlock approved for ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName} [role=${actorRole}] via ${endpoint}.`);
+                showToast('Door unlock approved.', 'success');
+                return true;
+            }
 
-        if (!response.ok) {
-            const details = await readDoorEndpointErrorSummary(response);
-            addLog(actorId, 'Door Access Failed', `Door unlock denied during ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName}. HTTP ${response.status}${details ? ` - ${details}` : ''} via ${endpoint}.`);
-            doorLinkHealthState.available = false;
-            doorLinkHealthState.lastError = `Door unlock HTTP ${response.status}${details ? ` - ${details}` : ''}`.trim();
-            showToast(`Door unlock failed (HTTP ${response.status}).`, 'warning');
-            return false;
+            lastError = `HTTP ${response.status} via ${endpoint}`;
+        } catch (error) {
+            lastError = String(error?.message || error || `Request failed via ${endpoint}`);
         }
-
-        addLog(actorId, 'Door Access', `Door unlock approved for ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName} [role=${actorRole}] via direct HTTP ${endpoint}.`);
-        showToast('Door unlock approved.', 'success');
-        void refreshDoorLinkHealth({ maxAgeMs: 0 });
-        return true;
-    } catch (err) {
-        addLog(actorId, 'Door Access Failed', `Door unlock denied during ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName}. Error: ${err.message || err}`);
-        doorLinkHealthState.available = false;
-        doorLinkHealthState.lastError = String(err?.message || err || 'Door unlock request failed.');
-        showToast(getDoorRequestFailureToastMessage(err), 'warning');
-        return false;
     }
+
+    addLog(actorId, 'Door Access Failed', `Door unlock denied during ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName}. Last error: ${lastError}`);
+    showToast(`Door unlock failed. ${lastError}`, 'warning');
+    return false;
 }
 
 function itemRequiresDoorUnlock(item) {
@@ -2208,53 +2198,45 @@ async function requestManualDoorUnlockAndLogAccess(reason = 'manual debug contro
     const actorId = currentUser?.id || 'SYSTEM';
     const actorRole = currentUser?.role || 'system';
 
-    const endpoint = getDoorEndpointUrl('/unlock');
-    if (!endpoint) {
-        addLog(actorId, 'Door Access Failed', `Manual door open failed for ${actorId}. Error: Invalid GPIO_SERVER_URL configuration.`);
-        showToast('Door endpoint not configured. Set APP_ENV.GPIO_SERVER_URL in env.js.', 'error');
-        return false;
-    }
+    const endpoints = [
+        'http://localhost:8080/unlock',
+        'http://10.0.0.125:8080/unlock'
+    ];
+    const payload = {
+        itemId: 'MANUAL',
+        itemName: 'Manual Door Open',
+        category: 'system',
+        actionType: 'manualDoorOpen',
+        userId: actorId,
+        reason
+    };
+    let lastError = 'Door unlock request failed.';
 
-    const linkStatus = await refreshDoorLinkHealth({ force: true });
-    if (!linkStatus.available) {
-        addLog(actorId, 'Door Access Failed', `Manual door open failed for ${actorId}. Link unavailable: ${linkStatus.lastError || 'Door endpoint unreachable/unavailable.'}`);
-        showToast(getDoorLinkUnavailableToastMessage(), 'warning');
-        return false;
-    }
+    for (const endpoint of endpoints) {
+        try {
+            const response = await fetchWithTimeout(endpoint, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(payload)
+            }, 4500);
 
-    if (!isDoorCallingEnabled()) {
-        addLog(actorId, 'Door Access Blocked', `Manual door open blocked for ${actorId} [role=${actorRole}] because door calling is disabled.`);
-        showToast('Door calling is disabled in Door settings.', 'warning');
-        return false;
-    }
+            if (response.ok) {
+                addLog(actorId, 'Door Access', `Manual door open approved by ${actorId} [role=${actorRole}] (${reason}) via ${endpoint}.`);
+                showToast('Door unlock triggered.', 'success');
+                return true;
+            }
 
-    try {
-        const response = await fetch(endpoint, {
-            method: 'POST',
-            headers: getDoorRequestHeaders(),
-            body: JSON.stringify({
-                itemId: 'MANUAL',
-                itemName: 'Manual Door Open',
-                category: 'system',
-                actionType: 'manualDoorOpen',
-                userId: actorId,
-                reason
-            })
-        });
-
-        if (!response.ok) {
-            const details = await readDoorEndpointErrorSummary(response);
-            throw new Error(`HTTP ${response.status}${details ? ` - ${details}` : ''}`);
+            lastError = `HTTP ${response.status} via ${endpoint}`;
+        } catch (error) {
+            lastError = String(error?.message || error || `Request failed via ${endpoint}`);
         }
-
-        addLog(actorId, 'Door Access', `Manual door open approved by ${actorId} [role=${actorRole}] (${reason}) via ${endpoint}.`);
-        showToast('Door unlock triggered.', 'success');
-        return true;
-    } catch (err) {
-        addLog(actorId, 'Door Access Failed', `Manual door open failed for ${actorId} via ${endpoint}. Error: ${err.message || err}`);
-        showToast(getDoorRequestFailureToastMessage(err), 'warning');
-        return false;
     }
+
+    addLog(actorId, 'Door Access Failed', `Manual door open failed for ${actorId} [role=${actorRole}] (${reason}). Last error: ${lastError}`);
+    showToast(`Door unlock failed. ${lastError}`, 'warning');
+    return false;
 }
 
 function renderDoorPage() {
