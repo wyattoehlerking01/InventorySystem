@@ -1536,6 +1536,7 @@ function getDoorRequestHeaders() {
 }
 
 const DOOR_LINK_BACKGROUND_INTERVAL_MS = 20000;
+const DOOR_STATUS_RETRY_COOLDOWN_MS = 20000;
 const doorLinkHealthState = {
     lastCheckedAt: 0,
     doorReachable: false,
@@ -2176,6 +2177,10 @@ async function fetchDoorStatus() {
         return { status: 'unavailable', held_open: false, door_position: 'unknown', message: 'Invalid GPIO_SERVER_URL configuration.' };
     }
 
+    if (!doorLinkHealthState.available && doorLinkHealthState.lastCheckedAt && (Date.now() - doorLinkHealthState.lastCheckedAt) < DOOR_STATUS_RETRY_COOLDOWN_MS) {
+        return { status: 'unavailable', held_open: false, door_position: 'unknown' };
+    }
+
     try {
         const response = await fetch(endpoint, {
             method: 'GET',
@@ -2183,7 +2188,10 @@ async function fetchDoorStatus() {
         });
         if (!response.ok) throw new Error(`Status ${response.status}`);
         return await response.json();
-    } catch {
+    } catch (error) {
+        doorLinkHealthState.available = false;
+        doorLinkHealthState.lastCheckedAt = Date.now();
+        doorLinkHealthState.lastError = `Door status request failed (${String(error?.message || error)}).`;
         return { status: 'unavailable', held_open: false, door_position: 'unknown' };
     }
 }
