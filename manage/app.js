@@ -2268,7 +2268,6 @@ async function requestDoorUnlockAndLogAccess({ actionType, item, quantity = 1, p
     const blinked = await triggerDoorAttentionLed();
     if (blinked) {
         addLog(actorId, 'Door Attention', `LED attention triggered for ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName} [role=${actorRole}].`);
-        showToast('Attention light triggered. Please open the door for the user.', 'success');
         return true;
     } else {
         addLog(actorId, 'Door Attention Failed', `LED attention could not be triggered for ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName} [role=${actorRole}].`);
@@ -2554,7 +2553,7 @@ async function checkoutBasket() {
             });
 
             if (!unlocked) {
-                showToast('Door unlock denied. Checkout canceled.', 'error');
+                showToast('Sign-out canceled. Attention light could not be triggered for behind-door item.', 'error');
                 return;
             }
         }
@@ -2648,7 +2647,12 @@ async function checkoutBasket() {
 
     inventoryBasket = [];
     await Promise.all([refreshProjectsFromSupabase(), refreshInventoryFromSupabase()]);
-    showToast('Bulk checkout complete!', 'success');
+    showToast(
+        hasDoorProtectedItem
+            ? 'Items signed out successfully. Door opened.'
+            : 'Items signed out successfully.',
+        'success'
+    );
     toggleBasket(false);
     renderInventory();
     renderDashboard();
@@ -6482,7 +6486,7 @@ async function openSignOutModal(itemId) {
                 });
 
                 if (!unlocked) {
-                    showToast('Door unlock denied. Sign-out canceled.', 'error');
+                    showToast('Sign-out canceled. Attention light could not be triggered for behind-door item.', 'error');
                     return;
                 }
             }
@@ -6547,7 +6551,12 @@ async function openSignOutModal(itemId) {
 
             await Promise.all([refreshProjectsFromSupabase(), refreshInventoryFromSupabase()]);
 
-            showToast(`Successfully signed out ${qty} items!`, 'success');
+            showToast(
+                itemRequiresDoorUnlock(item)
+                    ? `Signed out ${qty} item(s) successfully. Door opened.`
+                    : `Signed out ${qty} item(s) successfully.`,
+                'success'
+            );
             closeModal();
 
             // Refresh current views
