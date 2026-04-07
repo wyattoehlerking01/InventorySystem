@@ -5,6 +5,46 @@
 // Initialize Supabase client
 const { SUPABASE_URL, SUPABASE_KEY } = window.APP_ENV || {};
 
+function resolveLedTriggerUrl() {
+    const explicitUrl = String(window.APP_ENV?.LED_TRIGGER_URL || '').trim();
+    if (explicitUrl) return explicitUrl;
+
+    const gpioUrl = String(window.APP_ENV?.GPIO_SERVER_URL || '').trim();
+    if (!gpioUrl) return '';
+
+    try {
+        const parsed = new URL(gpioUrl);
+        parsed.pathname = '/trigger';
+        parsed.search = '';
+        parsed.hash = '';
+        return parsed.toString();
+    } catch {
+        return '';
+    }
+}
+
+const LED_TRIGGER_URL = resolveLedTriggerUrl();
+
+function notifySignoutLedTrigger() {
+    if (!LED_TRIGGER_URL) return;
+    if (typeof fetch !== 'function') {
+        console.warn('LED trigger skipped: fetch is unavailable in this environment.');
+        return;
+    }
+
+    // Fire-and-forget: this should never block checkout UX.
+    Promise.resolve().then(() => {
+        void fetch(LED_TRIGGER_URL, {
+            method: 'GET',
+            mode: 'no-cors',
+            cache: 'no-store',
+            keepalive: true
+        }).catch(error => {
+            console.warn('LED trigger request failed:', error);
+        });
+    });
+}
+
 function decodeBase64Url(input) {
     const normalized = String(input || '')
         .replace(/-/g, '+')
@@ -1820,6 +1860,8 @@ async function addProjectItemOutToSupabase(itemOut) {
         console.error('Error adding project item out:', error);
         return null;
     }
+
+    notifySignoutLedTrigger();
     return data?.[0];
 }
 

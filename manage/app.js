@@ -2239,25 +2239,12 @@ async function requestDoorUnlockAndLogAccess({ actionType, item, quantity = 1, p
         'http://localhost:8080/unlock',
         'http://10.0.0.125:8080/unlock'
     ];
-    const payload = {
-        itemId,
-        itemName,
-        category: item?.category || null,
-        actionType: String(actionType || '').trim() || 'manual',
-        quantity: Math.max(1, parseInt(quantity, 10) || 1),
-        projectName: String(projectName || '').trim() || null,
-        userId: actorId
-    };
     let lastError = 'Door unlock request failed.';
 
     for (const endpoint of endpoints) {
         try {
             const response = await fetchWithTimeout(endpoint, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(payload)
+                method: 'GET'
             }, 4500);
 
             if (response.ok) {
@@ -2289,24 +2276,12 @@ async function requestManualDoorUnlockAndLogAccess(reason = 'manual door control
         'http://localhost:8080/unlock',
         'http://10.0.0.125:8080/unlock'
     ];
-    const payload = {
-        itemId: 'MANUAL',
-        itemName: 'Manual Door Open',
-        category: 'system',
-        actionType: 'manualDoorOpen',
-        userId: actorId,
-        reason
-    };
     let lastError = 'Door unlock request failed.';
 
     for (const endpoint of endpoints) {
         try {
             const response = await fetchWithTimeout(endpoint, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(payload)
+                method: 'GET'
             }, 4500);
 
             if (response.ok) {
