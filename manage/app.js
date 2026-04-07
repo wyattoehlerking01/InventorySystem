@@ -2232,10 +2232,40 @@ async function requestDoorUnlockAndLogAccess({ actionType, item, quantity = 1, p
     const linkStatus = await refreshDoorLinkHealth({ force: true });
     if (!linkStatus.available) {
         addLog(actorId, 'Door Link Degraded', `Door link precheck unavailable during ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName}. Continuing with queue request. Details: ${linkStatus.lastError || 'Door endpoint unreachable/unavailable.'}`);
+    } else {
+        const endpoint = getDoorEndpointUrl('/unlock');
+        if (endpoint) {
+            try {
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: getDoorRequestHeaders(),
+                    body: JSON.stringify({
+                        itemId,
+                        itemName,
+                        category: item?.category || null,
+                        actionType: String(actionType || '').trim() || 'manual',
+                        quantity: Math.max(1, parseInt(quantity, 10) || 1),
+                        projectName: String(projectName || '').trim() || null,
+                        userId: actorId
+                    })
+                });
+
+                if (response.ok) {
+                    addLog(actorId, 'Door Access', `Door unlock approved for ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName} [role=${actorRole}] via direct HTTP ${endpoint}.`);
+                    showToast('Door unlock approved.', 'success');
+                    void refreshDoorLinkHealth({ maxAgeMs: 0 });
+                    return true;
+                }
+
+                addLog(actorId, 'Door Access Failed', `Direct door unlock failed during ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName}. HTTP ${response.status}. Falling back to queue.`);
+            } catch (error) {
+                addLog(actorId, 'Door Access Failed', `Direct door unlock failed during ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName}. Error: ${String(error?.message || error)}. Falling back to queue.`);
+            }
+        }
     }
 
     try {
-        showToast('Checking door access...', 'warning');
+        showToast('Checking door access (queue fallback)...', 'warning');
         const job = await enqueueDoorUnlockJob({
             actionType,
             item,
