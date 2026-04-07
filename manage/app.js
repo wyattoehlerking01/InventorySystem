@@ -1067,7 +1067,7 @@ async function refreshDoorLinkHealth(options = {}) {
         doorLinkHealthState.lastCheckedAt = Date.now();
         doorLinkHealthState.supabaseReachable = supabaseReachable;
         doorLinkHealthState.doorReachable = doorReachable;
-        doorLinkHealthState.available = supabaseReachable && doorReachable;
+        doorLinkHealthState.available = doorReachable;
         doorLinkHealthState.lastError = doorLinkHealthState.available ? '' : (lastError || 'Door endpoint unreachable/unavailable.');
     })();
 
@@ -2133,9 +2133,7 @@ async function requestDoorUnlockAndLogAccess({ actionType, item, quantity = 1, p
 
     const linkStatus = await refreshDoorLinkHealth({ force: true });
     if (!linkStatus.available) {
-        addLog(actorId, 'Door Access Failed', `Door unlock failed during ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName}. Link unavailable: ${linkStatus.lastError || 'Door endpoint unreachable/unavailable.'}`);
-        showToast(getDoorLinkUnavailableToastMessage(), 'warning');
-        return false;
+        addLog(actorId, 'Door Link Degraded', `Door link precheck unavailable during ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName}. Proceeding to direct unlock attempt. Details: ${linkStatus.lastError || 'Door endpoint unreachable/unavailable.'}`);
     }
 
     const endpoint = getDoorEndpointUrl('/unlock');
@@ -2815,7 +2813,66 @@ submitHelpBtn?.addEventListener('click', async () => {
 
 async function handleBarcodeLogin(rawId) {
     if (isManageMode) {
-        await handleManageCredentialLogin(usernameInput?.value || '', passwordInput?.value || '');
+        const rawToken = String(rawId || usernameInput?.value || barcodeInput?.value || '').trim();
+        const typedPassword = String(passwordInput?.value || '').trim();
+
+        if (typedPassword) {
+            await handleManageCredentialLogin(usernameInput?.value || '', typedPassword);
+            return;
+        }
+
+        if (!rawToken) {
+            showToast('Scan a user barcode or enter credentials.', 'error');
+            return;
+        }
+
+        if (typeof loginWithBarcode !== 'function') {
+            showToast('Barcode login module is not loaded. Refresh and verify script loading.', 'error');
+            return;
+        }
+
+        if (!checkLoginRateLimit()) return;
+        if (loginRequestInFlight) return;
+
+        loginRequestInFlight = true;
+        if (loginSubmitBtn) loginSubmitBtn.disabled = true;
+
+        try {
+            const scanToken = rawToken.toUpperCase();
+            const loginResult = await loginWithBarcode(scanToken);
+            if (loginResult.error) {
+                recordFailedLoginAttempt();
+                addLog('SYSTEM', 'Login Failed', `Manage barcode login failed for input ${scanToken}. Reason: ${loginResult.error || 'Unknown'}`);
+                showToast(loginResult.error || 'Login failed', 'error');
+                return;
+            }
+
+            const user = loginResult.user || null;
+            if (!user) {
+                recordFailedLoginAttempt();
+                addLog('SYSTEM', 'Login Failed', `Manage barcode login failed for input ${scanToken}. Reason: Invalid barcode scanned.`);
+                showToast('Invalid barcode scanned.', 'error');
+                return;
+            }
+
+            if (user.role === 'student') {
+                showToast('Management console access is restricted to teachers and developers.', 'error');
+                return;
+            }
+
+            if (usernameInput) usernameInput.value = '';
+            if (passwordInput) passwordInput.value = '';
+            if (barcodeInput) barcodeInput.value = '';
+
+            await completeAuthenticatedSession(user);
+        } catch (error) {
+            console.error('Manage barcode login failed:', error);
+            showToast('Database lookup failed during login.', 'error');
+        } finally {
+            loginRequestInFlight = false;
+            if (loginSubmitBtn) loginSubmitBtn.disabled = false;
+        }
+
         return;
     }
 
@@ -2996,7 +3053,7 @@ function showHardwareReturnModal(item, record) {
     });
 }
 
-if (barcodeInput && !isManageMode) {
+if (barcodeInput) {
     barcodeInput.addEventListener('keydown', async (e) => {
         if (e.key === 'Enter' || e.key === 'NumpadEnter') {
             e.preventDefault();
@@ -3008,7 +3065,13 @@ if (barcodeInput && !isManageMode) {
 const canUseCredentialLogin = !!(usernameInput && passwordInput && loginSubmitBtn);
 if (isManageMode || canUseCredentialLogin) {
     loginSubmitBtn?.addEventListener('click', async () => {
-        await handleManageCredentialLogin(usernameInput?.value || '', passwordInput?.value || '');
+        const username = String(usernameInput?.value || '').trim();
+        const password = String(passwordInput?.value || '').trim();
+        if (isManageMode && username && !password) {
+            await handleBarcodeLogin(username);
+            return;
+        }
+        await handleManageCredentialLogin(username, password);
     });
 
     usernameInput?.addEventListener('keydown', (e) => {
@@ -3026,7 +3089,13 @@ if (isManageMode || canUseCredentialLogin) {
     usernameInput?.addEventListener('keydown', async (e) => {
         if (e.key !== 'Enter' && e.key !== 'NumpadEnter') return;
         e.preventDefault();
-        await handleManageCredentialLogin(usernameInput?.value || '', passwordInput?.value || '');
+        const username = String(usernameInput?.value || '').trim();
+        const password = String(passwordInput?.value || '').trim();
+        if (isManageMode && username && !password) {
+            await handleBarcodeLogin(username);
+            return;
+        }
+        await handleManageCredentialLogin(username, password);
     });
 
     passwordInput?.addEventListener('keydown', async (e) => {
@@ -3037,7 +3106,6 @@ if (isManageMode || canUseCredentialLogin) {
 }
 
 document.addEventListener('keydown', async (e) => {
-    if (isManageMode) return;
     if (currentUser) return;
     if (loginView.classList.contains('hidden')) return;
     if (loginHelpView && !loginHelpView.classList.contains('hidden')) return;

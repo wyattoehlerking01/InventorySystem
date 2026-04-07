@@ -1639,7 +1639,7 @@ async function refreshDoorLinkHealth(options = {}) {
         doorLinkHealthState.lastCheckedAt = Date.now();
         doorLinkHealthState.supabaseReachable = supabaseReachable;
         doorLinkHealthState.doorReachable = doorReachable;
-        doorLinkHealthState.available = supabaseReachable && doorReachable;
+        doorLinkHealthState.available = doorReachable;
         doorLinkHealthState.lastError = doorLinkHealthState.available ? '' : (lastError || 'Door endpoint unreachable/unavailable.');
     })();
 
@@ -1917,9 +1917,7 @@ async function requestDoorUnlockAndLogAccess({ actionType, item, quantity = 1, p
 
     const linkStatus = await refreshDoorLinkHealth({ force: true });
     if (!linkStatus.available) {
-        addLog(actorId, 'Door Access Failed', `Door unlock failed during ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName}. Link unavailable: ${linkStatus.lastError || 'Door endpoint unreachable/unavailable.'}`);
-        showToast(getDoorLinkUnavailableToastMessage(), 'warning');
-        return false;
+        addLog(actorId, 'Door Link Degraded', `Door link precheck unavailable during ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName}. Proceeding to direct unlock attempt. Details: ${linkStatus.lastError || 'Door endpoint unreachable/unavailable.'}`);
     }
 
     const endpoint = getDoorEndpointUrl('/unlock');

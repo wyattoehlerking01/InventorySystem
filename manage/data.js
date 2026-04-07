@@ -84,12 +84,30 @@ function createUuid() {
 }
 async function loginWithBarcode(barcode) {
     try {
-        const normalizedBarcode = String(barcode || '').trim().toUpperCase();
-        if (!normalizedBarcode) {
+        const rawBarcode = String(barcode || '').trim();
+        if (!rawBarcode) {
             return { error: 'Barcode is required' };
         }
 
-        const user = await fetchUserByIdFromSupabase(normalizedBarcode);
+        const lookupTokens = Array.from(new Set([
+            rawBarcode,
+            rawBarcode.toUpperCase()
+        ]));
+
+        let user = null;
+
+        for (const token of lookupTokens) {
+            user = await fetchUserByIdFromSupabase(token);
+            if (user) break;
+        }
+
+        if (!user) {
+            for (const token of lookupTokens) {
+                user = await fetchUserByBarcodeFromSupabase(token);
+                if (user) break;
+            }
+        }
+
         if (!user) {
             return { error: 'Invalid barcode scanned.' };
         }
@@ -102,6 +120,43 @@ async function loginWithBarcode(barcode) {
         console.error('loginWithBarcode failed:', err);
         return { error: 'Login failed' };
     }
+}
+
+async function fetchUserByBarcodeFromSupabase(barcodeValue) {
+    const client = requireSupabaseClient('fetchUserByBarcodeFromSupabase');
+    const normalizedBarcode = String(barcodeValue || '').trim();
+    if (!normalizedBarcode) return null;
+
+    const candidateColumns = [
+        'barcode',
+        'user_barcode',
+        'card_barcode',
+        'student_barcode',
+        'scan_code',
+        'badge_barcode'
+    ];
+
+    for (const columnName of candidateColumns) {
+        const { data, error } = await client
+            .from('users')
+            .select('*')
+            .eq(columnName, normalizedBarcode)
+            .maybeSingle();
+
+        if (!error && data) return data;
+        if (!error) continue;
+
+        const errorCode = String(error.code || '').trim();
+        const message = String(error.message || '').toLowerCase();
+        const missingColumnError = errorCode === '42703'
+            || (message.includes('column') && message.includes('does not exist'));
+
+        if (!missingColumnError) {
+            console.warn(`Barcode lookup failed for users.${columnName}:`, error);
+        }
+    }
+
+    return null;
 }
 
 function normalizeUserNameToken(value) {
