@@ -1098,12 +1098,12 @@ async function refreshDoorLinkHealth(options = {}) {
 function startDoorLinkBackgroundHealthCheck() {
     if (doorLinkHealthInterval) {
         clearInterval(doorLinkHealthInterval);
+        doorLinkHealthInterval = null;
     }
 
-    void refreshDoorLinkHealth({ force: true });
-    doorLinkHealthInterval = setInterval(() => {
-        void refreshDoorLinkHealth({ maxAgeMs: 0 });
-    }, DOOR_LINK_BACKGROUND_INTERVAL_MS);
+    doorLinkHealthState.available = true;
+    doorLinkHealthState.lastError = '';
+    doorLinkHealthState.lastCheckedAt = Date.now();
 }
 
 function normalizeSkuToken(value) {
@@ -2224,6 +2224,36 @@ async function waitForDoorUnlockJobResult(jobId, options = {}) {
     return { ok: false, status: 'timeout', statusMessage: 'Timed out waiting for door unlock worker.' };
 }
 
+function getLedAttentionEndpointUrl() {
+    const explicitUrl = String(window.APP_ENV?.LED_TRIGGER_URL ?? envConfig.LED_TRIGGER_URL ?? '').trim();
+    if (!explicitUrl) return null;
+
+    try {
+        const parsed = new URL(explicitUrl, window.location.origin);
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+        return parsed.toString();
+    } catch (_) {
+        return null;
+    }
+}
+
+async function triggerDoorAttentionLed() {
+    const endpoint = getLedAttentionEndpointUrl();
+    if (!endpoint) return false;
+
+    try {
+        await fetch(endpoint, {
+            method: 'GET',
+            mode: 'no-cors',
+            cache: 'no-store',
+            keepalive: true
+        });
+        return true;
+    } catch (_) {
+        return false;
+    }
+}
+
 async function requestDoorUnlockAndLogAccess({ actionType, item, quantity = 1, projectName = 'Personal' }) {
     const actorId = currentUser?.id || 'SYSTEM';
     const actorRole = currentUser?.role || 'system';
@@ -2235,33 +2265,16 @@ async function requestDoorUnlockAndLogAccess({ actionType, item, quantity = 1, p
         return true;
     }
 
-    const endpoints = [
-        'http://localhost:8080/unlock',
-        'http://10.0.0.125:8080/unlock'
-    ];
-    let lastError = 'Door unlock request failed.';
-
-    for (const endpoint of endpoints) {
-        try {
-            const response = await fetchWithTimeout(endpoint, {
-                method: 'GET'
-            }, 4500);
-
-            if (response.ok) {
-                addLog(actorId, 'Door Access', `Door unlock approved for ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName} [role=${actorRole}] via ${endpoint}.`);
-                showToast('Door unlock approved.', 'success');
-                return true;
-            }
-
-            lastError = `HTTP ${response.status} via ${endpoint}`;
-        } catch (error) {
-            lastError = String(error?.message || error || `Request failed via ${endpoint}`);
-        }
+    const blinked = await triggerDoorAttentionLed();
+    if (blinked) {
+        addLog(actorId, 'Door Attention', `LED attention triggered for ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName} [role=${actorRole}].`);
+        showToast('Attention light triggered. Please open the door for the user.', 'success');
+        return true;
+    } else {
+        addLog(actorId, 'Door Attention Failed', `LED attention could not be triggered for ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName} [role=${actorRole}].`);
+        showToast('Door attention light unavailable. Checkout blocked for behind-door item.', 'error');
+        return false;
     }
-
-    addLog(actorId, 'Door Access Failed', `Door unlock denied during ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName}. Last error: ${lastError}`);
-    showToast(`Door unlock failed. ${lastError}`, 'warning');
-    return false;
 }
 
 function itemRequiresDoorUnlock(item) {
@@ -2272,144 +2285,45 @@ function itemRequiresDoorUnlock(item) {
 async function requestManualDoorUnlockAndLogAccess(reason = 'manual door control') {
     const actorId = currentUser?.id || 'SYSTEM';
     const actorRole = currentUser?.role || 'system';
-    const endpoints = [
-        'http://localhost:8080/unlock',
-        'http://10.0.0.125:8080/unlock'
-    ];
-    let lastError = 'Door unlock request failed.';
 
-    for (const endpoint of endpoints) {
-        try {
-            const response = await fetchWithTimeout(endpoint, {
-                method: 'GET'
-            }, 4500);
-
-            if (response.ok) {
-                addLog(actorId, 'Door Access', `Manual door open approved by ${actorId} [role=${actorRole}] (${reason}) via ${endpoint}.`);
-                showToast('Door unlock triggered.', 'success');
-                return true;
-            }
-
-            lastError = `HTTP ${response.status} via ${endpoint}`;
-        } catch (error) {
-            lastError = String(error?.message || error || `Request failed via ${endpoint}`);
-        }
+    const blinked = await triggerDoorAttentionLed();
+    if (blinked) {
+        addLog(actorId, 'Door Attention', `Manual attention trigger by ${actorId} [role=${actorRole}] (${reason}).`);
+    } else {
+        addLog(actorId, 'Door Attention Failed', `Manual attention trigger failed for ${actorId} [role=${actorRole}] (${reason}).`);
     }
-
-    addLog(actorId, 'Door Access Failed', `Manual door open failed for ${actorId} [role=${actorRole}] (${reason}). Last error: ${lastError}`);
-    showToast(`Door unlock failed. ${lastError}`, 'warning');
-    return false;
+    showToast('Attention light triggered.', blinked ? 'success' : 'warning');
+    return true;
 }
 
 async function requestDoorHoldOpenAndLogAccess(reason = 'manual door hold-open') {
     const actorId = currentUser?.id || 'SYSTEM';
     const actorRole = currentUser?.role || 'system';
 
-    const linkStatus = await refreshDoorLinkHealth({ force: true });
-    if (!linkStatus.available) {
-        addLog(actorId, 'Door Hold Open Failed', `Door hold-open failed for ${actorId}. Link unavailable: ${linkStatus.lastError || 'Door endpoint unreachable/unavailable.'}`);
-        showToast(getDoorLinkUnavailableToastMessage(), 'warning');
-        return false;
-    }
-
-    const endpoint = getDoorEndpointUrl('/hold-open');
-    if (!endpoint) {
-        addLog(actorId, 'Door Hold Open Failed', `Door hold-open failed for ${actorId}. Error: Invalid GPIO_SERVER_URL configuration.`);
-        showToast('Door endpoint not configured. Set APP_ENV.GPIO_SERVER_URL in env.js.', 'error');
-        return false;
-    }
-
-    try {
-        const response = await fetch(endpoint, {
-            method: 'POST',
-            headers: getDoorRequestHeaders(),
-            body: JSON.stringify({
-                actionType: 'doorHoldOpen',
-                userId: actorId,
-                reason
-            })
-        });
-
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
-        }
-
-        addLog(actorId, 'Door Hold Open', `Door hold-open enabled by ${actorId} [role=${actorRole}] (${reason}) via ${endpoint}.`);
-        showToast('Door set to hold-open mode.', 'success');
-        return true;
-    } catch (err) {
-        addLog(actorId, 'Door Hold Open Failed', `Door hold-open failed for ${actorId}. Error: ${err.message || err}`);
-        showToast(getDoorLinkUnavailableToastMessage(), 'warning');
-        return false;
-    }
+    const blinked = await triggerDoorAttentionLed();
+    addLog(actorId, 'Door Hold Open', `LED-only attention mode used for hold-open request by ${actorId} [role=${actorRole}] (${reason}).`);
+    showToast('LED-only mode active. Attention light triggered.', blinked ? 'success' : 'warning');
+    return true;
 }
 
 async function requestDoorReleaseAndLogAccess(reason = 'manual door release') {
     const actorId = currentUser?.id || 'SYSTEM';
     const actorRole = currentUser?.role || 'system';
 
-    const linkStatus = await refreshDoorLinkHealth({ force: true });
-    if (!linkStatus.available) {
-        addLog(actorId, 'Door Release Failed', `Door release failed for ${actorId}. Link unavailable: ${linkStatus.lastError || 'Door endpoint unreachable/unavailable.'}`);
-        showToast(getDoorLinkUnavailableToastMessage(), 'warning');
-        return false;
-    }
-
-    const endpoint = getDoorEndpointUrl('/release');
-    if (!endpoint) {
-        addLog(actorId, 'Door Release Failed', `Door release failed for ${actorId}. Error: Invalid GPIO_SERVER_URL configuration.`);
-        showToast('Door endpoint not configured. Set APP_ENV.GPIO_SERVER_URL in env.js.', 'error');
-        return false;
-    }
-
-    try {
-        const response = await fetch(endpoint, {
-            method: 'POST',
-            headers: getDoorRequestHeaders(),
-            body: JSON.stringify({
-                actionType: 'doorRelease',
-                userId: actorId,
-                reason
-            })
-        });
-
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
-        }
-
-        addLog(actorId, 'Door Release', `Door release triggered by ${actorId} [role=${actorRole}] (${reason}) via ${endpoint}.`);
-        showToast('Door lock restored.', 'success');
-        return true;
-    } catch (err) {
-        addLog(actorId, 'Door Release Failed', `Door release failed for ${actorId}. Error: ${err.message || err}`);
-        showToast(getDoorLinkUnavailableToastMessage(), 'warning');
-        return false;
-    }
+    const blinked = await triggerDoorAttentionLed();
+    addLog(actorId, 'Door Release', `LED-only attention mode used for door release request by ${actorId} [role=${actorRole}] (${reason}).`);
+    showToast('LED-only mode active. Attention light triggered.', blinked ? 'success' : 'warning');
+    return true;
 }
 
 async function fetchDoorStatus() {
-    const endpoint = getDoorEndpointUrl('/status');
-    if (!endpoint) {
-        return { status: 'unavailable', held_open: false, door_position: 'unknown', message: 'Invalid GPIO_SERVER_URL configuration.' };
-    }
-
-    if (!doorLinkHealthState.available && doorLinkHealthState.lastCheckedAt && (Date.now() - doorLinkHealthState.lastCheckedAt) < DOOR_STATUS_RETRY_COOLDOWN_MS) {
-        return { status: 'unavailable', held_open: false, door_position: 'unknown' };
-    }
-
-    try {
-        const response = await fetch(endpoint, {
-            method: 'GET',
-            headers: getDoorRequestHeaders()
-        });
-        if (!response.ok) throw new Error(`Status ${response.status}`);
-        return await response.json();
-    } catch (error) {
-        doorLinkHealthState.available = false;
-        doorLinkHealthState.lastCheckedAt = Date.now();
-        doorLinkHealthState.lastError = `Door status request failed (${String(error?.message || error)}).`;
-        return { status: 'unavailable', held_open: false, door_position: 'unknown' };
-    }
+    return {
+        status: 'success',
+        held_open: false,
+        door_position: 'unknown',
+        led_attention_mode: true,
+        message: 'LED-only attention mode active.'
+    };
 }
 
 function formatDoorDuration(totalSeconds) {
@@ -2679,7 +2593,8 @@ async function checkoutBasket() {
                 signoutDate: signoutData.signoutDate,
                 dueDate: signoutData.dueDate,
                 assignedToUserId: signoutData.assignedToUserId,
-                signedOutByUserId: signoutData.signedOutByUserId
+                signedOutByUserId: signoutData.signedOutByUserId,
+                requiresDoorUnlock: item.requiresDoorUnlock ?? item.requires_door_unlock ?? false
             });
 
             if (!savedSignout) {
@@ -5591,7 +5506,8 @@ async function signOutItemToPersonalProjectForUser(item, quantity, userId) {
         signoutDate: signoutData.signoutDate,
         dueDate: signoutData.dueDate,
         assignedToUserId: signoutData.assignedToUserId,
-        signedOutByUserId: signoutData.signedOutByUserId
+        signedOutByUserId: signoutData.signedOutByUserId,
+        requiresDoorUnlock: item.requiresDoorUnlock ?? item.requires_door_unlock ?? false
     });
 
     if (savedSignout?.id) signoutData.id = savedSignout.id;
@@ -6592,7 +6508,8 @@ async function openSignOutModal(itemId) {
                 signoutDate: signoutData.signoutDate,
                 dueDate: signoutData.dueDate,
                 assignedToUserId: signoutData.assignedToUserId,
-                signedOutByUserId: signoutData.signedOutByUserId
+                signedOutByUserId: signoutData.signedOutByUserId,
+                requiresDoorUnlock: item.requiresDoorUnlock ?? item.requires_door_unlock ?? false
             });
 
             if (!savedSignout) {

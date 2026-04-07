@@ -45,6 +45,17 @@ function notifySignoutLedTrigger() {
     });
 }
 
+function shouldTriggerLedForItem(itemOut) {
+    const raw = itemOut?.requiresDoorUnlock ?? itemOut?.requires_door_unlock;
+    if (typeof raw === 'boolean') return raw;
+    if (typeof raw === 'number') return raw === 1;
+    if (typeof raw === 'string') {
+        const normalized = raw.trim().toLowerCase();
+        return normalized === 'true' || normalized === '1' || normalized === 'yes';
+    }
+    return false;
+}
+
 function decodeBase64Url(input) {
     const normalized = String(input || '')
         .replace(/-/g, '+')
@@ -1861,7 +1872,9 @@ async function addProjectItemOutToSupabase(itemOut) {
         return null;
     }
 
-    notifySignoutLedTrigger();
+    if (shouldTriggerLedForItem(itemOut)) {
+        notifySignoutLedTrigger();
+    }
     return data?.[0];
 }
 

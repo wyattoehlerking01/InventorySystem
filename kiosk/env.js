@@ -11,7 +11,7 @@ window.APP_ENV = {
     APP_UPDATE_ACTION: 'overlay',
     ALLOW_STUDENT_ORDER_VIEW: false,
     GPIO_SERVER_URL: 'http://10.0.0.125:8080/unlock',
-    LED_TRIGGER_URL: 'http://10.0.0.125:8090/trigger',
+    LED_TRIGGER_URL: 'http://127.0.0.1:8090/trigger',
     GPIO_DOOR_TOKEN: '',
     INFO_POPUP_HEADING: 'System Information',
     INFO_POPUP_SUBHEADING_1: 'Platform Release Overview',
