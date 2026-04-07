@@ -24,8 +24,11 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
 });
 
 let channel = null;
+let doorJobsChannel = null;
+let doorJobsSweepInterval = null;
 let pulseInFlight = false;
 let previousLockState = null;
+let doorJobInFlight = false;
 
 function parseCommandArgs(rawValue) {
     const raw = String(rawValue || '').trim();
@@ -189,6 +192,116 @@ async function fetchInitialSettings() {
     return data || null;
 }
 
+async function claimDoorUnlockJob(jobId) {
+    const startedAt = new Date().toISOString();
+    const { data, error } = await supabase
+        .from('door_unlock_jobs')
+        .update({
+            status: 'processing',
+            started_at: startedAt,
+            status_message: `Worker ${KIOSK_ID} started processing at ${startedAt}`
+        })
+        .eq('id', jobId)
+        .eq('kiosk_id', KIOSK_ID)
+        .eq('status', 'pending')
+        .select('id, kiosk_id, action_type, item_id, quantity, project_name, request_payload, created_at')
+        .maybeSingle();
+
+    if (error) {
+        console.error(`[kiosk-listener] Failed to claim door job ${jobId}:`, error.message);
+        return null;
+    }
+
+    return data || null;
+}
+
+async function completeDoorUnlockJob(jobId, success, details = {}) {
+    const now = new Date().toISOString();
+    const status = success ? 'completed' : 'failed';
+
+    const payload = {
+        status,
+        completed_at: now,
+        status_message: details.statusMessage || (success
+            ? `Worker ${KIOSK_ID} completed unlock.`
+            : `Worker ${KIOSK_ID} failed unlock.`),
+        result_payload: {
+            worker_id: KIOSK_ID,
+            success,
+            processed_at: now,
+            ...(details.resultPayload && typeof details.resultPayload === 'object' ? details.resultPayload : {})
+        }
+    };
+
+    const { error } = await supabase
+        .from('door_unlock_jobs')
+        .update(payload)
+        .eq('id', jobId)
+        .eq('kiosk_id', KIOSK_ID);
+
+    if (error) {
+        console.error(`[kiosk-listener] Failed to finalize door job ${jobId}:`, error.message);
+        return false;
+    }
+
+    return true;
+}
+
+async function processDoorUnlockJob(job) {
+    if (!job || !job.id || doorJobInFlight) return;
+
+    doorJobInFlight = true;
+    try {
+        const claimedJob = await claimDoorUnlockJob(job.id);
+        if (!claimedJob) return;
+
+        console.log(`[kiosk-listener] Processing door queue job ${claimedJob.id} for kiosk ${KIOSK_ID}.`);
+        const success = await runUnlockScript();
+
+        await completeDoorUnlockJob(claimedJob.id, success, {
+            statusMessage: success
+                ? `Unlock completed by worker ${KIOSK_ID}.`
+                : `Unlock failed by worker ${KIOSK_ID}.`,
+            resultPayload: {
+                action_type: claimedJob.action_type,
+                item_id: claimedJob.item_id,
+                quantity: claimedJob.quantity,
+                project_name: claimedJob.project_name
+            }
+        });
+    } catch (error) {
+        console.error('[kiosk-listener] Unexpected door job processing error:', error.message || error);
+        if (job?.id) {
+            await completeDoorUnlockJob(job.id, false, {
+                statusMessage: `Unexpected worker error: ${String(error?.message || error)}`
+            });
+        }
+    } finally {
+        doorJobInFlight = false;
+    }
+}
+
+async function processPendingDoorUnlockJobs() {
+    if (doorJobInFlight) return;
+
+    const { data, error } = await supabase
+        .from('door_unlock_jobs')
+        .select('id, kiosk_id, status')
+        .eq('kiosk_id', KIOSK_ID)
+        .eq('status', 'pending')
+        .order('created_at', { ascending: true })
+        .limit(10);
+
+    if (error) {
+        console.error('[kiosk-listener] Failed to scan pending door jobs:', error.message);
+        return;
+    }
+
+    for (const job of data || []) {
+        await processDoorUnlockJob(job);
+    }
+}
+
 async function start() {
     console.log(`[kiosk-listener] Starting listener for kiosk_id=${KIOSK_ID}`);
 
@@ -213,12 +326,41 @@ async function start() {
         .subscribe((status) => {
             console.log(`[kiosk-listener] Realtime status: ${status}`);
         });
+
+    doorJobsChannel = supabase
+        .channel(`door-jobs-${KIOSK_ID}`)
+        .on('postgres_changes', {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'door_unlock_jobs',
+            filter: `kiosk_id=eq.${KIOSK_ID}`
+        }, async (payload) => {
+            const row = payload.new;
+            if (!row || row.status !== 'pending') return;
+            await processDoorUnlockJob(row);
+        })
+        .subscribe((status) => {
+            console.log(`[kiosk-listener] Door queue realtime status: ${status}`);
+        });
+
+    doorJobsSweepInterval = setInterval(() => {
+        void processPendingDoorUnlockJobs();
+    }, 5000);
+
+    void processPendingDoorUnlockJobs();
 }
 
 async function shutdown() {
     console.log('\n[kiosk-listener] Shutting down...');
+    if (doorJobsSweepInterval) {
+        clearInterval(doorJobsSweepInterval);
+        doorJobsSweepInterval = null;
+    }
     if (channel) {
         await supabase.removeChannel(channel);
+    }
+    if (doorJobsChannel) {
+        await supabase.removeChannel(doorJobsChannel);
     }
     process.exit(0);
 }

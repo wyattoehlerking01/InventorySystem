@@ -1592,6 +1592,7 @@ async function refreshDoorLinkHealth(options = {}) {
     doorLinkHealthState.inFlight = (async () => {
         const supabaseUrl = getSupabaseDoorPingUrl();
         const doorStatusUrl = getDoorEndpointUrl('/status');
+        const doorUnlockUrl = getDoorEndpointUrl('/unlock');
         const supabaseKey = String(window.APP_ENV?.SUPABASE_KEY ?? envConfig.SUPABASE_KEY ?? '').trim();
         let supabaseReachable = false;
         let doorReachable = false;
@@ -1617,7 +1618,7 @@ async function refreshDoorLinkHealth(options = {}) {
             }
         }
 
-        if (!doorStatusUrl) {
+        if (!doorStatusUrl && !doorUnlockUrl) {
             if (!lastError) lastError = 'Door endpoint is not configured.';
         } else {
             try {
@@ -1625,9 +1626,22 @@ async function refreshDoorLinkHealth(options = {}) {
                     method: 'GET',
                     headers: getDoorRequestHeaders()
                 }, 4500);
-                doorReachable = doorResponse.ok;
-                if (!doorReachable && !lastError) {
-                    lastError = `Door status endpoint failed (HTTP ${doorResponse.status}).`;
+                if (doorResponse.ok) {
+                    doorReachable = true;
+                } else if (doorResponse.status === 404 && doorUnlockUrl) {
+                    const unlockProbe = await fetchWithTimeout(doorUnlockUrl, {
+                        method: 'GET',
+                        headers: getDoorRequestHeaders()
+                    }, 4500);
+                    doorReachable = unlockProbe.ok;
+                    if (!doorReachable && !lastError) {
+                        lastError = `Door unlock probe failed (HTTP ${unlockProbe.status}).`;
+                    }
+                } else {
+                    doorReachable = false;
+                    if (!lastError) {
+                        lastError = `Door status endpoint failed (HTTP ${doorResponse.status}).`;
+                    }
                 }
             } catch (error) {
                 if (!lastError) {
@@ -1898,6 +1912,90 @@ function renderMissingMetadataIcon(item) {
     return '';
 }
 
+function waitForMs(ms) {
+    return new Promise(resolve => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+}
+
+function normalizeDoorActionType(actionType) {
+    const normalized = String(actionType || '').trim().toLowerCase();
+    if (normalized === 'sign-in') return 'sign-in';
+    if (normalized === 'sign-out') return 'sign-out';
+    if (normalized === 'hold-open') return 'hold-open';
+    if (normalized === 'release') return 'release';
+    return 'manual';
+}
+
+async function enqueueDoorUnlockJob({ actionType, item, quantity, projectName, actorId }) {
+    const client = getSettingsSupabaseClient();
+    if (!client) {
+        throw new Error('Supabase client unavailable for door queue.');
+    }
+
+    const { data, error } = await client.rpc('request_door_unlock', {
+        p_kiosk_id: String(kioskId || envConfig.KIOSK_ID || '').trim(),
+        p_action_type: normalizeDoorActionType(actionType),
+        p_item_id: item?.id ? String(item.id) : null,
+        p_quantity: Math.max(1, parseInt(quantity, 10) || 1),
+        p_project_name: String(projectName || '').trim() || null,
+        p_request_payload: {
+            itemName: item?.name || null,
+            category: item?.category || null,
+            actionType: String(actionType || '').trim(),
+            userId: actorId || null
+        }
+    });
+
+    if (error) {
+        throw new Error(String(error?.message || error));
+    }
+
+    const row = Array.isArray(data) ? data[0] : data;
+    const jobId = String(row?.id || '').trim();
+    if (!jobId) {
+        throw new Error('Door queue request returned no job id.');
+    }
+
+    return row;
+}
+
+async function waitForDoorUnlockJobResult(jobId, options = {}) {
+    const client = getSettingsSupabaseClient();
+    if (!client) {
+        return { ok: false, status: 'failed', statusMessage: 'Supabase client unavailable.' };
+    }
+
+    const timeoutMs = Math.max(1000, Number(options.timeoutMs) || 12000);
+    const pollMs = Math.max(150, Number(options.pollMs) || 400);
+    const startedAt = Date.now();
+
+    while ((Date.now() - startedAt) < timeoutMs) {
+        const { data, error } = await client
+            .from('door_unlock_jobs')
+            .select('id, status, status_message, result_payload')
+            .eq('id', jobId)
+            .maybeSingle();
+
+        if (error) {
+            return { ok: false, status: 'failed', statusMessage: String(error?.message || error) };
+        }
+
+        const status = String(data?.status || '').trim().toLowerCase();
+        const statusMessage = String(data?.status_message || '').trim();
+
+        if (status === 'completed') {
+            return { ok: true, status, statusMessage, row: data };
+        }
+
+        if (status === 'failed' || status === 'expired') {
+            return { ok: false, status, statusMessage, row: data };
+        }
+
+        await waitForMs(pollMs);
+    }
+
+    return { ok: false, status: 'timeout', statusMessage: 'Timed out waiting for door unlock worker.' };
+}
+
 async function requestDoorUnlockAndLogAccess({ actionType, item, quantity = 1, projectName = 'Personal' }) {
     const actorId = currentUser?.id || 'SYSTEM';
     const actorRole = currentUser?.role || 'system';
@@ -1917,44 +2015,40 @@ async function requestDoorUnlockAndLogAccess({ actionType, item, quantity = 1, p
 
     const linkStatus = await refreshDoorLinkHealth({ force: true });
     if (!linkStatus.available) {
-        addLog(actorId, 'Door Link Degraded', `Door link precheck unavailable during ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName}. Proceeding to direct unlock attempt. Details: ${linkStatus.lastError || 'Door endpoint unreachable/unavailable.'}`);
-    }
-
-    const endpoint = getDoorEndpointUrl('/unlock');
-    if (!endpoint) {
-        addLog(actorId, 'Door Access Failed', `Door unlock failed during ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName}. Error: Invalid GPIO_SERVER_URL configuration.`);
-        showToast('Door endpoint not configured. Set APP_ENV.GPIO_SERVER_URL in env.js.', 'error');
-        return false;
+        addLog(actorId, 'Door Link Degraded', `Door link precheck unavailable during ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName}. Continuing with queue request. Details: ${linkStatus.lastError || 'Door endpoint unreachable/unavailable.'}`);
     }
 
     try {
-        const response = await fetch(endpoint, {
-            method: 'POST',
-            headers: getDoorRequestHeaders(),
-            body: JSON.stringify({
-                itemId: item?.id,
-                itemName: item?.name,
-                category: item?.category,
-                actionType,
-                userId: actorId,
-                quantity,
-                projectName
-            })
+        showToast('Checking door access...', 'warning');
+        const job = await enqueueDoorUnlockJob({
+            actionType,
+            item,
+            quantity,
+            projectName,
+            actorId
         });
 
-        if (!response.ok) {
-            const details = await readDoorEndpointErrorSummary(response);
-            throw new Error(`HTTP ${response.status}${details ? ` - ${details}` : ''}`);
+        addLog(actorId, 'Door Access Requested', `Door unlock requested for ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName} [role=${actorRole}] via queue job ${job.id}`);
+
+        const result = await waitForDoorUnlockJobResult(job.id, { timeoutMs: 12000, pollMs: 400 });
+        if (!result.ok) {
+            const detail = result.statusMessage ? ` ${result.statusMessage}` : '';
+            addLog(actorId, 'Door Access Failed', `Door unlock denied during ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName}. Queue status=${result.status}.${detail}`);
+            doorLinkHealthState.available = false;
+            doorLinkHealthState.lastError = `Door queue status: ${result.status}${detail}`.trim();
+            showToast(`Door unlock failed (${result.status}).${detail}`, 'warning');
+            return false;
         }
 
-        addLog(actorId, 'Door Access', `Door unlocked for student ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName} [role=${actorRole}] via ${endpoint}`);
+        addLog(actorId, 'Door Access', `Door unlock approved for ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName} [role=${actorRole}] via queue job ${job.id}`);
+        showToast('Door unlock approved.', 'success');
         void refreshDoorLinkHealth({ maxAgeMs: 0 });
         return true;
     } catch (err) {
-        addLog(actorId, 'Door Access Failed', `Door unlock failed during ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName} via ${endpoint}. Error: ${err.message || err}`);
+        addLog(actorId, 'Door Access Failed', `Door queue request failed during ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName}. Error: ${err.message || err}`);
         doorLinkHealthState.available = false;
-        doorLinkHealthState.lastError = String(err?.message || err || 'Door endpoint unreachable/unavailable.');
-        showToast(getDoorLinkUnavailableToastMessage(), 'warning');
+        doorLinkHealthState.lastError = String(err?.message || err || 'Door queue request failed.');
+        showToast(`Door queue request failed. ${String(err?.message || err || '')}`.trim(), 'warning');
         return false;
     }
 }
@@ -1982,6 +2076,7 @@ async function requestDoorHoldOpenAndLogAccess(reason = 'manual door hold-open')
         return false;
     }
 
+    if (!isDoorCallingEnabled()) {
         addLog(actorId, 'Door Hold Open Blocked', `Door hold-open blocked for ${actorId} [role=${actorRole}] because door calling is disabled.`);
         showToast('Door calling is disabled in Door settings.', 'warning');
         return false;
@@ -2031,6 +2126,7 @@ async function requestDoorReleaseAndLogAccess(reason = 'manual door release') {
         return false;
     }
 
+    if (!isDoorCallingEnabled()) {
         addLog(actorId, 'Door Release Blocked', `Door release blocked for ${actorId} [role=${actorRole}] because door calling is disabled.`);
         showToast('Door calling is disabled in Door settings.', 'warning');
         return false;
@@ -2106,6 +2202,7 @@ async function requestManualDoorUnlockAndLogAccess(reason = 'manual debug contro
         return false;
     }
 
+    if (!isDoorCallingEnabled()) {
         addLog(actorId, 'Door Access Blocked', `Manual door open blocked for ${actorId} [role=${actorRole}] because door calling is disabled.`);
         showToast('Door calling is disabled in Door settings.', 'warning');
         return false;
@@ -2733,11 +2830,33 @@ function showHardwareReturnModal(item, record) {
     });
 }
 
+let loginScanAutoSubmitTimer = null;
+
 barcodeInput.addEventListener('keydown', async (e) => {
     if (e.key === 'Enter' || e.key === 'NumpadEnter') {
         e.preventDefault();
+        if (loginScanAutoSubmitTimer) {
+            clearTimeout(loginScanAutoSubmitTimer);
+            loginScanAutoSubmitTimer = null;
+        }
         await handleBarcodeLogin(barcodeInput.value);
     }
+});
+
+barcodeInput.addEventListener('input', () => {
+    if (currentUser) return;
+    if (loginView.classList.contains('hidden')) return;
+
+    if (loginScanAutoSubmitTimer) {
+        clearTimeout(loginScanAutoSubmitTimer);
+    }
+
+    loginScanAutoSubmitTimer = setTimeout(async () => {
+        loginScanAutoSubmitTimer = null;
+        const value = String(barcodeInput.value || '').trim();
+        if (value.length < 3) return;
+        await handleBarcodeLogin(value);
+    }, 180);
 });
 
 document.addEventListener('keydown', async (e) => {
