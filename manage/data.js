@@ -1288,24 +1288,54 @@ async function addUserToSupabase(user) {
             || (msg.includes('could not find') && msg.includes('grade') && msg.includes('schema cache'));
     };
 
+    const isMissingSignInAttentionColumnError = (err) => {
+        const msg = String(err?.message || '').toLowerCase();
+        return /column .*auto_trigger_attention_on_sign_in|auto_trigger_attention_on_sign_in.*does not exist/i.test(String(err?.message || ''))
+            || (msg.includes('could not find') && msg.includes('auto_trigger_attention_on_sign_in') && msg.includes('schema cache'));
+    };
+
+    const isSchemaColumnError = (err) => isMissingGradeColumnError(err) || isMissingSignInAttentionColumnError(err);
+
     const payload = {
         id: user.id,
         name: user.name,
         role: user.role,
         grade: user.grade || null,
-        status: user.status || 'Active'
+        status: user.status || 'Active',
+        auto_trigger_attention_on_sign_in: user.auto_trigger_attention_on_sign_in ?? user.autoTriggerAttentionOnSignIn ?? false
     };
 
     let { data, error } = await dbClient.from('users').insert([payload]).select();
 
-    if (error && isMissingGradeColumnError(error)) {
-        const fallbackPayload = {
-            id: user.id,
-            name: user.name,
-            role: user.role,
-            status: user.status || 'Active'
-        };
-        ({ data, error } = await dbClient.from('users').insert([fallbackPayload]).select());
+    if (error && isSchemaColumnError(error)) {
+        const fallbackPayloads = [
+            {
+                id: user.id,
+                name: user.name,
+                role: user.role,
+                status: user.status || 'Active',
+                auto_trigger_attention_on_sign_in: user.auto_trigger_attention_on_sign_in ?? user.autoTriggerAttentionOnSignIn ?? false
+            },
+            {
+                id: user.id,
+                name: user.name,
+                role: user.role,
+                grade: user.grade || null,
+                status: user.status || 'Active'
+            },
+            {
+                id: user.id,
+                name: user.name,
+                role: user.role,
+                status: user.status || 'Active'
+            }
+        ];
+
+        for (const fallbackPayload of fallbackPayloads) {
+            ({ data, error } = await dbClient.from('users').insert([fallbackPayload]).select());
+            if (!error) break;
+            if (!isSchemaColumnError(error)) break;
+        }
     }
     
     if (error) {
@@ -1325,12 +1355,27 @@ async function updateUserInSupabase(userId, updates) {
             || (msg.includes('could not find') && msg.includes('grade') && msg.includes('schema cache'));
     };
 
+    const isMissingSignInAttentionColumnError = (err) => {
+        const msg = String(err?.message || '').toLowerCase();
+        return /column .*auto_trigger_attention_on_sign_in|auto_trigger_attention_on_sign_in.*does not exist/i.test(String(err?.message || ''))
+            || (msg.includes('could not find') && msg.includes('auto_trigger_attention_on_sign_in') && msg.includes('schema cache'));
+    };
+
+    const isSchemaColumnError = (err) => isMissingGradeColumnError(err) || isMissingSignInAttentionColumnError(err);
+
     let { data, error } = await dbClient.from('users')
         .update(updates)
         .eq('id', userId).select();
 
-    if (error && Object.prototype.hasOwnProperty.call(updates || {}, 'grade') && isMissingGradeColumnError(error)) {
-        const { grade, ...fallbackUpdates } = updates || {};
+    if (error && isSchemaColumnError(error)) {
+        const fallbackUpdates = { ...(updates || {}) };
+        if (isMissingGradeColumnError(error) && Object.prototype.hasOwnProperty.call(fallbackUpdates, 'grade')) {
+            delete fallbackUpdates.grade;
+        }
+        if (isMissingSignInAttentionColumnError(error) && Object.prototype.hasOwnProperty.call(fallbackUpdates, 'auto_trigger_attention_on_sign_in')) {
+            delete fallbackUpdates.auto_trigger_attention_on_sign_in;
+        }
+
         ({ data, error } = await dbClient.from('users')
             .update(fallbackUpdates)
             .eq('id', userId).select());

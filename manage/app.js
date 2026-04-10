@@ -917,15 +917,6 @@ function isSafeHttpUrl(value) {
     }
 }
 
-function getDoorRequestHeaders() {
-    const headers = { 'Content-Type': 'application/json' };
-    const token = String(window.APP_ENV?.GPIO_DOOR_TOKEN ?? envConfig.GPIO_DOOR_TOKEN ?? '').trim();
-    if (token) {
-        headers['X-Door-Token'] = token;
-    }
-    return headers;
-}
-
 const DOOR_LINK_BACKGROUND_INTERVAL_MS = 20000;
 const DOOR_STATUS_RETRY_COOLDOWN_MS = 20000;
 const doorLinkHealthState = {
@@ -997,8 +988,8 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 4500) {
 
 function getDoorLinkUnavailableToastMessage() {
     const details = String(doorLinkHealthState.lastError || '').trim();
-    if (!details) return 'Door endpoint unreachable/unavailable.';
-    return `Door endpoint unreachable/unavailable. ${details}`;
+    if (!details) return 'Attention light endpoint unreachable/unavailable.';
+    return `Attention light endpoint unreachable/unavailable. ${details}`;
 }
 
 async function refreshDoorLinkHealth(options = {}) {
@@ -1020,8 +1011,7 @@ async function refreshDoorLinkHealth(options = {}) {
 
     doorLinkHealthState.inFlight = (async () => {
         const supabaseUrl = getSupabaseDoorPingUrl();
-        const doorStatusUrl = getDoorEndpointUrl('/status');
-        const doorUnlockUrl = getDoorEndpointUrl('/unlock');
+        const attentionUrl = getLedAttentionEndpointUrl();
         const supabaseKey = String(window.APP_ENV?.SUPABASE_KEY ?? envConfig.SUPABASE_KEY ?? '').trim();
         let supabaseReachable = false;
         let doorReachable = false;
@@ -1047,34 +1037,19 @@ async function refreshDoorLinkHealth(options = {}) {
             }
         }
 
-        if (!doorStatusUrl && !doorUnlockUrl) {
-            if (!lastError) lastError = 'Door endpoint is not configured.';
+        if (!attentionUrl) {
+            if (!lastError) lastError = 'Attention light endpoint is not configured.';
         } else {
             try {
-                const doorResponse = await fetchWithTimeout(doorStatusUrl, {
+                await fetchWithTimeout(attentionUrl, {
                     method: 'GET',
-                    headers: getDoorRequestHeaders()
+                    mode: 'no-cors',
+                    cache: 'no-store'
                 }, 4500);
-                if (doorResponse.ok) {
-                    doorReachable = true;
-                } else if (doorResponse.status === 404 && doorUnlockUrl) {
-                    const unlockProbe = await fetchWithTimeout(doorUnlockUrl, {
-                        method: 'GET',
-                        headers: getDoorRequestHeaders()
-                    }, 4500);
-                    doorReachable = unlockProbe.ok;
-                    if (!doorReachable && !lastError) {
-                        lastError = `Door unlock probe failed (HTTP ${unlockProbe.status}).`;
-                    }
-                } else {
-                    doorReachable = false;
-                    if (!lastError) {
-                        lastError = `Door status endpoint failed (HTTP ${doorResponse.status}).`;
-                    }
-                }
+                doorReachable = true;
             } catch (error) {
                 if (!lastError) {
-                    lastError = `Door status endpoint failed (${String(error?.message || error)}).`;
+                    lastError = `Attention light endpoint failed (${String(error?.message || error)}).`;
                 }
             }
         }
@@ -1083,7 +1058,7 @@ async function refreshDoorLinkHealth(options = {}) {
         doorLinkHealthState.supabaseReachable = supabaseReachable;
         doorLinkHealthState.doorReachable = doorReachable;
         doorLinkHealthState.available = doorReachable;
-        doorLinkHealthState.lastError = doorLinkHealthState.available ? '' : (lastError || 'Door endpoint unreachable/unavailable.');
+        doorLinkHealthState.lastError = doorLinkHealthState.available ? '' : (lastError || 'Attention light endpoint unreachable/unavailable.');
     })();
 
     try {
@@ -2254,6 +2229,45 @@ async function triggerDoorAttentionLed() {
     }
 }
 
+function shouldAutoTriggerAttentionOnSignIn(user) {
+    if (!user || typeof user !== 'object') return false;
+
+    const candidates = [
+        user.autoTriggerAttentionOnSignIn,
+        user.auto_trigger_attention_on_sign_in,
+        user.attention_light_auto_trigger_sign_in,
+        user.attentionLightAutoTriggerSignIn,
+        user.perms?.autoTriggerAttentionOnSignIn,
+        user.perms?.auto_trigger_attention_on_sign_in
+    ];
+
+    for (const value of candidates) {
+        if (value === undefined || value === null || value === '') continue;
+        if (typeof value === 'boolean') return value;
+        if (typeof value === 'number') return value !== 0;
+        const normalized = String(value).trim().toLowerCase();
+        if (['true', '1', 'yes', 'y', 'on'].includes(normalized)) return true;
+        if (['false', '0', 'no', 'n', 'off'].includes(normalized)) return false;
+    }
+
+    return false;
+}
+
+async function triggerSignInAttentionIfEnabled(user) {
+    if (!shouldAutoTriggerAttentionOnSignIn(user)) return;
+
+    const actorId = user?.id || 'SYSTEM';
+    const actorRole = user?.role || 'system';
+    const blinked = await triggerDoorAttentionLed();
+
+    if (blinked) {
+        addLog(actorId, 'Door Attention', `Auto attention triggered on sign-in for ${actorId} [role=${actorRole}].`);
+    } else {
+        addLog(actorId, 'Door Attention Failed', `Auto attention failed on sign-in for ${actorId} [role=${actorRole}].`);
+        showToast('Sign-in attention light unavailable for this user.', 'warning');
+    }
+}
+
 async function requestDoorUnlockAndLogAccess({ actionType, item, quantity = 1, projectName = 'Personal' }) {
     const actorId = currentUser?.id || 'SYSTEM';
     const actorRole = currentUser?.role || 'system';
@@ -3278,6 +3292,7 @@ function login(user) {
     
     // Log the login event
     addLog(user.id, 'User Login', `${user.name} (${user.role}) logged in`);
+    void triggerSignInAttentionIfEnabled(user);
 
     // Update Profile UI
     const profileAvatar = document.getElementById('user-avatar');
@@ -7629,6 +7644,7 @@ async function openUserModal(editId = null) {
     const cProjects = isEdit ? (userToEdit.perms?.canCreateProjects ?? false) : false;
     const cJoin = isEdit ? (userToEdit.perms?.canJoinProjects ?? true) : true;
     const cSignOut = isEdit ? (userToEdit.perms?.canSignOut ?? false) : false;
+    const signInAttentionAutotrigger = isEdit ? shouldAutoTriggerAttentionOnSignIn(userToEdit) : false;
     const initialGrade = isEdit ? String(userToEdit.grade || '') : '';
 
     const html = `
@@ -7656,6 +7672,14 @@ async function openUserModal(editId = null) {
                     <option value="teacher" ${isEdit && userToEdit.role === 'teacher' ? 'selected' : ''}>Teacher</option>
                     <option value="developer" ${isEdit && userToEdit.role === 'developer' ? 'selected' : ''}>Developer</option>
                 </select>
+            </div>
+            <div class="form-group">
+                <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer; margin: 0;">
+                    <input type="checkbox" id="user-signin-attention-autotrigger" ${signInAttentionAutotrigger ? 'checked' : ''}>
+                    Auto-trigger attention light when this user signs in
+                </label>
+                <small class="text-muted">When enabled, this user login will fire the configured LED attention endpoint.</small>
+            </div>
             <div class="form-group" id="class-assign-container" style="display: ${(!isEdit || userToEdit.role === 'student') ? 'block' : 'none'};">
                 <label>Assigned Class</label>
                 <select id="user-class-assign" class="form-control">
@@ -7726,6 +7750,7 @@ async function openUserModal(editId = null) {
         const name = document.getElementById('user-name-input').value.trim();
         const grade = document.getElementById('user-grade-input').value.trim();
         const role = document.getElementById('user-role-input').value;
+        const autoTriggerAttentionOnSignIn = document.getElementById('user-signin-attention-autotrigger')?.checked === true;
 
         // Developer role restrictions
         if (role === 'developer' && currentUser.role === 'teacher') {
@@ -7815,6 +7840,8 @@ async function openUserModal(editId = null) {
             userToEdit.name = name;
             userToEdit.role = role;
             userToEdit.grade = grade;
+            userToEdit.autoTriggerAttentionOnSignIn = autoTriggerAttentionOnSignIn;
+            userToEdit.auto_trigger_attention_on_sign_in = autoTriggerAttentionOnSignIn;
             userToEdit.perms = perms;
 
             // Update Class Alignment
@@ -7826,7 +7853,13 @@ async function openUserModal(editId = null) {
             });
 
             // Update in Supabase
-            const result = await updateUserInSupabase(id, { name, role, grade, status: userToEdit.status });
+            const result = await updateUserInSupabase(id, {
+                name,
+                role,
+                grade,
+                status: userToEdit.status,
+                auto_trigger_attention_on_sign_in: autoTriggerAttentionOnSignIn
+            });
             if (result.error) {
                 let errorMsg = 'Failed to update user in database.';
                 if (result.error.message) {
@@ -7852,6 +7885,8 @@ async function openUserModal(editId = null) {
                 name: name,
                 grade: grade,
                 role: role,
+                autoTriggerAttentionOnSignIn: autoTriggerAttentionOnSignIn,
+                auto_trigger_attention_on_sign_in: autoTriggerAttentionOnSignIn,
                 perms: perms,
                 status: 'Active'
             };
@@ -10775,6 +10810,16 @@ document.getElementById('bulk-import-items-btn')?.addEventListener('click', asyn
 
     openModal(html);
 
+    const parseImportBoolean = (value, fallback = false) => {
+        if (value === undefined || value === null || value === '') return fallback;
+        if (typeof value === 'boolean') return value;
+        if (typeof value === 'number') return value !== 0;
+        const normalized = String(value).trim().toLowerCase();
+        if (['true', '1', 'yes', 'y', 'on'].includes(normalized)) return true;
+        if (['false', '0', 'no', 'n', 'off'].includes(normalized)) return false;
+        return fallback;
+    };
+
     document.getElementById('confirm-bulk-items').addEventListener('click', async () => {
         const data = document.getElementById('bulk-items-data').value.trim();
         if (!data) {
@@ -10782,41 +10827,71 @@ document.getElementById('bulk-import-items-btn')?.addEventListener('click', asyn
             return;
         }
 
-        const lines = data.split('\n');
+        const lines = data.split(/\r?\n/).filter(line => line.trim());
         let importCount = 0;
+        let skipCount = 0;
+        let invalidCount = 0;
+        let failedCount = 0;
+        const seenSkus = new Set(inventoryItems.map(item => String(item?.sku || '').trim().toUpperCase()).filter(Boolean));
 
         for (const line of lines) {
-            const parts = line.split(',');
-            if (parts.length >= 3) {
-                const name = parts[0].trim();
-                const category = parts[1].trim();
-                const sku = parts[2] ? parts[2].trim() : name.substring(0, 3).toUpperCase() + '-' + Math.floor(Math.random() * 1000).toString().padStart(3, '0');
-                const stock = parseInt(parts[3]) || 0;
-                const threshold = parseInt(parts[4]) || 5;
+            const parts = parseCsvRow(line);
+            if (!parts.length || parts.every(part => !part)) continue;
 
-                if (name) {
-                    const item = {
-                        id: generateId('ITM'),
-                        name: name,
-                        category: category,
-                        sku: sku,
-                        stock: stock,
-                        threshold: threshold
-                    };
+            const maybeHeader = parts.map(normalizeImportText);
+            if (maybeHeader[0] === 'name' && maybeHeader[1] === 'category' && maybeHeader[2] === 'sku') {
+                continue;
+            }
 
-                    const created = await addItemToSupabase(item);
-                    if (created) importCount++;
-                }
+            const name = normalizeImportCell(parts[0]);
+            const category = normalizeImportCell(parts[1] || '') || 'Uncategorized';
+            const skuRaw = normalizeSkuToken(parts[2] || '');
+            const stock = Math.max(0, parseInt(parts[3], 10) || 0);
+            const threshold = Math.max(0, parseInt(parts[4], 10) || 5);
+            const requiresDoorUnlock = parseImportBoolean(parts[5], true);
+
+            if (!name) {
+                invalidCount++;
+                continue;
+            }
+
+            const defaultSkuPrefix = normalizeSkuToken(name).slice(0, 3) || 'ITM';
+            const generatedSku = `${defaultSkuPrefix}-${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`;
+            const sku = skuRaw || generatedSku;
+            const normalizedSku = String(sku || '').trim().toUpperCase();
+
+            if (normalizedSku && seenSkus.has(normalizedSku)) {
+                skipCount++;
+                continue;
+            }
+
+            const item = {
+                id: generateId('ITM'),
+                name,
+                category,
+                sku,
+                stock,
+                threshold,
+                requires_door_unlock: requiresDoorUnlock
+            };
+
+            const created = await addItemToSupabase(item);
+            if (created) {
+                importCount++;
+                if (normalizedSku) seenSkus.add(normalizedSku);
+            } else {
+                failedCount++;
             }
         }
 
         await refreshInventoryFromSupabase();
 
         if (importCount > 0) {
-            showToast(`Successfully imported ${importCount} items.`, 'success');
+            const details = `(${skipCount} skipped, ${invalidCount} invalid${failedCount > 0 ? `, ${failedCount} failed` : ''})`;
+            showToast(`Successfully imported ${importCount} items ${details}.`, failedCount > 0 ? 'warning' : 'success');
             addLog(currentUser.id, 'Bulk Import Items', `Imported ${importCount} inventory items.`);
         } else {
-            showToast('No valid items found to import.', 'error');
+            showToast(`No valid items found to import (${skipCount} skipped, ${invalidCount} invalid${failedCount > 0 ? `, ${failedCount} failed` : ''}).`, 'error');
         }
 
         closeModal();
@@ -11170,11 +11245,12 @@ function showBulkUserImportModal() {
             <div class="form-group">
                 <label>CSV Format</label>
                 <p class="text-muted" style="font-size: 0.9rem; margin-bottom: 1rem;">
-                    Import users from CSV. Use columns: <code>ID, Name, Grade, Role, Permissions</code><br>
+                    Import users from CSV. Use columns: <code>ID, Name, Grade, Role, AutoDoorOnSignin, Permissions</code><br>
                     Role: <code>student</code>, <code>teacher</code>, <code>developer</code><br>
+                    AutoDoorOnSignin: <code>true</code>/<code>false</code> (optional, defaults to false)<br>
                     Permissions: <code>create_project,join_project,signout</code> (comma-separated, student only)
                 </p>
-                <textarea id="bulk-import-csv" class="form-control" style="height: 240px; font-family: monospace; font-size: 0.9rem;" placeholder="STU-001,John Doe,10,student,join_project,signout&#10;STU-002,Jane Smith,11,student,create_project,join_project,signout&#10;TEA-001,Mr. Teacher,0,teacher&#10;DEV-001,Admin User,0,developer"></textarea>
+                <textarea id="bulk-import-csv" class="form-control" style="height: 240px; font-family: monospace; font-size: 0.9rem;" placeholder="STU-001,John Doe,10,student,true,join_project,signout&#10;STU-002,Jane Smith,11,student,false,create_project,join_project,signout&#10;TEA-001,Mr. Teacher,0,teacher,false&#10;DEV-001,Admin User,0,developer,false"></textarea>
                 <small class="text-muted" style="display: block; margin-top: 0.5rem;">Paste CSV data directly or upload a file below.</small>
             </div>
             <div class="form-group">
@@ -11218,22 +11294,49 @@ async function processBulkUserImport() {
         return;
     }
 
+    const parseImportBoolean = (value, fallback = false) => {
+        if (value === undefined || value === null || value === '') return fallback;
+        if (typeof value === 'boolean') return value;
+        if (typeof value === 'number') return value !== 0;
+        const normalized = String(value).trim().toLowerCase();
+        if (['true', '1', 'yes', 'y', 'on'].includes(normalized)) return true;
+        if (['false', '0', 'no', 'n', 'off'].includes(normalized)) return false;
+        return fallback;
+    };
+
+    const parsePermissionTokens = (values) => {
+        return values
+            .flatMap(value => String(value || '').split(/[;|]/g))
+            .map(token => normalizeImportText(token).replace(/\s+/g, '_'))
+            .filter(Boolean);
+    };
+
     // Support both Unix and Windows newlines when users paste CSV text.
     const lines = csvText.split(/\r?\n/).filter(l => l.trim());
     const users = [];
     const errors = [];
+    const seenImportIds = new Set();
 
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i].trim();
         if (!line) continue;
 
-        const parts = line.split(',').map(p => p.trim());
+        const parts = parseCsvRow(line);
+        const maybeHeader = parts.map(normalizeImportText);
+        if (maybeHeader[0] === 'id' && maybeHeader[1] === 'name' && maybeHeader[3] === 'role') {
+            continue;
+        }
+
         if (parts.length < 4) {
             errors.push(`Row ${i + 1}: Incomplete data (need at least ID, Name, Grade, Role)`);
             continue;
         }
 
-        const [id, name, grade, role, ...permsParts] = parts;
+        const [idRaw, nameRaw, gradeRaw, roleRaw, autoDoorRaw = '', ...remainingColumns] = parts;
+        const id = normalizeImportCell(idRaw).toUpperCase();
+        const name = normalizeImportCell(nameRaw);
+        const grade = normalizeImportCell(gradeRaw);
+        const role = normalizeImportText(roleRaw);
         
         if (!id || !name || !role) {
             errors.push(`Row ${i + 1}: Missing required fields (ID, Name, or Role)`);
@@ -11245,15 +11348,34 @@ async function processBulkUserImport() {
             continue;
         }
 
+        if (seenImportIds.has(id)) {
+            errors.push(`Row ${i + 1}: Duplicate ID '${id}' appears multiple times in this import.`);
+            continue;
+        }
+
+        seenImportIds.add(id);
+
+        const normalizedAutoDoorToken = normalizeImportText(autoDoorRaw).replace(/\s+/g, '_');
+        const autoDoorColumnLooksBoolean = normalizedAutoDoorToken === ''
+            || ['true', 'false', '1', '0', 'yes', 'no', 'y', 'n', 'on', 'off'].includes(normalizedAutoDoorToken);
+        const autoDoorOnSignIn = autoDoorColumnLooksBoolean ? parseImportBoolean(autoDoorRaw, false) : false;
+        const permissionColumns = autoDoorColumnLooksBoolean
+            ? remainingColumns
+            : [autoDoorRaw, ...remainingColumns];
+        const permissionTokens = parsePermissionTokens(permissionColumns);
+        const permissionTokenSet = new Set(permissionTokens);
+
         const user = {
-            id: id.toUpperCase(),
+            id,
             name,
             grade: grade || '0',
             role,
+            autoTriggerAttentionOnSignIn: autoDoorOnSignIn,
+            auto_trigger_attention_on_sign_in: autoDoorOnSignIn,
             permissions: role === 'student' ? {
-                canCreateProjects: permsParts.includes('create_project'),
-                canJoinProjects: permsParts.includes('join_project'),
-                canSignOut: permsParts.includes('signout')
+                canCreateProjects: permissionTokenSet.has('create_project') || permissionTokenSet.has('create_projects'),
+                canJoinProjects: permissionTokenSet.has('join_project') || permissionTokenSet.has('join_projects'),
+                canSignOut: permissionTokenSet.has('signout') || permissionTokenSet.has('sign_out')
             } : {
                 canCreateProjects: true,
                 canJoinProjects: true,
@@ -11277,25 +11399,58 @@ async function processBulkUserImport() {
     const authOk = await ensureBulkDeletionAuth('bulk importing users');
     if (!authOk) return;
 
-    // Import users
+    // Import users to Supabase
     let imported = 0;
     let skipped = 0;
+    let failed = 0;
+    let permsFailed = 0;
+    const existingIds = new Set(mockUsers.map(u => String(u?.id || '').trim().toUpperCase()).filter(Boolean));
 
     for (const user of users) {
-        if (mockUsers.find(u => u.id === user.id)) {
+        if (existingIds.has(user.id)) {
             skipped++;
             continue;
         }
 
-        mockUsers.push({
-            ...user,
-            createdAt: new Date().toISOString()
+        const created = await addUserToSupabase({
+            id: user.id,
+            name: user.name,
+            grade: user.grade,
+            role: user.role,
+            status: 'Active',
+            auto_trigger_attention_on_sign_in: user.auto_trigger_attention_on_sign_in
         });
+
+        if (!created) {
+            failed++;
+            continue;
+        }
+
+        existingIds.add(user.id);
         imported++;
+
+        if (user.role === 'student') {
+            const saveResult = await saveUserPermissionsToSupabase(user.id, user.permissions);
+            if (saveResult?.error) {
+                permsFailed++;
+            }
+        }
     }
 
+    await refreshUsersFromSupabase();
+
     closeModal();
-    showToast(`${imported} user(s) imported successfully${skipped > 0 ? `, ${skipped} skipped (already exist)` : ''}.`, 'success');
+    if (imported > 0) {
+        const details = `${imported} user(s) imported successfully`
+            + `${skipped > 0 ? `, ${skipped} skipped (already exist)` : ''}`
+            + `${failed > 0 ? `, ${failed} failed` : ''}`
+            + `${permsFailed > 0 ? `, ${permsFailed} permission update(s) failed` : ''}`;
+        showToast(`${details}.`, (failed > 0 || permsFailed > 0) ? 'warning' : 'success');
+    } else {
+        showToast(`No users were imported${skipped > 0 ? ` (${skipped} duplicate IDs)` : ''}${failed > 0 ? `, ${failed} failed` : ''}.`, 'error');
+    }
+
+    addLog(currentUser.id, 'Bulk Import Users', `Imported ${imported} users (skipped=${skipped}, failed=${failed}, permsFailed=${permsFailed}).`);
     renderUsers();
 }
 

@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-const path = require('path');
 const { spawn } = require('child_process');
 const { createClient } = require('@supabase/supabase-js');
 
@@ -11,8 +10,7 @@ const KIOSK_ID = process.env.KIOSK_ID || 'KIOSK-001';
 const LOCK_OVERLAY_COMMAND_BIN = String(process.env.LOCK_OVERLAY_COMMAND_BIN || '').trim();
 const LOCK_OVERLAY_COMMAND_ARGS = parseCommandArgs(process.env.LOCK_OVERLAY_COMMAND_ARGS || '');
 const LEGACY_LOCK_OVERLAY_COMMAND = String(process.env.LOCK_OVERLAY_COMMAND || '').trim();
-const PYTHON_BIN = process.env.PYTHON_BIN || 'python3';
-const UNLOCK_SCRIPT_PATH = process.env.UNLOCK_SCRIPT_PATH || path.resolve(__dirname, 'unlock_door.py');
+const LED_TRIGGER_URL = resolveLedTriggerUrl();
 
 if (!SUPABASE_URL || !SUPABASE_KEY) {
     console.error('[kiosk-listener] Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY/SUPABASE_KEY');
@@ -42,6 +40,24 @@ function parseCommandArgs(rawValue) {
         console.error('[kiosk-listener] Invalid LOCK_OVERLAY_COMMAND_ARGS. Expected JSON array of strings.');
         console.error('[kiosk-listener] Parse error:', error.message);
         return [];
+    }
+}
+
+function resolveLedTriggerUrl() {
+    const explicitUrl = String(process.env.LED_TRIGGER_URL || '').trim();
+    if (explicitUrl) return explicitUrl;
+
+    const gpioUrl = String(process.env.GPIO_SERVER_URL || '').trim();
+    if (!gpioUrl) return '';
+
+    try {
+        const parsed = new URL(gpioUrl);
+        parsed.pathname = '/trigger';
+        parsed.search = '';
+        parsed.hash = '';
+        return parsed.toString();
+    } catch {
+        return '';
     }
 }
 
@@ -99,41 +115,112 @@ function runOverlayCommand() {
     });
 }
 
-function runUnlockScript() {
+function triggerDoorAttentionLed() {
     return new Promise((resolve) => {
-        const child = spawn(PYTHON_BIN, [UNLOCK_SCRIPT_PATH], {
-            stdio: ['ignore', 'pipe', 'pipe']
+        if (!LED_TRIGGER_URL) {
+            console.warn('[kiosk-listener] LED_TRIGGER_URL/GPIO_SERVER_URL not configured; attention LED skipped.');
+            resolve(false);
+            return;
+        }
+
+        let url;
+        try {
+            url = new URL(LED_TRIGGER_URL);
+        } catch {
+            console.error('[kiosk-listener] LED trigger URL is invalid:', LED_TRIGGER_URL);
+            resolve(false);
+            return;
+        }
+
+        const protocol = url.protocol === 'https:' ? require('https') : require('http');
+        const req = protocol.request(url, {
+            method: 'GET',
+            timeout: 5000
+        }, (res) => {
+            res.resume();
+            resolve(res.statusCode >= 200 && res.statusCode < 500);
         });
 
-        let stderr = '';
-        let stdout = '';
-
-        child.stdout.on('data', (chunk) => {
-            stdout += String(chunk);
-        });
-
-        child.stderr.on('data', (chunk) => {
-            stderr += String(chunk);
-        });
-
-        child.on('error', (error) => {
-            console.error('[kiosk-listener] Failed to launch unlock script:', error.message);
+        req.on('error', (error) => {
+            console.error('[kiosk-listener] Failed to trigger attention LED:', error.message);
             resolve(false);
         });
 
-        child.on('close', (code) => {
-            if (stdout.trim()) console.log(`[kiosk-listener] unlock stdout: ${stdout.trim()}`);
-            if (stderr.trim()) console.error(`[kiosk-listener] unlock stderr: ${stderr.trim()}`);
-
-            if (code === 0) {
-                console.log('[kiosk-listener] Door unlock pulse executed successfully.');
-                resolve(true);
-            } else {
-                console.error(`[kiosk-listener] unlock_door.py exited with code ${code}`);
-                resolve(false);
-            }
+        req.on('timeout', () => {
+            req.destroy(new Error('LED trigger request timed out'));
         });
+
+        req.end();
     });
+}
+
+function announceDoorOpen() {
+    return new Promise((resolve) => {
+        const candidates = [
+            ['spd-say', ['door open']],
+            ['espeak', ['door open']],
+            ['say', ['door open']]
+        ];
+
+        const tryNext = (index) => {
+            if (index >= candidates.length) {
+                console.log('door open');
+                resolve(true);
+                return;
+            }
+
+            const [bin, args] = candidates[index];
+            const child = spawn(bin, args, {
+                stdio: ['ignore', 'pipe', 'pipe']
+            });
+
+            let stderr = '';
+            let stdout = '';
+
+            child.stdout.on('data', (chunk) => {
+                stdout += String(chunk);
+            });
+
+            child.stderr.on('data', (chunk) => {
+                stderr += String(chunk);
+            });
+
+            child.on('error', () => {
+                tryNext(index + 1);
+            });
+
+            child.on('close', (code) => {
+                if (code === 0) {
+                    if (stdout.trim()) console.log(`[kiosk-listener] announce stdout: ${stdout.trim()}`);
+                    if (stderr.trim()) console.error(`[kiosk-listener] announce stderr: ${stderr.trim()}`);
+                    resolve(true);
+                    return;
+                }
+
+                tryNext(index + 1);
+            });
+        };
+
+        tryNext(0);
+    });
+}
+
+async function handleDoorOpenRequest(contextLabel) {
+    const announced = await announceDoorOpen();
+    const ledTriggered = await triggerDoorAttentionLed();
+
+    if (announced && ledTriggered) {
+        console.log(`[kiosk-listener] ${contextLabel}: announced "door open" and triggered attention LED.`);
+        return true;
+    }
+
+    if (!announced) {
+        console.error(`[kiosk-listener] ${contextLabel}: failed to announce door open.`);
+    }
+    if (!ledTriggered) {
+        console.error(`[kiosk-listener] ${contextLabel}: failed to trigger attention LED.`);
+    }
+    return announced && ledTriggered;
 }
 
 async function clearUnlockPulseFlag() {
@@ -169,8 +256,8 @@ async function processKioskSettingsRow(row, source = 'event') {
 
     pulseInFlight = true;
     try {
-        console.log(`[kiosk-listener] (${source}) unlock pulse requested for kiosk ${KIOSK_ID}.`);
-        await runUnlockScript();
+        console.log(`[kiosk-listener] (${source}) door open requested for kiosk ${KIOSK_ID}.`);
+        await handleDoorOpenRequest(`kiosk_settings/${source}`);
     } finally {
         await clearUnlockPulseFlag();
         pulseInFlight = false;
@@ -256,7 +343,7 @@ async function processDoorUnlockJob(job) {
         if (!claimedJob) return;
 
         console.log(`[kiosk-listener] Processing door queue job ${claimedJob.id} for kiosk ${KIOSK_ID}.`);
-        const success = await runUnlockScript();
+        const success = await handleDoorOpenRequest(`door_unlock_job/${claimedJob.id}`);
 
         await completeDoorUnlockJob(claimedJob.id, success, {
             statusMessage: success

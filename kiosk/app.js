@@ -1526,15 +1526,6 @@ async function saveDoorCallingEnabledToSupabase(enabled, targetKioskId = kioskId
     return true;
 }
 
-function getDoorRequestHeaders() {
-    const headers = { 'Content-Type': 'application/json' };
-    const token = String(window.APP_ENV?.GPIO_DOOR_TOKEN ?? envConfig.GPIO_DOOR_TOKEN ?? '').trim();
-    if (token) {
-        headers['X-Door-Token'] = token;
-    }
-    return headers;
-}
-
 const DOOR_LINK_BACKGROUND_INTERVAL_MS = 20000;
 const DOOR_STATUS_RETRY_COOLDOWN_MS = 20000;
 const doorLinkHealthState = {
@@ -1569,8 +1560,8 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 4500) {
 
 function getDoorLinkUnavailableToastMessage() {
     const details = String(doorLinkHealthState.lastError || '').trim();
-    if (!details) return 'Door endpoint unreachable/unavailable.';
-    return `Door endpoint unreachable/unavailable. ${details}`;
+    if (!details) return 'Attention light endpoint unreachable/unavailable.';
+    return `Attention light endpoint unreachable/unavailable. ${details}`;
 }
 
 async function refreshDoorLinkHealth(options = {}) {
@@ -1592,8 +1583,7 @@ async function refreshDoorLinkHealth(options = {}) {
 
     doorLinkHealthState.inFlight = (async () => {
         const supabaseUrl = getSupabaseDoorPingUrl();
-        const doorStatusUrl = getDoorEndpointUrl('/status');
-        const doorUnlockUrl = getDoorEndpointUrl('/unlock');
+        const attentionUrl = getLedAttentionEndpointUrl();
         const supabaseKey = String(window.APP_ENV?.SUPABASE_KEY ?? envConfig.SUPABASE_KEY ?? '').trim();
         let supabaseReachable = false;
         let doorReachable = false;
@@ -1619,34 +1609,19 @@ async function refreshDoorLinkHealth(options = {}) {
             }
         }
 
-        if (!doorStatusUrl && !doorUnlockUrl) {
-            if (!lastError) lastError = 'Door endpoint is not configured.';
+        if (!attentionUrl) {
+            if (!lastError) lastError = 'Attention light endpoint is not configured.';
         } else {
             try {
-                const doorResponse = await fetchWithTimeout(doorStatusUrl, {
+                await fetchWithTimeout(attentionUrl, {
                     method: 'GET',
-                    headers: getDoorRequestHeaders()
+                    mode: 'no-cors',
+                    cache: 'no-store'
                 }, 4500);
-                if (doorResponse.ok) {
-                    doorReachable = true;
-                } else if (doorResponse.status === 404 && doorUnlockUrl) {
-                    const unlockProbe = await fetchWithTimeout(doorUnlockUrl, {
-                        method: 'GET',
-                        headers: getDoorRequestHeaders()
-                    }, 4500);
-                    doorReachable = unlockProbe.ok;
-                    if (!doorReachable && !lastError) {
-                        lastError = `Door unlock probe failed (HTTP ${unlockProbe.status}).`;
-                    }
-                } else {
-                    doorReachable = false;
-                    if (!lastError) {
-                        lastError = `Door status endpoint failed (HTTP ${doorResponse.status}).`;
-                    }
-                }
+                doorReachable = true;
             } catch (error) {
                 if (!lastError) {
-                    lastError = `Door status endpoint failed (${String(error?.message || error)}).`;
+                    lastError = `Attention light endpoint failed (${String(error?.message || error)}).`;
                 }
             }
         }
@@ -1655,7 +1630,7 @@ async function refreshDoorLinkHealth(options = {}) {
         doorLinkHealthState.supabaseReachable = supabaseReachable;
         doorLinkHealthState.doorReachable = doorReachable;
         doorLinkHealthState.available = doorReachable;
-        doorLinkHealthState.lastError = doorLinkHealthState.available ? '' : (lastError || 'Door endpoint unreachable/unavailable.');
+        doorLinkHealthState.lastError = doorLinkHealthState.available ? '' : (lastError || 'Attention light endpoint unreachable/unavailable.');
     })();
 
     try {
@@ -2025,6 +2000,78 @@ async function triggerDoorAttentionLed() {
     } catch (_) {
         return false;
     }
+}
+
+function shouldAutoTriggerAttentionOnSignIn(user) {
+    if (!user || typeof user !== 'object') return false;
+
+    const candidates = [
+        user.autoTriggerAttentionOnSignIn,
+        user.auto_trigger_attention_on_sign_in,
+        user.attention_light_auto_trigger_sign_in,
+        user.attentionLightAutoTriggerSignIn,
+        user.perms?.autoTriggerAttentionOnSignIn,
+        user.perms?.auto_trigger_attention_on_sign_in
+    ];
+
+    for (const value of candidates) {
+        if (value === undefined || value === null || value === '') continue;
+        if (typeof value === 'boolean') return value;
+        if (typeof value === 'number') return value !== 0;
+        const normalized = String(value).trim().toLowerCase();
+        if (['true', '1', 'yes', 'y', 'on'].includes(normalized)) return true;
+        if (['false', '0', 'no', 'n', 'off'].includes(normalized)) return false;
+    }
+
+    return false;
+}
+
+async function triggerSignInAttentionIfEnabled(user) {
+    if (!shouldAutoTriggerAttentionOnSignIn(user)) return;
+
+    const actorId = user?.id || 'SYSTEM';
+    const actorRole = user?.role || 'system';
+    let queueAttemptError = '';
+
+    if (isDoorCallingEnabled()) {
+        try {
+            const job = await enqueueDoorUnlockJob({
+                actionType: 'sign-in',
+                item: {
+                    id: `SIGNIN-${actorId}`,
+                    name: `${actorId} sign-in`
+                },
+                quantity: 1,
+                projectName: 'User Sign-in',
+                actorId
+            });
+
+            const result = await waitForDoorUnlockJobResult(job.id, {
+                timeoutMs: 10000,
+                pollMs: 350
+            });
+
+            if (result.ok) {
+                addLog(actorId, 'Door Unlock', `Auto door unlock triggered on sign-in for ${actorId} [role=${actorRole}] via queue job ${job.id}.`);
+                return;
+            }
+
+            queueAttemptError = String(result?.statusMessage || result?.status || 'queue request failed');
+        } catch (error) {
+            queueAttemptError = String(error?.message || error || 'queue request failed');
+        }
+    }
+
+    const blinked = await triggerDoorAttentionLed();
+    if (blinked) {
+        const fallbackReason = queueAttemptError ? ` Queue fallback reason: ${queueAttemptError}.` : '';
+        addLog(actorId, 'Door Attention', `Auto attention fallback triggered on sign-in for ${actorId} [role=${actorRole}].${fallbackReason}`);
+        return;
+    }
+
+    const failureReason = queueAttemptError ? ` Queue error: ${queueAttemptError}.` : '';
+    addLog(actorId, 'Door Attention Failed', `Auto sign-in door trigger failed for ${actorId} [role=${actorRole}].${failureReason}`);
+    showToast('Auto sign-in door trigger failed for this user.', 'warning');
 }
 
 async function requestDoorUnlockAndLogAccess({ actionType, item, quantity = 1, projectName = 'Personal' }) {
@@ -2913,6 +2960,7 @@ function login(user) {
     // Log the login event
     addLog(user.id, 'User Login', `${user.name} (${user.role}) logged in`);
     triggerActivityLogQueueFlush();
+    void triggerSignInAttentionIfEnabled(user);
 
     // Update Profile UI
     const profileAvatar = document.getElementById('user-avatar');
@@ -6804,6 +6852,7 @@ async function openUserModal(editId = null) {
     const cProjects = isEdit ? (userToEdit.perms?.canCreateProjects ?? false) : false;
     const cJoin = isEdit ? (userToEdit.perms?.canJoinProjects ?? true) : true;
     const cSignOut = isEdit ? (userToEdit.perms?.canSignOut ?? false) : false;
+    const signInAttentionAutotrigger = isEdit ? shouldAutoTriggerAttentionOnSignIn(userToEdit) : false;
     const initialGrade = isEdit ? String(userToEdit.grade || '') : '';
 
     const html = `
@@ -6831,6 +6880,14 @@ async function openUserModal(editId = null) {
                     <option value="teacher" ${isEdit && userToEdit.role === 'teacher' ? 'selected' : ''}>Teacher</option>
                     <option value="developer" ${isEdit && userToEdit.role === 'developer' ? 'selected' : ''}>Developer</option>
                 </select>
+            </div>
+            <div class="form-group">
+                <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer">
+                    <input type="checkbox" id="user-signin-attention-autotrigger" ${signInAttentionAutotrigger ? 'checked' : ''}>
+                    Auto-trigger attention light when this user signs in
+                </label>
+                <small class="text-muted">When enabled, this user login will fire the configured LED attention endpoint.</small>
+            </div>
             <div class="form-group" id="class-assign-container" style="display: ${(!isEdit || userToEdit.role === 'student') ? 'block' : 'none'};">
                 <label>Assigned Class</label>
                 <select id="user-class-assign" class="form-control">
@@ -6903,6 +6960,7 @@ async function openUserModal(editId = null) {
         const name = document.getElementById('user-name-input').value.trim();
         const grade = document.getElementById('user-grade-input').value.trim();
         const role = document.getElementById('user-role-input').value;
+        const autoTriggerAttentionOnSignIn = document.getElementById('user-signin-attention-autotrigger')?.checked === true;
 
         // Developer role restrictions
         if (role === 'developer' && currentUser.role === 'teacher') {
@@ -6992,6 +7050,8 @@ async function openUserModal(editId = null) {
             userToEdit.name = name;
             userToEdit.role = role;
             userToEdit.grade = grade;
+            userToEdit.autoTriggerAttentionOnSignIn = autoTriggerAttentionOnSignIn;
+            userToEdit.auto_trigger_attention_on_sign_in = autoTriggerAttentionOnSignIn;
             userToEdit.perms = perms;
 
             // Update Class Alignment
@@ -7003,7 +7063,13 @@ async function openUserModal(editId = null) {
             });
 
             // Update in Supabase
-            const result = await updateUserInSupabase(id, { name, role, grade, status: userToEdit.status });
+            const result = await updateUserInSupabase(id, {
+                name,
+                role,
+                grade,
+                status: userToEdit.status,
+                auto_trigger_attention_on_sign_in: autoTriggerAttentionOnSignIn
+            });
             if (result.error) {
                 let errorMsg = 'Failed to update user in database.';
                 if (result.error.message) {
@@ -7029,6 +7095,8 @@ async function openUserModal(editId = null) {
                 name: name,
                 grade: grade,
                 role: role,
+                autoTriggerAttentionOnSignIn: autoTriggerAttentionOnSignIn,
+                auto_trigger_attention_on_sign_in: autoTriggerAttentionOnSignIn,
                 perms: perms,
                 status: 'Active'
             };
