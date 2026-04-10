@@ -915,8 +915,20 @@ async function loadStudentClasses() {
         dbClient.from('class_visibility_tags').select('class_id, visibility_tags(name)'),
         dbClient.from('class_due_policy').select('class_id, default_signout_minutes, class_period_minutes, timezone'),
         dbClient.from('class_due_policy_periods').select('class_id, start_time, end_time, return_class_periods, due_mode, due_minutes_before_end, due_at_time'),
-        dbClient.from('class_permissions').select('class_id, can_create_projects, can_join_projects, can_sign_out')
+        dbClient.from('class_permissions').select('class_id, can_create_projects, can_join_projects, can_sign_out, auto_trigger_attention_on_sign_in')
     ]);
+
+    let permissionsData = permissionsRes.data || [];
+    let permissionsError = permissionsRes.error;
+    if (permissionsError && isSchemaColumnError(permissionsError)) {
+        const fallbackPermissionsRes = await dbClient
+            .from('class_permissions')
+            .select('class_id, can_create_projects, can_join_projects, can_sign_out');
+        if (!fallbackPermissionsRes.error) {
+            permissionsData = fallbackPermissionsRes.data || [];
+            permissionsError = null;
+        }
+    }
 
     let duePeriodsData = duePeriodsRes.data || [];
     let duePeriodsError = duePeriodsRes.error;
@@ -937,7 +949,7 @@ async function loadStudentClasses() {
         classTagsRes.error,
         duePolicyRes.error,
         duePeriodsError,
-        permissionsRes.error
+        permissionsError
     ].filter(Boolean);
 
     if (errors.length > 0) {
@@ -1013,11 +1025,13 @@ async function loadStudentClasses() {
     });
 
     const permissionsByClass = {};
-    (permissionsRes.data || []).forEach(row => {
+    (permissionsData || []).forEach(row => {
         permissionsByClass[row.class_id] = {
             canCreateProjects: row.can_create_projects,
             canJoinProjects: row.can_join_projects,
-            canSignOut: row.can_sign_out
+            canSignOut: row.can_sign_out,
+            autoTriggerAttentionOnSignIn: !!row.auto_trigger_attention_on_sign_in,
+            auto_trigger_attention_on_sign_in: !!row.auto_trigger_attention_on_sign_in
         };
     });
 
@@ -1036,7 +1050,9 @@ async function loadStudentClasses() {
         defaultPermissions: permissionsByClass[cls.id] || {
             canCreateProjects: false,
             canJoinProjects: true,
-            canSignOut: true
+            canSignOut: true,
+            autoTriggerAttentionOnSignIn: false,
+            auto_trigger_attention_on_sign_in: false
         }
     }));
 
@@ -1070,7 +1086,9 @@ async function saveStudentClassToSupabase(cls) {
     const defaultPermissions = cls.defaultPermissions || {
         canCreateProjects: false,
         canJoinProjects: true,
-        canSignOut: true
+        canSignOut: true,
+        autoTriggerAttentionOnSignIn: false,
+        auto_trigger_attention_on_sign_in: false
     };
 
     let classId = cls.id;
@@ -1129,14 +1147,33 @@ async function saveStudentClassToSupabase(cls) {
         return false;
     }
 
-    const { error: permissionsError } = await dbClient.from('class_permissions').upsert([
-        {
+    const permissionsPayload = {
+        class_id: classId,
+        can_create_projects: !!defaultPermissions.canCreateProjects,
+        can_join_projects: !!defaultPermissions.canJoinProjects,
+        can_sign_out: !!defaultPermissions.canSignOut,
+        auto_trigger_attention_on_sign_in: !!(
+            defaultPermissions.autoTriggerAttentionOnSignIn
+            ?? defaultPermissions.auto_trigger_attention_on_sign_in
+        )
+    };
+
+    let { error: permissionsError } = await dbClient.from('class_permissions').upsert([
+        permissionsPayload
+    ], { onConflict: 'class_id' });
+
+    if (permissionsError && isSchemaColumnError(permissionsError)) {
+        const fallbackPermissionsPayload = {
             class_id: classId,
             can_create_projects: !!defaultPermissions.canCreateProjects,
             can_join_projects: !!defaultPermissions.canJoinProjects,
             can_sign_out: !!defaultPermissions.canSignOut
-        }
-    ], { onConflict: 'class_id' });
+        };
+
+        ({ error: permissionsError } = await dbClient.from('class_permissions').upsert([
+            fallbackPermissionsPayload
+        ], { onConflict: 'class_id' }));
+    }
 
     if (permissionsError) {
         console.error('Error upserting class_permissions:', permissionsError);
@@ -1612,13 +1649,17 @@ async function addItemToSupabase(item) {
             || msg.includes('undefined_column');
     };
 
+    const resolvedThreshold = Number.isFinite(Number(item.threshold))
+        ? Math.max(0, Number(item.threshold))
+        : 0;
+
     const payload = {
         id: item.id,
         name: item.name,
         category: item.category,
         sku: item.sku,
         stock: item.stock || 0,
-        threshold: item.threshold || 5,
+        threshold: resolvedThreshold,
         status: item.status || 'Active',
         part_number: item.part_number || null,
         location: item.location || item.storageLocation || null,
@@ -1659,7 +1700,7 @@ async function addItemToSupabase(item) {
                 category: item.category,
                 sku: item.sku,
                 stock: item.stock || 0,
-                threshold: item.threshold || 5,
+                threshold: resolvedThreshold,
                 status: item.status || 'Active',
                 part_number: item.part_number || null,
                 item_type: item.item_type || 'item',

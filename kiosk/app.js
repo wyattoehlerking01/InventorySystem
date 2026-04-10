@@ -785,12 +785,28 @@ function getStudentClassesForUser(userId) {
  */
 function getMergedPermissionsForStudent(user) {
     const classes = getStudentClassesForUser(user.id);
-    if (classes.length === 0) return user.perms || { canCreateProjects: false, canJoinProjects: false, canSignOut: false };
+    if (classes.length === 0) {
+        return user.perms || {
+            canCreateProjects: false,
+            canJoinProjects: false,
+            canSignOut: false,
+            autoTriggerAttentionOnSignIn: false,
+            auto_trigger_attention_on_sign_in: false
+        };
+    }
 
     return {
         canCreateProjects: classes.some(c => c.defaultPermissions?.canCreateProjects) || (user.perms?.canCreateProjects ?? false),
         canJoinProjects:   classes.some(c => c.defaultPermissions?.canJoinProjects)   || (user.perms?.canJoinProjects   ?? false),
-        canSignOut:        classes.some(c => c.defaultPermissions?.canSignOut)        || (user.perms?.canSignOut         ?? false)
+        canSignOut:        classes.some(c => c.defaultPermissions?.canSignOut)        || (user.perms?.canSignOut         ?? false),
+        autoTriggerAttentionOnSignIn:
+            classes.some(c => c.defaultPermissions?.autoTriggerAttentionOnSignIn || c.defaultPermissions?.auto_trigger_attention_on_sign_in)
+            || (user.perms?.autoTriggerAttentionOnSignIn ?? false)
+            || (user.perms?.auto_trigger_attention_on_sign_in ?? false),
+        auto_trigger_attention_on_sign_in:
+            classes.some(c => c.defaultPermissions?.autoTriggerAttentionOnSignIn || c.defaultPermissions?.auto_trigger_attention_on_sign_in)
+            || (user.perms?.autoTriggerAttentionOnSignIn ?? false)
+            || (user.perms?.auto_trigger_attention_on_sign_in ?? false)
     };
 }
 
@@ -2005,13 +2021,17 @@ async function triggerDoorAttentionLed() {
 function shouldAutoTriggerAttentionOnSignIn(user) {
     if (!user || typeof user !== 'object') return false;
 
+    const mergedPerms = user.role === 'student' ? getMergedPermissionsForStudent(user) : null;
+
     const candidates = [
         user.autoTriggerAttentionOnSignIn,
         user.auto_trigger_attention_on_sign_in,
         user.attention_light_auto_trigger_sign_in,
         user.attentionLightAutoTriggerSignIn,
         user.perms?.autoTriggerAttentionOnSignIn,
-        user.perms?.auto_trigger_attention_on_sign_in
+        user.perms?.auto_trigger_attention_on_sign_in,
+        mergedPerms?.autoTriggerAttentionOnSignIn,
+        mergedPerms?.auto_trigger_attention_on_sign_in
     ];
 
     for (const value of candidates) {
@@ -2091,7 +2111,7 @@ async function requestDoorUnlockAndLogAccess({ actionType, item, quantity = 1, p
         return true;
     } else {
         addLog(actorId, 'Door Attention Failed', `LED attention could not be triggered for ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName} [role=${actorRole}].`);
-        showToast('Door attention light unavailable. Checkout blocked for behind-door item.', 'error');
+        showToast('Door trigger unavailable. Checkout blocked for behind-door item.', 'error');
         return false;
     }
 }
@@ -2107,7 +2127,7 @@ async function requestDoorHoldOpenAndLogAccess(reason = 'manual door hold-open')
 
     const blinked = await triggerDoorAttentionLed();
     addLog(actorId, 'Door Hold Open', `LED-only attention mode used for hold-open request by ${actorId} [role=${actorRole}] (${reason}).`);
-    showToast('LED-only mode active. Attention light triggered.', blinked ? 'success' : 'warning');
+    showToast('LED-only mode active. Door trigger sent.', blinked ? 'success' : 'warning');
     return true;
 }
 
@@ -2117,7 +2137,7 @@ async function requestDoorReleaseAndLogAccess(reason = 'manual door release') {
 
     const blinked = await triggerDoorAttentionLed();
     addLog(actorId, 'Door Release', `LED-only attention mode used for door release request by ${actorId} [role=${actorRole}] (${reason}).`);
-    showToast('LED-only mode active. Attention light triggered.', blinked ? 'success' : 'warning');
+    showToast('LED-only mode active. Door trigger sent.', blinked ? 'success' : 'warning');
     return true;
 }
 
@@ -2149,7 +2169,7 @@ async function requestManualDoorUnlockAndLogAccess(reason = 'manual debug contro
     } else {
         addLog(actorId, 'Door Attention Failed', `Manual attention trigger failed for ${actorId} [role=${actorRole}] (${reason}).`);
     }
-    showToast('Attention light triggered.', blinked ? 'success' : 'warning');
+    showToast('Door trigger sent.', blinked ? 'success' : 'warning');
     return true;
 }
 
@@ -2384,7 +2404,7 @@ async function checkoutBasket() {
         });
 
         if (!unlocked) {
-            showToast('Sign-out canceled. Attention light could not be triggered for behind-door item.', 'error');
+            showToast('Sign-out canceled. Door could not be opened for behind-door item.', 'error');
             return;
         }
     }
@@ -5995,7 +6015,7 @@ async function openSignOutModal(itemId) {
                 });
 
                 if (!unlocked) {
-                    showToast('Sign-out canceled. Attention light could not be triggered for behind-door item.', 'error');
+                    showToast('Sign-out canceled. Door could not be opened for behind-door item.', 'error');
                     return;
                 }
             }
@@ -6228,6 +6248,11 @@ function openEditClassModal(classId) {
     const cls = studentClasses.find(c => c.id === classId);
     if (!cls) return;
 
+    const classAutoTriggerOnSignIn = !!(
+        cls.defaultPermissions?.autoTriggerAttentionOnSignIn
+        ?? cls.defaultPermissions?.auto_trigger_attention_on_sign_in
+    );
+
     const availableStudents = mockUsers.filter(u => u.role === 'student');
     const teacherCandidates = mockUsers.filter(u => ['teacher', 'developer'].includes(u.role));
     const studentOptions = availableStudents.map(s =>
@@ -6303,6 +6328,13 @@ function openEditClassModal(classId) {
                 <small class="text-muted">Used when a sign-out happens outside any class period — student gets this many minutes to return the item.</small>
             </div>
             <div class="form-group">
+                <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
+                    <input type="checkbox" id="edit-class-auto-signin-door" ${classAutoTriggerOnSignIn ? 'checked' : ''}>
+                    Auto-trigger door on student sign-in (class default)
+                </label>
+                <small class="text-muted">Applies to students in this class.</small>
+            </div>
+            <div class="form-group">
                 <label>Class Periods</label>
                 <div style="display:grid;grid-template-columns:1fr 1fr 1fr 36px;gap:0.5rem;margin-bottom:0.25rem">
                     <span class="text-muted" style="font-size:0.8rem">Start</span>
@@ -6342,6 +6374,7 @@ function openEditClassModal(classId) {
         const checkedTags = Array.from(document.querySelectorAll('.edit-class-tag-cb:checked')).map(cb => cb.value);
         const defaultDueMinutes = Math.max(1, parseInt(document.getElementById('edit-class-default-due').value, 10) || 80);
         const timezone = document.getElementById('edit-class-timezone').value;
+        const classAutoSignInDoor = document.getElementById('edit-class-auto-signin-door')?.checked === true;
         const parsedRanges = collectPeriodRowsFromModal('edit-class-period-rows');
         const selectedTeacherId = currentUser.role === 'developer'
             ? (document.getElementById('edit-class-teacher')?.value || null)
@@ -6358,6 +6391,13 @@ function openEditClassModal(classId) {
                 timezone,
                 periodRanges: parsedRanges
             });
+            cls.defaultPermissions = {
+                canCreateProjects: !!cls.defaultPermissions?.canCreateProjects,
+                canJoinProjects: !!cls.defaultPermissions?.canJoinProjects,
+                canSignOut: !!cls.defaultPermissions?.canSignOut,
+                autoTriggerAttentionOnSignIn: classAutoSignInDoor,
+                auto_trigger_attention_on_sign_in: classAutoSignInDoor
+            };
 
             const saved = await saveStudentClassToSupabase(cls);
             if (!saved) {
@@ -6397,6 +6437,7 @@ document.getElementById('create-class-btn')?.addEventListener('click', async () 
     ).join('');
 
     const defaultRangesHtml = buildPeriodRowsHtml(defaultDuePolicy.periodRanges);
+    const createClassAutoTriggerDefault = false;
     const teacherCandidates = mockUsers.filter(u => ['teacher', 'developer'].includes(u.role));
     const teacherFieldHtml = currentUser.role === 'developer'
         ? `
@@ -6453,6 +6494,13 @@ document.getElementById('create-class-btn')?.addEventListener('click', async () 
                 <small class="text-muted">Used when a sign-out happens outside any class period — student gets this many minutes to return the item.</small>
             </div>
             <div class="form-group">
+                <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;">
+                    <input type="checkbox" id="add-class-auto-signin-door" ${createClassAutoTriggerDefault ? 'checked' : ''}>
+                    Auto-trigger door on student sign-in (class default)
+                </label>
+                <small class="text-muted">Applies to students in this class.</small>
+            </div>
+            <div class="form-group">
                 <label>Class Periods</label>
                 <div style="display:grid;grid-template-columns:1fr 1fr 1fr 36px;gap:0.5rem;margin-bottom:0.25rem">
                     <span class="text-muted" style="font-size:0.8rem">Start</span>
@@ -6494,6 +6542,7 @@ document.getElementById('create-class-btn')?.addEventListener('click', async () 
             const checkedTags = Array.from(document.querySelectorAll('.add-class-tag-cb:checked')).map(cb => cb.value);
             const defaultDueMinutes = Math.max(1, parseInt(document.getElementById('add-class-default-due').value, 10) || 80);
             const timezone = document.getElementById('add-class-timezone').value;
+            const classAutoSignInDoor = document.getElementById('add-class-auto-signin-door')?.checked === true;
             const parsedRanges = collectPeriodRowsFromModal('add-class-period-rows');
             const selectedTeacherId = currentUser.role === 'developer'
                 ? (document.getElementById('add-class-teacher')?.value || null)
@@ -6515,7 +6564,9 @@ document.getElementById('create-class-btn')?.addEventListener('click', async () 
                     defaultPermissions: {
                         canCreateProjects: !!policyConfig.accessLevelDefaults.canCreateProjects,
                         canJoinProjects: !!policyConfig.accessLevelDefaults.canJoinProjects,
-                        canSignOut: !!policyConfig.accessLevelDefaults.canSignOut
+                        canSignOut: !!policyConfig.accessLevelDefaults.canSignOut,
+                        autoTriggerAttentionOnSignIn: classAutoSignInDoor,
+                        auto_trigger_attention_on_sign_in: classAutoSignInDoor
                     }
                 };
 
@@ -6949,6 +7000,10 @@ async function openUserModal(editId = null) {
             document.getElementById('perm-create-proj').checked = targetClass.defaultPermissions.canCreateProjects;
             document.getElementById('perm-join-proj').checked = targetClass.defaultPermissions.canJoinProjects;
             document.getElementById('perm-signout').checked = targetClass.defaultPermissions.canSignOut;
+            document.getElementById('user-signin-attention-autotrigger').checked = !!(
+                targetClass.defaultPermissions.autoTriggerAttentionOnSignIn
+                ?? targetClass.defaultPermissions.auto_trigger_attention_on_sign_in
+            );
             document.getElementById('perms-source-hint').textContent = 'Default from ' + targetClass.name;
         } else {
             document.getElementById('perms-source-hint').textContent = 'Manual Overrides';
@@ -7517,7 +7572,13 @@ document.getElementById('bulk-users-btn')?.addEventListener('click', () => {
                             visibleItemIds: [],
                             allowedVisibilityTags: [],
                             duePolicy: normalizeDuePolicy(defaultDuePolicy),
-                            defaultPermissions: { canCreateProjects: false, canJoinProjects: true, canSignOut: true }
+                            defaultPermissions: {
+                                canCreateProjects: false,
+                                canJoinProjects: true,
+                                canSignOut: true,
+                                autoTriggerAttentionOnSignIn: false,
+                                auto_trigger_attention_on_sign_in: false
+                            }
                         };
                         studentClasses.unshift(targetClass);
                         createdClassCount++;
