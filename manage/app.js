@@ -3908,6 +3908,8 @@ async function refreshPageDataFromSupabase(targetId) {
 }
 
 async function switchPage(targetId, title) {
+    const pageContentEl = document.getElementById('page-content');
+
     if (targetId === 'requests') {
         targetId = 'orders';
         title = 'Operations Hub';
@@ -3939,6 +3941,7 @@ async function switchPage(targetId, title) {
     _trackPageVisit(targetId);
     pageTitle.textContent = title;
     setActiveNavForTarget(targetId);
+    pageContentEl?.classList.toggle('inventory-scroll-lock', targetId === 'inventory');
 
     try {
         await refreshPageDataFromSupabase(targetId);

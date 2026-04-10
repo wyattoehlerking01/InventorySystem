@@ -732,6 +732,24 @@ h6 {
     position: relative;
 }
 
+.page-content.inventory-scroll-lock {
+    overflow: hidden;
+}
+
+#page-inventory.active {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+#page-inventory.active .table-container {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: auto;
+}
+
 .page {
     animation: fadeIn var(--transition-normal);
 }
