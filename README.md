@@ -146,14 +146,19 @@ Support guidance:
 - Note the screen and action being performed.
 - Include timestamp and affected user ID when available.
 
-Raspberry Pi 5 GPIO Relay Setup (Port 8080)
+Raspberry Pi GPIO/LED Door Service (Current: LED_Door.py)
 
-The repository includes `gpio_server.py`, which exposes:
+The current Raspberry Pi service is `LED_Door.py` (replacing legacy `gpio_server.py`).
 
-- `GET /status`
-- `POST /unlock`
-- `POST /hold-open`
-- `POST /release`
+`LED_Door.py` exposes:
+
+- `GET /trigger` to pulse the LED
+- `GET /status` for LED + telemetry status
+- `GET /telemetry` for upload diagnostics (last success + last RPC error)
+
+And in the current code path:
+
+- door-sensor edge logging to Supabase via `log_door_events_batch`
 
 For Raspberry Pi 5 relay control, the default unlock pin is now BCM GPIO 27 (physical pin 13).
 
@@ -179,38 +184,38 @@ sudo apt install -y python3 python3-rpi.gpio
 
 ```bash
 cd /opt/InventorySystem
-sudo DOOR_UNLOCK_PIN=27 python3 gpio_server.py
+sudo LED_PIN=17 DOOR_SENSOR_PIN=22 python3 LED_Door.py
 ```
 
-4) Validate status and unlock endpoint
+4) Validate status and trigger endpoint
 
 ```bash
-curl http://127.0.0.1:8080/status
-curl -X POST http://127.0.0.1:8080/unlock \
-	-H "Content-Type: application/json" \
-	-d '{"userId":"test","reason":"validation"}'
+curl http://127.0.0.1:8090/status
+curl http://127.0.0.1:8090/telemetry
+curl "http://127.0.0.1:8090/trigger?userId=test"
 ```
 
 Expected behavior:
 
-- Relay remains LOW at startup/idle.
-- Relay only energizes HIGH during unlock pulse.
-- `/status` should report `gpio_available: true` on hardware.
+- LED remains OFF at startup/idle.
+- LED turns ON only during `/trigger` pulse.
+- Door open/close transitions are queued locally and uploaded by RPC batch when Supabase env vars are set.
 
 5) Run at boot with systemd
 
-Create `/etc/systemd/system/inventory-gpio.service`:
+Create `/etc/systemd/system/inventory-led-door.service`:
 
 ```ini
 [Unit]
-Description=Inventory GPIO Door Server
+Description=Inventory LED Door Service
 After=network.target
 
 [Service]
 Type=simple
 WorkingDirectory=/opt/InventorySystem
-Environment=DOOR_UNLOCK_PIN=27
-ExecStart=/usr/bin/python3 /opt/InventorySystem/gpio_server.py
+Environment=LED_PIN=17
+Environment=DOOR_SENSOR_PIN=22
+ExecStart=/usr/bin/python3 /opt/InventorySystem/LED_Door.py
 Restart=always
 RestartSec=2
 User=root
@@ -223,13 +228,105 @@ Enable and start:
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now inventory-gpio.service
-sudo systemctl status inventory-gpio.service
+sudo systemctl enable --now inventory-led-door.service
+sudo systemctl status inventory-led-door.service
 ```
 
 6) LAN-only exposure
 
-If clients on your local subnet must reach the Pi at `http://<pi-ip>:8080/unlock`, allow only trusted LAN sources in firewall rules and block broader WAN exposure.
+If clients on your local subnet must reach the Pi at `http://<pi-ip>:8090/trigger`, allow only trusted LAN sources in firewall rules and block broader WAN exposure.
+
+Raspberry Pi Door Telemetry (A/A: RPC batch + restricted role)
+
+The current production path logs door open/close telemetry directly from `LED_Door.py`:
+
+- Script: `LED_Door.py`
+- Database migration: `sql/20260413_add_door_sensor_telemetry.sql`
+- Write path: batched RPC to `public.log_door_events_batch(...)`
+- Reliability path: local SQLite queue with retry and 7-day retention
+
+Why this path:
+
+- Keeps relay/sensor timing local on Pi (fast GPIO reaction)
+- Sends telemetry asynchronously in micro-batches (fewer network round-trips)
+- Prevents duplicate inserts with `(kiosk_id, sensor_id, local_seq)` uniqueness
+
+1) Apply SQL migration in Supabase
+
+- Run `sql/20260413_add_door_sensor_telemetry.sql`.
+- This creates `door_sensor_events`, `door_open_sessions`, and RPC `log_door_events_batch`.
+
+2) Install Pi dependency
+
+```bash
+sudo apt update
+sudo apt install -y python3 python3-rpi.gpio
+```
+
+3) Configure environment
+
+Required:
+
+- `SUPABASE_URL`
+- `SUPABASE_PI_RPC_KEY` (JWT with role claim `door_telemetry_writer`, or an equivalent credential restricted to telemetry RPC execution)
+- `KIOSK_ID`
+
+Common optional values:
+
+- `DOOR_SENSOR_PIN` (default `22`)
+- `DOOR_SENSOR_OPEN_STATE` (default `HIGH`)
+- `DOOR_SENSOR_PULL` (default `UP`)
+- `DOOR_SENSOR_BOUNCE_SECONDS` (default `0.08`)
+- `DOOR_QUEUE_BATCH_SIZE` (default `40`)
+- `DOOR_QUEUE_FLUSH_SECONDS` (default `0.6`)
+- `DOOR_QUEUE_RETENTION_DAYS` (default `7`)
+- `DOOR_HEARTBEAT_SECONDS` (default `60`)
+- `DOOR_QUEUE_DB_PATH` (default `/var/lib/inventory-door/telemetry-queue.db`)
+- `DOOR_UNLOCK_CONTEXT_FILE` (default `/var/lib/inventory-door/unlock-context.json`)
+
+4) Run manually
+
+```bash
+cd /opt/InventorySystem
+python3 LED_Door.py
+```
+
+5) Run at boot with systemd
+
+Create `/etc/systemd/system/inventory-door-telemetry.service`:
+
+```ini
+[Unit]
+Description=Inventory Door Telemetry (LED_Door)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/InventorySystem
+EnvironmentFile=/etc/default/inventory-door-telemetry
+ExecStart=/usr/bin/python3 /opt/InventorySystem/LED_Door.py
+Restart=always
+RestartSec=2
+User=root
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start:
+
+```bash
+sudo mkdir -p /var/lib/inventory-door
+sudo systemctl daemon-reload
+sudo systemctl enable --now inventory-door-telemetry.service
+sudo systemctl status inventory-door-telemetry.service
+```
+
+Note:
+
+- `gpio_server.py` is legacy/deprecated for this deployment.
+- `pi/door_telemetry_agent.py` is kept as an optional standalone telemetry worker, but telemetry now runs inside `LED_Door.py`.
 
 Contributions
 
