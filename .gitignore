@@ -32,6 +32,12 @@ build/
 .env.*
 !.env.example
 
+# Local Pi/runtime env files (never commit secrets)
+pi/*.env
+pi/*.env.local
+pi/*.secrets
+*.local.env
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

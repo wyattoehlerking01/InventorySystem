@@ -2051,46 +2051,13 @@ async function triggerSignInAttentionIfEnabled(user) {
 
     const actorId = user?.id || 'SYSTEM';
     const actorRole = user?.role || 'system';
-    let queueAttemptError = '';
-
-    if (isDoorCallingEnabled()) {
-        try {
-            const job = await enqueueDoorUnlockJob({
-                actionType: 'sign-in',
-                item: {
-                    id: `SIGNIN-${actorId}`,
-                    name: `${actorId} sign-in`
-                },
-                quantity: 1,
-                projectName: 'User Sign-in',
-                actorId
-            });
-
-            const result = await waitForDoorUnlockJobResult(job.id, {
-                timeoutMs: 10000,
-                pollMs: 350
-            });
-
-            if (result.ok) {
-                addLog(actorId, 'Door Unlock', `Auto door unlock triggered on sign-in for ${actorId} [role=${actorRole}] via queue job ${job.id}.`);
-                return;
-            }
-
-            queueAttemptError = String(result?.statusMessage || result?.status || 'queue request failed');
-        } catch (error) {
-            queueAttemptError = String(error?.message || error || 'queue request failed');
-        }
-    }
-
     const blinked = await triggerDoorAttentionLed();
     if (blinked) {
-        const fallbackReason = queueAttemptError ? ` Queue fallback reason: ${queueAttemptError}.` : '';
-        addLog(actorId, 'Door Attention', `Auto attention fallback triggered on sign-in for ${actorId} [role=${actorRole}].${fallbackReason}`);
+        addLog(actorId, 'Door Attention', `Auto attention triggered on sign-in for ${actorId} [role=${actorRole}].`);
         return;
     }
 
-    const failureReason = queueAttemptError ? ` Queue error: ${queueAttemptError}.` : '';
-    addLog(actorId, 'Door Attention Failed', `Auto sign-in door trigger failed for ${actorId} [role=${actorRole}].${failureReason}`);
+    addLog(actorId, 'Door Attention Failed', `Auto sign-in door trigger failed for ${actorId} [role=${actorRole}].`);
     showToast('Auto sign-in door trigger failed for this user.', 'warning');
 }
 
