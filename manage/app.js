@@ -6436,7 +6436,7 @@ async function openSignOutModal(itemId) {
                     </select>
                 </div>
                 <div class="form-group hidden" id="so-assignee-wrap">
-                    <label>Assign To</label>
+                    <label id="so-assignee-label">Assign To</label>
                     <select id="so-assignee" class="form-control"></select>
                 </div>
                 <div class="form-group hidden" id="so-class-summary-wrap">
@@ -6468,6 +6468,7 @@ async function openSignOutModal(itemId) {
         const soClassSelect = document.getElementById('so-class');
         const soAssigneeWrap = document.getElementById('so-assignee-wrap');
         const soAssigneeSelect = document.getElementById('so-assignee');
+        const soAssigneeLabel = document.getElementById('so-assignee-label');
         const soClassSummaryWrap = document.getElementById('so-class-summary-wrap');
         const soClassSummary = document.getElementById('so-class-summary');
         const soQtyLabel = document.getElementById('so-qty-label');
@@ -6484,28 +6485,6 @@ async function openSignOutModal(itemId) {
 
         const refreshQtyPreview = () => {
             if (!soQtyInput) return;
-            const mode = String(soModeSelect?.value || defaultDestinationMode);
-
-            if (mode === 'class') {
-                const selectedClassId = String(soClassSelect?.value || staffClasses[0]?.id || '').trim();
-                const classStudents = getClassStudentsForCheckout(selectedClassId);
-                const classSize = classStudents.length;
-                const maxQty = classSize > 0 ? Math.max(1, Math.floor(item.stock / classSize)) : Math.max(1, item.stock || 1);
-                const normalizedQty = Math.max(1, Math.min(maxQty, parseInt(soQtyInput.value, 10) || 1));
-                const totalQty = classSize > 0 ? normalizedQty * classSize : normalizedQty;
-                soQtyInput.max = String(maxQty);
-                soQtyInput.value = String(normalizedQty);
-                if (soQtyLabel) soQtyLabel.textContent = 'Quantity per Student';
-                if (soQtyPreview) soQtyPreview.textContent = classSize > 0 ? `${normalizedQty}x each (${totalQty} total)` : `${normalizedQty}x each`;
-                if (soStockPreview) soStockPreview.textContent = String(classSize > 0 ? Math.max(0, item.stock - totalQty) : item.stock);
-                if (soQtyHint) {
-                    soQtyHint.textContent = classSize > 0
-                        ? `${classSize} student${classSize === 1 ? '' : 's'} will receive this item.`
-                        : 'This class currently has no students.';
-                }
-                return;
-            }
-
             const maxQty = Math.max(1, parseInt(soQtyInput.max, 10) || item.stock || 1);
             const normalizedQty = Math.max(1, Math.min(maxQty, parseInt(soQtyInput.value, 10) || 1));
             soQtyInput.value = String(normalizedQty);
@@ -6541,17 +6520,18 @@ async function openSignOutModal(itemId) {
 
         const buildClassAssigneeOptions = (classId) => {
             const cls = staffClasses.find(c => String(c.id) === String(classId));
-            if (!cls) return `<option value="${escapeHtml(currentUser.id)}">${escapeHtml(currentUser.name)}</option>`;
+            if (!cls) return '<option value="">No students in this class</option>';
 
-            const classStudents = mockUsers.filter(user => user.role === 'student' && Array.isArray(cls.students) && cls.students.includes(user.id));
-            let options = `<option value="${escapeHtml(currentUser.id)}">Myself (${escapeHtml(currentUser.name)})</option>`;
+            const studentIdSet = new Set((Array.isArray(cls.students) ? cls.students : []).map(id => String(id)));
+            const classStudents = mockUsers.filter(user => user.role === 'student' && studentIdSet.has(String(user.id)));
+            let options = '';
 
             classStudents.forEach(student => {
                 options += `<option value="${escapeHtml(student.id)}">${escapeHtml(student.name)} (${escapeHtml(student.id)})</option>`;
             });
 
             if (classStudents.length === 0) {
-                options += `<option value="${escapeHtml(currentUser.id)}">${escapeHtml(currentUser.name)}</option>`;
+                options = '<option value="">No students in this class</option>';
             }
 
             return options;
@@ -6562,10 +6542,11 @@ async function openSignOutModal(itemId) {
 
             if (soProjectWrap) soProjectWrap.classList.toggle('hidden', mode !== 'project');
             if (soClassWrap) soClassWrap.classList.toggle('hidden', mode !== 'class');
-            if (soAssigneeWrap) soAssigneeWrap.classList.toggle('hidden', mode !== 'project');
+            if (soAssigneeWrap) soAssigneeWrap.classList.toggle('hidden', mode === 'personal');
             if (soClassSummaryWrap) soClassSummaryWrap.classList.toggle('hidden', mode !== 'class');
 
             if (mode === 'project') {
+                if (soAssigneeLabel) soAssigneeLabel.textContent = 'Assign To';
                 const selectedProjectId = soProjectSelect?.value || staffProjects[0]?.id || '';
                 if (soProjectSelect && selectedProjectId) {
                     soProjectSelect.value = selectedProjectId;
@@ -6582,6 +6563,7 @@ async function openSignOutModal(itemId) {
             }
 
             if (mode === 'class') {
+                if (soAssigneeLabel) soAssigneeLabel.textContent = 'Assign To Student';
                 const selectedClassId = soClassSelect?.value || staffClasses[0]?.id || '';
                 if (soClassSelect && selectedClassId) {
                     soClassSelect.value = selectedClassId;
@@ -6589,10 +6571,13 @@ async function openSignOutModal(itemId) {
                 const selectedClass = staffClasses.find(cls => String(cls.id) === String(selectedClassId)) || null;
                 const selectedProject = selectedClass ? getOrCreateClassProjectForCheckout(selectedClass, currentUser.id) : null;
                 const classStudents = getClassStudentsForCheckout(selectedClassId);
+                if (soAssigneeSelect) {
+                    soAssigneeSelect.innerHTML = buildClassAssigneeOptions(selectedClassId);
+                }
                 if (soClassSummary) {
                     soClassSummary.textContent = selectedClass
-                        ? `${selectedClass.name} has ${classStudents.length} student${classStudents.length === 1 ? '' : 's'}. This will assign the item to every student in the class.`
-                        : 'Select a class to assign the item to every student.';
+                        ? `${selectedClass.name} has ${classStudents.length} student${classStudents.length === 1 ? '' : 's'}. Choose a student to sign out on their behalf.`
+                        : 'Select a class, then choose a student to assign this sign-out.';
                 }
                 if (duePreviewEl) {
                     duePreviewEl.textContent = new Date(calculateDueDate(new Date(), currentUser, selectedProject)).toLocaleString();
@@ -6621,6 +6606,7 @@ async function openSignOutModal(itemId) {
             const destinationMode = String(soModeSelect?.value || defaultDestinationMode);
             const qty = parseInt(document.getElementById('so-qty').value, 10);
             let assignedToUserId = String(soAssigneeSelect?.value || '').trim() || currentUser.id;
+            let assignedToUserName = currentUser.name;
             let project = null;
 
             if (qty > 0 && qty <= item.stock) {
@@ -6653,7 +6639,18 @@ async function openSignOutModal(itemId) {
                         return;
                     }
                     assignedToUserId = String(soAssigneeSelect?.value || '').trim() || project.ownerId || currentUser.id;
+                    const assigneeUser = mockUsers.find(user => String(user.id) === String(assignedToUserId));
+                    assignedToUserName = assigneeUser?.name || assignedToUserId;
                 } else {
+                    const constraintError = exceedsCheckoutConstraints({
+                        distinctItems: 1,
+                        totalQuantity: qty
+                    });
+                    if (constraintError) {
+                        showToast(constraintError, 'error');
+                        return;
+                    }
+
                     const selectedClassId = String(soClassSelect?.value || '').trim() || staffClasses[0]?.id || '';
                     const selectedClass = staffClasses.find(cls => String(cls.id) === selectedClassId);
                     if (!selectedClass) {
@@ -6666,7 +6663,18 @@ async function openSignOutModal(itemId) {
                         showToast('Failed to create class project in database.', 'error');
                         return;
                     }
-                    assignedToUserId = String(soAssigneeSelect?.value || '').trim() || selectedClass.students?.[0] || project.ownerId || currentUser.id;
+
+                    const classStudents = getClassStudentsForCheckout(selectedClassId);
+                    const classStudentIdSet = new Set(classStudents.map(student => String(student.id)));
+                    const selectedAssigneeId = String(soAssigneeSelect?.value || '').trim();
+                    if (!selectedAssigneeId || !classStudentIdSet.has(selectedAssigneeId)) {
+                        showToast('Select a student in this class before signing out.', 'error');
+                        return;
+                    }
+
+                    assignedToUserId = selectedAssigneeId;
+                    const assigneeUser = classStudents.find(student => String(student.id) === selectedAssigneeId);
+                    assignedToUserName = assigneeUser?.name || selectedAssigneeId;
                 }
 
                 if (!project) {
@@ -6738,9 +6746,9 @@ async function openSignOutModal(itemId) {
                     addLog(currentUser.id, 'Personal Sign-out', `Signed out ${qty}x ${item.name} (SKU: ${item.sku}) to self`);
                 } else if (destinationMode === 'class') {
                     const selectedClass = staffClasses.find(cls => String(cls.id) === String(soClassSelect?.value || '').trim());
-                    addLog(currentUser.id, 'Class Sign-out', `Signed out ${qty}x ${item.name} (SKU: ${item.sku}) for class ${selectedClass ? selectedClass.name : project.name}`);
+                    addLog(currentUser.id, 'Class Sign-out', `Signed out ${qty}x ${item.name} (SKU: ${item.sku}) for ${assignedToUserName} in class ${selectedClass ? selectedClass.name : project.name}`);
                 } else {
-                    addLog(currentUser.id, 'Project Sign-out', `Signed out ${qty}x ${item.name} (SKU: ${item.sku}) for project ${project.name}`);
+                    addLog(currentUser.id, 'Project Sign-out', `Signed out ${qty}x ${item.name} (SKU: ${item.sku}) for ${assignedToUserName} in project ${project.name}`);
                 }
 
                 await Promise.all([refreshProjectsFromSupabase(), refreshInventoryFromSupabase()]);
