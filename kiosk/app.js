@@ -2331,6 +2331,49 @@ function getOrCreatePersonalProject(userId) {
     return personalProject;
 }
 
+function getManagedClassesForCheckout() {
+    if (!currentUser || currentUser.role === 'student') return [];
+    if (currentUser.role === 'developer') return [...studentClasses];
+    return studentClasses.filter(cls => String(cls.teacherId || '') === String(currentUser.id || ''));
+}
+
+function getOrCreateClassProjectForCheckout(cls, ownerId = currentUser?.id || '') {
+    if (!cls?.id) return null;
+
+    const classId = String(cls.id || '').trim();
+    const projectId = `CLASS-${classId}`;
+    let classProject = projects.find(p => p.id === projectId);
+
+    if (!classProject) {
+        classProject = {
+            id: projectId,
+            name: cls.name || 'Class Checkout',
+            ownerId: ownerId || currentUser?.id || '',
+            collaborators: [],
+            itemsOut: [],
+            status: 'Active',
+            classId,
+            class_id: classId
+        };
+        projects.push(classProject);
+    } else {
+        classProject.name = cls.name || classProject.name || 'Class Checkout';
+        classProject.classId = classId;
+        classProject.class_id = classId;
+        if (!classProject.ownerId && ownerId) {
+            classProject.ownerId = ownerId;
+        }
+        if (!Array.isArray(classProject.collaborators)) {
+            classProject.collaborators = [];
+        }
+        if (!Array.isArray(classProject.itemsOut)) {
+            classProject.itemsOut = [];
+        }
+    }
+
+    return classProject;
+}
+
 // Global checkout function
 async function checkoutBasket() {
     if (inventoryBasket.length === 0) {
@@ -5706,6 +5749,9 @@ function renderProjects() {
 
     container.innerHTML = html + nonPersonalProjects.map(proj => {
         const owner = mockUsers.find(u => u.id === proj.ownerId);
+        const linkedClass = proj.classId
+            ? studentClasses.find(cls => String(cls.id) === String(proj.classId))
+            : null;
         const outCount = proj.itemsOut.reduce((acc, curr) => acc + curr.quantity, 0);
         const canManage = canCurrentUserManageProject(proj);
 
@@ -5747,6 +5793,7 @@ function renderProjects() {
                     <span class="status-badge ${getProjectStatusBadgeClass(proj.status)}">${escapeHtml(proj.status)}</span>
                 </div>
                 <p class="text-muted text-sm mb-2">Owner: ${escapeHtml(owner ? owner.name : 'Unknown')}</p>
+                ${linkedClass ? `<p class="text-muted text-sm mb-2">Class: ${escapeHtml(linkedClass.name || linkedClass.id)}</p>` : ''}
                 <p class="project-desc mb-4">${escapeHtml(proj.description)}</p>
                 <div class="project-footer"><strong>${outCount}</strong> items signed out</div>
                 ${itemsOutHtml}
@@ -5807,6 +5854,334 @@ async function openSignOutModal(itemId) {
 
     if (item.stock <= 0) {
         showToast('Item out of stock!', 'error');
+        return;
+    }
+
+    if (currentUser.role !== 'student') {
+        const staffProjects = projects.filter(p => (p.ownerId === currentUser.id || p.collaborators.includes(currentUser.id)) && !String(p.id || '').startsWith('PERS-'));
+        const staffClasses = getManagedClassesForCheckout();
+        const defaultDestinationMode = staffProjects.length > 0
+            ? 'project'
+            : (staffClasses.length > 0 ? 'class' : 'personal');
+
+        const projectOptionsHtml = staffProjects.length > 0
+            ? staffProjects.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join('')
+            : '<option value="">No projects available</option>';
+
+        const classOptionsHtml = staffClasses.length > 0
+            ? staffClasses.map(cls => `<option value="${escapeHtml(cls.id)}">${escapeHtml(cls.name)}</option>`).join('')
+            : '<option value="">No classes available</option>';
+
+        const html = `
+            <div class="modal-header">
+                <h3>Sign Out Item</h3>
+                <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-secondary mb-4">You are signing out: <strong>${escapeHtml(item.name)}</strong></p>
+                <div class="glass-panel" style="padding:0.85rem;margin-bottom:0.9rem;border-radius:var(--radius-sm)">
+                    <div style="display:flex;justify-content:space-between;gap:0.75rem;align-items:flex-start;">
+                        <div>
+                            <div class="font-bold">${escapeHtml(item.name)}</div>
+                            <small class="text-muted">SKU: ${escapeHtml(item.sku || 'N/A')} | Category: ${escapeHtml(item.category || 'N/A')}</small>
+                        </div>
+                        <span class="badge" style="background:rgba(245,158,11,0.2);color:var(--warning)">In Stock: ${escapeHtml(item.stock)}</span>
+                    </div>
+                    <div style="margin-top:0.45rem">
+                        <small><strong>Location:</strong> ${formatItemExtraInfo(item).location}</small><br>
+                        <small><strong>Description:</strong> ${formatItemExtraInfo(item).description}</small>
+                    </div>
+                    <div style="margin-top:0.45rem">
+                        <small><strong>Due Date (preview):</strong> <span id="so-due-preview">${new Date(calculateDueDate(new Date(), currentUser)).toLocaleString()}</span></small>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Sign Out Destination</label>
+                    <select id="so-destination-mode" class="form-control">
+                        <option value="personal" ${defaultDestinationMode === 'personal' ? 'selected' : ''}>My Items (Personal)</option>
+                        <option value="project" ${defaultDestinationMode === 'project' ? 'selected' : ''}>Project</option>
+                        ${staffClasses.length > 0 ? `<option value="class" ${defaultDestinationMode === 'class' ? 'selected' : ''}>Class</option>` : ''}
+                    </select>
+                </div>
+                <div class="form-group hidden" id="so-project-wrap">
+                    <label>Select Project</label>
+                    <select id="so-project" class="form-control">
+                        ${projectOptionsHtml}
+                    </select>
+                </div>
+                <div class="form-group hidden" id="so-class-wrap">
+                    <label>Select Class</label>
+                    <select id="so-class" class="form-control">
+                        ${classOptionsHtml}
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Assign To</label>
+                    <select id="so-assignee" class="form-control"></select>
+                </div>
+                <div class="form-group">
+                    <label>Quantity (Max: ${item.stock})</label>
+                    <input type="number" id="so-qty" class="form-control" min="1" max="${item.stock}" value="1">
+                    <small class="text-muted" style="display:block;margin-top:0.35rem;"><strong>QTY:</strong> <span id="so-qty-preview">1x</span> | <strong>Stock After:</strong> <span id="so-stock-preview">${Math.max(0, item.stock - 1)}</span></small>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                <button class="btn btn-primary" id="confirm-signout">Confirm Sign Out</button>
+            </div>
+        `;
+
+        openModal(html);
+
+        const soQtyInput = document.getElementById('so-qty');
+        const soQtyPreview = document.getElementById('so-qty-preview');
+        const soStockPreview = document.getElementById('so-stock-preview');
+        const soModeSelect = document.getElementById('so-destination-mode');
+        const soProjectWrap = document.getElementById('so-project-wrap');
+        const soProjectSelect = document.getElementById('so-project');
+        const soClassWrap = document.getElementById('so-class-wrap');
+        const soClassSelect = document.getElementById('so-class');
+        const soAssigneeSelect = document.getElementById('so-assignee');
+        const duePreviewEl = document.getElementById('so-due-preview');
+
+        const refreshQtyPreview = () => {
+            if (!soQtyInput) return;
+            const maxQty = Math.max(1, parseInt(soQtyInput.max, 10) || item.stock || 1);
+            const normalizedQty = Math.max(1, Math.min(maxQty, parseInt(soQtyInput.value, 10) || 1));
+            soQtyInput.value = String(normalizedQty);
+            if (soQtyPreview) soQtyPreview.textContent = `${normalizedQty}x`;
+            if (soStockPreview) soStockPreview.textContent = String(Math.max(0, item.stock - normalizedQty));
+        };
+
+        const buildProjectAssigneeOptions = (projId) => {
+            if (!projId) return `<option value="${escapeHtml(currentUser.id)}">${escapeHtml(currentUser.name)}</option>`;
+            const proj = projects.find(p => p.id === projId);
+            if (!proj) return `<option value="${escapeHtml(currentUser.id)}">${escapeHtml(currentUser.name)}</option>`;
+
+            let options = '';
+            if (currentUser.role !== 'student') {
+                options += `<option value="${escapeHtml(currentUser.id)}">Myself (${escapeHtml(currentUser.name)})</option>`;
+            }
+            if (currentUser.role === 'student' || proj.ownerId !== currentUser.id) {
+                const owner = mockUsers.find(u => u.id === proj.ownerId);
+                options += `<option value="${escapeHtml(proj.ownerId)}">${escapeHtml(owner ? owner.name : proj.ownerId)}</option>`;
+            }
+            if (proj.collaborators && proj.collaborators.length > 0) {
+                proj.collaborators.forEach(collab => {
+                    const user = mockUsers.find(u => u.id === collab);
+                    if (collab !== currentUser.id && collab !== proj.ownerId) {
+                        options += `<option value="${escapeHtml(collab)}">${escapeHtml(user ? user.name : collab)}</option>`;
+                    }
+                });
+            }
+            return options || `<option value="${escapeHtml(currentUser.id)}">${escapeHtml(currentUser.name)}</option>`;
+        };
+
+        const buildClassAssigneeOptions = (classId) => {
+            const cls = staffClasses.find(c => String(c.id) === String(classId));
+            if (!cls) return `<option value="${escapeHtml(currentUser.id)}">${escapeHtml(currentUser.name)}</option>`;
+
+            const classStudents = mockUsers.filter(user => user.role === 'student' && Array.isArray(cls.students) && cls.students.includes(user.id));
+            let options = `<option value="${escapeHtml(currentUser.id)}">Myself (${escapeHtml(currentUser.name)})</option>`;
+
+            classStudents.forEach(student => {
+                options += `<option value="${escapeHtml(student.id)}">${escapeHtml(student.name)} (${escapeHtml(student.id)})</option>`;
+            });
+
+            if (classStudents.length === 0) {
+                options += `<option value="${escapeHtml(currentUser.id)}">${escapeHtml(currentUser.name)}</option>`;
+            }
+
+            return options;
+        };
+
+        const refreshSignOutDestination = () => {
+            const mode = String(soModeSelect?.value || defaultDestinationMode);
+
+            if (soProjectWrap) soProjectWrap.classList.toggle('hidden', mode !== 'project');
+            if (soClassWrap) soClassWrap.classList.toggle('hidden', mode !== 'class');
+
+            if (mode === 'project') {
+                const selectedProjectId = soProjectSelect?.value || staffProjects[0]?.id || '';
+                if (soProjectSelect && selectedProjectId) {
+                    soProjectSelect.value = selectedProjectId;
+                }
+                if (soAssigneeSelect) {
+                    soAssigneeSelect.innerHTML = buildProjectAssigneeOptions(selectedProjectId);
+                }
+                const selectedProject = selectedProjectId ? projects.find(p => p.id === selectedProjectId) : null;
+                if (duePreviewEl) {
+                    duePreviewEl.textContent = new Date(calculateDueDate(new Date(), currentUser, selectedProject)).toLocaleString();
+                }
+                return;
+            }
+
+            if (mode === 'class') {
+                const selectedClassId = soClassSelect?.value || staffClasses[0]?.id || '';
+                if (soClassSelect && selectedClassId) {
+                    soClassSelect.value = selectedClassId;
+                }
+                if (soAssigneeSelect) {
+                    soAssigneeSelect.innerHTML = buildClassAssigneeOptions(selectedClassId);
+                }
+                const selectedClass = staffClasses.find(cls => String(cls.id) === String(selectedClassId)) || null;
+                const selectedProject = selectedClass ? getOrCreateClassProjectForCheckout(selectedClass, currentUser.id) : null;
+                if (duePreviewEl) {
+                    duePreviewEl.textContent = new Date(calculateDueDate(new Date(), currentUser, selectedProject)).toLocaleString();
+                }
+                return;
+            }
+
+            if (soAssigneeSelect) {
+                soAssigneeSelect.innerHTML = `<option value="${escapeHtml(currentUser.id)}">${escapeHtml(currentUser.name)}</option>`;
+            }
+            if (duePreviewEl) {
+                duePreviewEl.textContent = new Date(calculateDueDate(new Date(), currentUser, getOrCreatePersonalProject(currentUser.id))).toLocaleString();
+            }
+        };
+
+        soQtyInput?.addEventListener('input', refreshQtyPreview);
+        soModeSelect?.addEventListener('change', refreshSignOutDestination);
+        soProjectSelect?.addEventListener('change', refreshSignOutDestination);
+        soClassSelect?.addEventListener('change', refreshSignOutDestination);
+        refreshQtyPreview();
+        refreshSignOutDestination();
+
+        document.getElementById('confirm-signout').addEventListener('click', async () => {
+            const destinationMode = String(soModeSelect?.value || defaultDestinationMode);
+            const qty = parseInt(document.getElementById('so-qty').value, 10);
+            let assignedToUserId = String(soAssigneeSelect?.value || '').trim() || currentUser.id;
+            let project = null;
+
+            if (qty > 0 && qty <= item.stock) {
+                const constraintError = exceedsCheckoutConstraints({
+                    distinctItems: 1,
+                    totalQuantity: qty
+                });
+                if (constraintError) {
+                    showToast(constraintError, 'error');
+                    return;
+                }
+
+                if (destinationMode === 'personal') {
+                    project = getOrCreatePersonalProject(currentUser.id);
+                    assignedToUserId = currentUser.id;
+                } else if (destinationMode === 'project') {
+                    const selectedProjectId = String(soProjectSelect?.value || '').trim() || staffProjects[0]?.id || '';
+                    project = projects.find(p => p.id === selectedProjectId) || null;
+                    if (!project) {
+                        showToast('Select a project before signing out.', 'error');
+                        return;
+                    }
+                    assignedToUserId = String(soAssigneeSelect?.value || '').trim() || project.ownerId || currentUser.id;
+                } else {
+                    const selectedClassId = String(soClassSelect?.value || '').trim() || staffClasses[0]?.id || '';
+                    const selectedClass = staffClasses.find(cls => String(cls.id) === selectedClassId);
+                    if (!selectedClass) {
+                        showToast('Select a class before signing out.', 'error');
+                        return;
+                    }
+                    project = getOrCreateClassProjectForCheckout(selectedClass, currentUser.id);
+                    const ensured = await ensureProjectExistsInSupabase(project);
+                    if (!ensured) {
+                        showToast('Failed to create class project in database.', 'error');
+                        return;
+                    }
+                    assignedToUserId = String(soAssigneeSelect?.value || '').trim() || selectedClass.students?.[0] || project.ownerId || currentUser.id;
+                }
+
+                if (!project) {
+                    showToast('Unable to resolve target project.', 'error');
+                    return;
+                }
+
+                if (project.id.startsWith('PERS-')) {
+                    const ensured = await ensureProjectExistsInSupabase(project);
+                    if (!ensured) {
+                        showToast('Failed to create personal project in database.', 'error');
+                        return;
+                    }
+                }
+
+                const signoutData = {
+                    id: generateId('OUT'),
+                    itemId: item.id,
+                    quantity: qty,
+                    signoutDate: new Date().toISOString(),
+                    dueDate: calculateDueDate(new Date(), currentUser, project),
+                    assignedToUserId,
+                    signedOutByUserId: currentUser.id
+                };
+
+                const savedSignout = await addProjectItemOutToSupabase({
+                    id: signoutData.id,
+                    projectId: project.id,
+                    itemId: item.id,
+                    quantity: qty,
+                    signoutDate: signoutData.signoutDate,
+                    dueDate: signoutData.dueDate,
+                    assignedToUserId: signoutData.assignedToUserId,
+                    signedOutByUserId: signoutData.signedOutByUserId,
+                    requiresDoorUnlock: item.requiresDoorUnlock ?? item.requires_door_unlock ?? false
+                });
+
+                if (!savedSignout) {
+                    const errDetail = typeof getLastProjectItemOutError === 'function'
+                        ? String(getLastProjectItemOutError() || '').slice(0, 180)
+                        : '';
+                    showToast(`Failed to save sign-out record. ${errDetail || 'Item stock was not changed.'}`, 'error');
+                    return;
+                }
+
+                const nextStock = item.stock - qty;
+                const stockUpdated = await updateItemInSupabase(item.id, { stock: nextStock });
+                if (!stockUpdated) {
+                    if (savedSignout?.id) {
+                        await returnItemToSupabase(savedSignout.id);
+                    } else {
+                        await returnItemByCompositeToSupabase({
+                            projectId: project.id,
+                            itemId: item.id,
+                            signoutDate: signoutData.signoutDate,
+                            quantity: signoutData.quantity
+                        });
+                    }
+                    showToast('Failed to update stock. Sign-out was rolled back.', 'error');
+                    return;
+                }
+
+                item.stock = nextStock;
+                signoutData.id = savedSignout?.id || signoutData.id;
+                project.itemsOut.push(signoutData);
+
+                _trackItemSignout(item, qty);
+                if (destinationMode === 'personal') {
+                    addLog(currentUser.id, 'Personal Sign-out', `Signed out ${qty}x ${item.name} (SKU: ${item.sku}) to self`);
+                } else if (destinationMode === 'class') {
+                    const selectedClass = staffClasses.find(cls => String(cls.id) === String(soClassSelect?.value || '').trim());
+                    addLog(currentUser.id, 'Class Sign-out', `Signed out ${qty}x ${item.name} (SKU: ${item.sku}) for class ${selectedClass ? selectedClass.name : project.name}`);
+                } else {
+                    addLog(currentUser.id, 'Project Sign-out', `Signed out ${qty}x ${item.name} (SKU: ${item.sku}) for project ${project.name}`);
+                }
+
+                await Promise.all([refreshProjectsFromSupabase(), refreshInventoryFromSupabase()]);
+
+                showToast(
+                    itemRequiresDoorUnlock(item)
+                        ? `Signed out ${qty} item(s) successfully. Door opened.`
+                        : `Signed out ${qty} item(s) successfully.`,
+                    'success'
+                );
+                closeModal();
+
+                renderInventory();
+                renderProjects();
+                loadDashboard();
+            } else {
+                showToast('Invalid quantity!', 'error');
+            }
+        });
+
         return;
     }
 

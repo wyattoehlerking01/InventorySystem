@@ -508,6 +508,7 @@ async function loadProjects() {
         collaborators: [],
         itemsOut: [],
         ownerId: proj.owner_id,
+        classId: proj.class_id ?? proj.classId ?? null,
         description: proj.description || '',
         name: proj.name || ''
     })) || [];
@@ -1538,13 +1539,30 @@ async function updateItemInSupabase(itemId, updates) {
  * Add project to projects table
  */
 async function addProjectToSupabase(project) {
-    const { data, error } = await dbClient.from('projects').insert([{
+    const isSchemaColumnError = (err) => {
+        const msg = String(err?.message || '').toLowerCase();
+        return /column .* does not exist/i.test(String(err?.message || ''))
+            || msg.includes('could not find the')
+            || msg.includes('schema cache')
+            || msg.includes('undefined_column');
+    };
+
+    const payload = {
         id: project.id,
         name: project.name,
         owner_id: project.ownerId,
         description: project.description || '',
-        status: project.status || 'Active'
-    }]).select();
+        status: project.status || 'Active',
+        class_id: project.classId || project.class_id || null
+    };
+
+    let { data, error } = await dbClient.from('projects').insert([payload]).select();
+
+    if (error && isSchemaColumnError(error)) {
+        const fallbackPayload = { ...payload };
+        delete fallbackPayload.class_id;
+        ({ data, error } = await dbClient.from('projects').insert([fallbackPayload]).select());
+    }
     
     if (error) {
         console.error('Error adding project:', error);
@@ -1572,7 +1590,8 @@ async function ensureProjectExistsInSupabase(project) {
         name: project.name || 'Personal Use',
         ownerId: project.ownerId,
         description: project.description || '',
-        status: project.status || 'Active'
+        status: project.status || 'Active',
+        classId: project.classId || project.class_id || null
     });
 
     return !!created;
