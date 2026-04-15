@@ -5915,14 +5915,19 @@ async function openSignOutModal(itemId) {
                         ${classOptionsHtml}
                     </select>
                 </div>
-                <div class="form-group">
+                <div class="form-group hidden" id="so-assignee-wrap">
                     <label>Assign To</label>
                     <select id="so-assignee" class="form-control"></select>
                 </div>
+                <div class="form-group hidden" id="so-class-summary-wrap">
+                    <label>Class Assignment</label>
+                    <div id="so-class-summary" class="text-secondary"></div>
+                </div>
                 <div class="form-group">
-                    <label>Quantity (Max: ${item.stock})</label>
+                    <label id="so-qty-label">Quantity</label>
                     <input type="number" id="so-qty" class="form-control" min="1" max="${item.stock}" value="1">
                     <small class="text-muted" style="display:block;margin-top:0.35rem;"><strong>QTY:</strong> <span id="so-qty-preview">1x</span> | <strong>Stock After:</strong> <span id="so-stock-preview">${Math.max(0, item.stock - 1)}</span></small>
+                    <small id="so-qty-hint" class="text-muted" style="display:block;margin-top:0.25rem;"></small>
                 </div>
             </div>
             <div class="modal-footer">
@@ -5941,16 +5946,53 @@ async function openSignOutModal(itemId) {
         const soProjectSelect = document.getElementById('so-project');
         const soClassWrap = document.getElementById('so-class-wrap');
         const soClassSelect = document.getElementById('so-class');
+        const soAssigneeWrap = document.getElementById('so-assignee-wrap');
         const soAssigneeSelect = document.getElementById('so-assignee');
+        const soClassSummaryWrap = document.getElementById('so-class-summary-wrap');
+        const soClassSummary = document.getElementById('so-class-summary');
+        const soQtyLabel = document.getElementById('so-qty-label');
+        const soQtyHint = document.getElementById('so-qty-hint');
         const duePreviewEl = document.getElementById('so-due-preview');
+
+        const getClassStudentsForCheckout = (classId) => {
+            const cls = staffClasses.find(c => String(c.id) === String(classId));
+            if (!cls || !Array.isArray(cls.students)) return [];
+
+            const studentIdSet = new Set(cls.students.map(studentId => String(studentId)));
+            return mockUsers.filter(user => user.role === 'student' && studentIdSet.has(String(user.id)));
+        };
 
         const refreshQtyPreview = () => {
             if (!soQtyInput) return;
+            const mode = String(soModeSelect?.value || defaultDestinationMode);
+
+            if (mode === 'class') {
+                const selectedClassId = String(soClassSelect?.value || staffClasses[0]?.id || '').trim();
+                const classStudents = getClassStudentsForCheckout(selectedClassId);
+                const classSize = classStudents.length;
+                const maxQty = classSize > 0 ? Math.max(1, Math.floor(item.stock / classSize)) : Math.max(1, item.stock || 1);
+                const normalizedQty = Math.max(1, Math.min(maxQty, parseInt(soQtyInput.value, 10) || 1));
+                const totalQty = classSize > 0 ? normalizedQty * classSize : normalizedQty;
+                soQtyInput.max = String(maxQty);
+                soQtyInput.value = String(normalizedQty);
+                if (soQtyLabel) soQtyLabel.textContent = 'Quantity per Student';
+                if (soQtyPreview) soQtyPreview.textContent = classSize > 0 ? `${normalizedQty}x each (${totalQty} total)` : `${normalizedQty}x each`;
+                if (soStockPreview) soStockPreview.textContent = String(classSize > 0 ? Math.max(0, item.stock - totalQty) : item.stock);
+                if (soQtyHint) {
+                    soQtyHint.textContent = classSize > 0
+                        ? `${classSize} student${classSize === 1 ? '' : 's'} will receive this item.`
+                        : 'This class currently has no students.';
+                }
+                return;
+            }
+
             const maxQty = Math.max(1, parseInt(soQtyInput.max, 10) || item.stock || 1);
             const normalizedQty = Math.max(1, Math.min(maxQty, parseInt(soQtyInput.value, 10) || 1));
             soQtyInput.value = String(normalizedQty);
+            if (soQtyLabel) soQtyLabel.textContent = 'Quantity';
             if (soQtyPreview) soQtyPreview.textContent = `${normalizedQty}x`;
             if (soStockPreview) soStockPreview.textContent = String(Math.max(0, item.stock - normalizedQty));
+            if (soQtyHint) soQtyHint.textContent = '';
         };
 
         const buildProjectAssigneeOptions = (projId) => {
@@ -6000,6 +6042,8 @@ async function openSignOutModal(itemId) {
 
             if (soProjectWrap) soProjectWrap.classList.toggle('hidden', mode !== 'project');
             if (soClassWrap) soClassWrap.classList.toggle('hidden', mode !== 'class');
+            if (soAssigneeWrap) soAssigneeWrap.classList.toggle('hidden', mode !== 'project');
+            if (soClassSummaryWrap) soClassSummaryWrap.classList.toggle('hidden', mode !== 'class');
 
             if (mode === 'project') {
                 const selectedProjectId = soProjectSelect?.value || staffProjects[0]?.id || '';
@@ -6013,6 +6057,7 @@ async function openSignOutModal(itemId) {
                 if (duePreviewEl) {
                     duePreviewEl.textContent = new Date(calculateDueDate(new Date(), currentUser, selectedProject)).toLocaleString();
                 }
+                refreshQtyPreview();
                 return;
             }
 
@@ -6021,14 +6066,18 @@ async function openSignOutModal(itemId) {
                 if (soClassSelect && selectedClassId) {
                     soClassSelect.value = selectedClassId;
                 }
-                if (soAssigneeSelect) {
-                    soAssigneeSelect.innerHTML = buildClassAssigneeOptions(selectedClassId);
-                }
                 const selectedClass = staffClasses.find(cls => String(cls.id) === String(selectedClassId)) || null;
                 const selectedProject = selectedClass ? getOrCreateClassProjectForCheckout(selectedClass, currentUser.id) : null;
+                const classStudents = getClassStudentsForCheckout(selectedClassId);
+                if (soClassSummary) {
+                    soClassSummary.textContent = selectedClass
+                        ? `${selectedClass.name} has ${classStudents.length} student${classStudents.length === 1 ? '' : 's'}. This will assign the item to every student in the class.`
+                        : 'Select a class to assign the item to every student.';
+                }
                 if (duePreviewEl) {
                     duePreviewEl.textContent = new Date(calculateDueDate(new Date(), currentUser, selectedProject)).toLocaleString();
                 }
+                refreshQtyPreview();
                 return;
             }
 
@@ -6038,6 +6087,7 @@ async function openSignOutModal(itemId) {
             if (duePreviewEl) {
                 duePreviewEl.textContent = new Date(calculateDueDate(new Date(), currentUser, getOrCreatePersonalProject(currentUser.id))).toLocaleString();
             }
+            refreshQtyPreview();
         };
 
         soQtyInput?.addEventListener('input', refreshQtyPreview);
@@ -6054,19 +6104,28 @@ async function openSignOutModal(itemId) {
             let project = null;
 
             if (qty > 0 && qty <= item.stock) {
-                const constraintError = exceedsCheckoutConstraints({
-                    distinctItems: 1,
-                    totalQuantity: qty
-                });
-                if (constraintError) {
-                    showToast(constraintError, 'error');
-                    return;
-                }
-
                 if (destinationMode === 'personal') {
+                    const constraintError = exceedsCheckoutConstraints({
+                        distinctItems: 1,
+                        totalQuantity: qty
+                    });
+                    if (constraintError) {
+                        showToast(constraintError, 'error');
+                        return;
+                    }
+
                     project = getOrCreatePersonalProject(currentUser.id);
                     assignedToUserId = currentUser.id;
                 } else if (destinationMode === 'project') {
+                    const constraintError = exceedsCheckoutConstraints({
+                        distinctItems: 1,
+                        totalQuantity: qty
+                    });
+                    if (constraintError) {
+                        showToast(constraintError, 'error');
+                        return;
+                    }
+
                     const selectedProjectId = String(soProjectSelect?.value || '').trim() || staffProjects[0]?.id || '';
                     project = projects.find(p => p.id === selectedProjectId) || null;
                     if (!project) {
@@ -6081,13 +6140,108 @@ async function openSignOutModal(itemId) {
                         showToast('Select a class before signing out.', 'error');
                         return;
                     }
+                    const classStudents = getClassStudentsForCheckout(selectedClassId);
+                    if (classStudents.length === 0) {
+                        showToast('Selected class has no students.', 'error');
+                        return;
+                    }
+
+                    const totalQty = qty * classStudents.length;
+                    const constraintError = exceedsCheckoutConstraints({
+                        distinctItems: 1,
+                        totalQuantity: totalQty
+                    });
+                    if (constraintError) {
+                        showToast(constraintError, 'error');
+                        return;
+                    }
+
+                    if (totalQty > item.stock) {
+                        showToast(`Not enough stock for ${classStudents.length} students.`, 'error');
+                        return;
+                    }
+
                     project = getOrCreateClassProjectForCheckout(selectedClass, currentUser.id);
                     const ensured = await ensureProjectExistsInSupabase(project);
                     if (!ensured) {
                         showToast('Failed to create class project in database.', 'error');
                         return;
                     }
-                    assignedToUserId = String(soAssigneeSelect?.value || '').trim() || selectedClass.students?.[0] || project.ownerId || currentUser.id;
+                    const classSignoutDate = new Date().toISOString();
+                    const classDueDate = calculateDueDate(new Date(), currentUser, project);
+                    const classItemOuts = classStudents.map(student => ({
+                        id: generateId('OUT'),
+                        projectId: project.id,
+                        itemId: item.id,
+                        quantity: qty,
+                        signoutDate: classSignoutDate,
+                        dueDate: classDueDate,
+                        assignedToUserId: student.id,
+                        signedOutByUserId: currentUser.id,
+                        requiresDoorUnlock: item.requiresDoorUnlock ?? item.requires_door_unlock ?? false
+                    }));
+
+                    if (itemRequiresDoorUnlock(item)) {
+                        const unlocked = await requestDoorUnlockAndLogAccess({
+                            actionType: 'sign-out',
+                            item,
+                            quantity: qty * classStudents.length,
+                            projectName: selectedClass.name || project.name
+                        });
+
+                        if (!unlocked) {
+                            showToast('Sign-out canceled. Door could not be opened for behind-door item.', 'error');
+                            return;
+                        }
+                    }
+
+                    const savedSignouts = await addProjectItemOutBatchToSupabase(classItemOuts);
+                    if (!savedSignouts) {
+                        const errDetail = typeof getLastProjectItemOutError === 'function'
+                            ? String(getLastProjectItemOutError() || '').slice(0, 180)
+                            : '';
+                        showToast(`Failed to save class sign-out. ${errDetail || 'Item stock was not changed.'}`, 'error');
+                        return;
+                    }
+
+                    const nextStock = item.stock - totalQty;
+                    const stockUpdated = await updateItemInSupabase(item.id, { stock: nextStock });
+                    if (!stockUpdated) {
+                        await Promise.all(savedSignouts.map(savedSignout => returnItemToSupabase(savedSignout.id)));
+                        showToast('Failed to update stock. Class sign-out was rolled back.', 'error');
+                        return;
+                    }
+
+                    item.stock = nextStock;
+                    savedSignouts.forEach((savedSignout, index) => {
+                        project.itemsOut.push({
+                            id: savedSignout.id,
+                            itemId: item.id,
+                            quantity: qty,
+                            signoutDate: classSignoutDate,
+                            dueDate: classDueDate,
+                            assignedToUserId: classStudents[index]?.id || savedSignout.assigned_to_user_id || project.ownerId || currentUser.id,
+                            signedOutByUserId: currentUser.id
+                        });
+                    });
+
+                    _trackItemSignout(item, totalQty);
+                    addLog(currentUser.id, 'Class Sign-out', `Signed out ${qty}x ${item.name} (SKU: ${item.sku}) to ${classStudents.length} students in class ${selectedClass.name}`);
+
+                    await Promise.all([refreshProjectsFromSupabase(), refreshInventoryFromSupabase()]);
+
+                    showToast(
+                        itemRequiresDoorUnlock(item)
+                            ? `Signed out ${qty} item(s) per student to ${classStudents.length} students. Door opened.`
+                            : `Signed out ${qty} item(s) per student to ${classStudents.length} students.`,
+                        'success'
+                    );
+                    closeModal();
+
+                    renderInventory();
+                    renderProjects();
+                    loadDashboard();
+                    return;
                 }
 
                 if (!project) {
@@ -6099,6 +6253,20 @@ async function openSignOutModal(itemId) {
                     const ensured = await ensureProjectExistsInSupabase(project);
                     if (!ensured) {
                         showToast('Failed to create personal project in database.', 'error');
+                        return;
+                    }
+                }
+
+                if (itemRequiresDoorUnlock(item) && destinationMode !== 'class') {
+                    const unlocked = await requestDoorUnlockAndLogAccess({
+                        actionType: 'sign-out',
+                        item,
+                        quantity: qty,
+                        projectName: project?.name || 'Personal'
+                    });
+
+                    if (!unlocked) {
+                        showToast('Sign-out canceled. Door could not be opened for behind-door item.', 'error');
                         return;
                     }
                 }
@@ -6157,9 +6325,6 @@ async function openSignOutModal(itemId) {
                 _trackItemSignout(item, qty);
                 if (destinationMode === 'personal') {
                     addLog(currentUser.id, 'Personal Sign-out', `Signed out ${qty}x ${item.name} (SKU: ${item.sku}) to self`);
-                } else if (destinationMode === 'class') {
-                    const selectedClass = staffClasses.find(cls => String(cls.id) === String(soClassSelect?.value || '').trim());
-                    addLog(currentUser.id, 'Class Sign-out', `Signed out ${qty}x ${item.name} (SKU: ${item.sku}) for class ${selectedClass ? selectedClass.name : project.name}`);
                 } else {
                     addLog(currentUser.id, 'Project Sign-out', `Signed out ${qty}x ${item.name} (SKU: ${item.sku}) for project ${project.name}`);
                 }

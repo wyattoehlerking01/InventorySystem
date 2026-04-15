@@ -1641,10 +1641,7 @@ async function deleteProjectFromSupabase(projectId) {
     return true;
 }
 
-/**
- * Add project item out to project_items_out table
- */
-async function addProjectItemOutToSupabase(itemOut) {
+async function insertProjectItemOutToSupabase(itemOut, { triggerLed = true } = {}) {
     lastProjectItemOutError = '';
 
     const normalizedId = String(itemOut.id || createUuid()).trim();
@@ -1733,10 +1730,47 @@ async function addProjectItemOutToSupabase(itemOut) {
         return null;
     }
 
-    if (shouldTriggerLedForItem(itemOut)) {
+    if (triggerLed && shouldTriggerLedForItem(itemOut)) {
         notifySignoutLedTrigger();
     }
     return data?.[0];
+}
+
+/**
+ * Add project item out to project_items_out table
+ */
+async function addProjectItemOutToSupabase(itemOut) {
+    return insertProjectItemOutToSupabase(itemOut, { triggerLed: true });
+}
+
+/**
+ * Add multiple project item out rows and roll back any inserted rows on failure.
+ */
+async function addProjectItemOutBatchToSupabase(itemOuts) {
+    lastProjectItemOutError = '';
+
+    const items = Array.isArray(itemOuts) ? itemOuts.filter(Boolean) : [];
+    if (items.length === 0) return [];
+
+    const insertedRows = [];
+    const shouldTriggerLed = items.some(itemOut => shouldTriggerLedForItem(itemOut));
+
+    for (const itemOut of items) {
+        const savedRow = await insertProjectItemOutToSupabase(itemOut, { triggerLed: false });
+        if (!savedRow) {
+            for (const insertedRow of insertedRows.slice().reverse()) {
+                await returnItemToSupabase(insertedRow.id);
+            }
+            return null;
+        }
+        insertedRows.push(savedRow);
+    }
+
+    if (shouldTriggerLed) {
+        notifySignoutLedTrigger();
+    }
+
+    return insertedRows;
 }
 
 /**

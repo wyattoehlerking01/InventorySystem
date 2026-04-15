@@ -4,7 +4,76 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-function loadDataContext({ withSupabase = false, supabaseKey = 'test-key' } = {}) {
+function createMockSupabaseClient({ failOnItemIds = [] } = {}) {
+  const rows = [];
+  const failureSet = new Set(failOnItemIds.map(String));
+
+  const matchesFilter = (row, filters) => Object.entries(filters).every(([column, value]) => String(row[column]) === String(value));
+
+  return {
+    rows,
+    from(table) {
+      if (table !== 'project_items_out') {
+        return {
+          insert() {
+            return { select: async () => ({ data: [], error: null }) };
+          },
+          delete() {
+            return {
+              eq() {
+                return {
+                  then(resolve) {
+                    resolve({ error: null });
+                  }
+                };
+              }
+            };
+          }
+        };
+      }
+
+      return {
+        insert(payloadRows) {
+          return {
+            select: async () => {
+              const payload = payloadRows[0] || {};
+              if (failureSet.has(String(payload.item_id))) {
+                return {
+                  data: null,
+                  error: { code: 'PGRST_FAIL', message: `insert failed for ${payload.item_id}` }
+                };
+              }
+
+              const insertedRows = payloadRows.map(payloadRow => ({ ...payloadRow }));
+              rows.push(...insertedRows);
+              return { data: insertedRows, error: null };
+            }
+          };
+        },
+        delete() {
+          const filters = {};
+          const builder = {
+            eq(column, value) {
+              filters[column] = value;
+              return builder;
+            },
+            then(resolve) {
+              for (let index = rows.length - 1; index >= 0; index -= 1) {
+                if (matchesFilter(rows[index], filters)) {
+                  rows.splice(index, 1);
+                }
+              }
+              resolve({ error: null });
+            }
+          };
+          return builder;
+        }
+      };
+    }
+  };
+}
+
+function loadDataContext({ withSupabase = false, supabaseKey = 'test-key', supabaseClient = null } = {}) {
   const dataJsPath = path.join(__dirname, '..', 'kiosk', 'data.js');
   const source = fs.readFileSync(dataJsPath, 'utf8');
 
@@ -20,7 +89,7 @@ function loadDataContext({ withSupabase = false, supabaseKey = 'test-key' } = {}
         : {},
       supabase: withSupabase
         ? {
-            createClient: () => ({ from: () => ({ select: () => ({}) }) })
+            createClient: () => supabaseClient || createMockSupabaseClient()
           }
         : undefined
     }
@@ -69,4 +138,67 @@ test('service-role Supabase key is rejected for browser client initialization', 
     () => context.requireSupabaseClient('unit-test'),
     /Supabase client unavailable/
   );
+});
+
+test('addProjectItemOutBatchToSupabase inserts all rows on success', async () => {
+  const mockClient = createMockSupabaseClient();
+  const context = loadDataContext({ withSupabase: true, supabaseClient: mockClient });
+
+  const result = await context.addProjectItemOutBatchToSupabase([
+    {
+      id: 'out-1',
+      projectId: 'project-a',
+      itemId: 'item-a',
+      quantity: 1,
+      signoutDate: '2026-04-15T00:00:00.000Z',
+      dueDate: '2026-04-15T01:00:00.000Z',
+      assignedToUserId: 'student-1',
+      signedOutByUserId: 'teacher-1'
+    },
+    {
+      id: 'out-2',
+      projectId: 'project-a',
+      itemId: 'item-b',
+      quantity: 2,
+      signoutDate: '2026-04-15T00:00:00.000Z',
+      dueDate: '2026-04-15T01:00:00.000Z',
+      assignedToUserId: 'student-2',
+      signedOutByUserId: 'teacher-1'
+    }
+  ]);
+
+  assert.equal(result.length, 2);
+  assert.equal(mockClient.rows.length, 2);
+  assert.deepEqual(mockClient.rows.map(row => row.id), ['out-1', 'out-2']);
+});
+
+test('addProjectItemOutBatchToSupabase rolls back inserted rows on failure', async () => {
+  const mockClient = createMockSupabaseClient({ failOnItemIds: ['item-b'] });
+  const context = loadDataContext({ withSupabase: true, supabaseClient: mockClient });
+
+  const result = await context.addProjectItemOutBatchToSupabase([
+    {
+      id: 'out-1',
+      projectId: 'project-a',
+      itemId: 'item-a',
+      quantity: 1,
+      signoutDate: '2026-04-15T00:00:00.000Z',
+      dueDate: '2026-04-15T01:00:00.000Z',
+      assignedToUserId: 'student-1',
+      signedOutByUserId: 'teacher-1'
+    },
+    {
+      id: 'out-2',
+      projectId: 'project-a',
+      itemId: 'item-b',
+      quantity: 2,
+      signoutDate: '2026-04-15T00:00:00.000Z',
+      dueDate: '2026-04-15T01:00:00.000Z',
+      assignedToUserId: 'student-2',
+      signedOutByUserId: 'teacher-1'
+    }
+  ]);
+
+  assert.equal(result, null);
+  assert.equal(mockClient.rows.length, 0);
 });

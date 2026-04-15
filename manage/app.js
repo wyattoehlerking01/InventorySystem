@@ -6435,14 +6435,19 @@ async function openSignOutModal(itemId) {
                         ${classOptionsHtml}
                     </select>
                 </div>
-                <div class="form-group">
+                <div class="form-group hidden" id="so-assignee-wrap">
                     <label>Assign To</label>
                     <select id="so-assignee" class="form-control"></select>
                 </div>
+                <div class="form-group hidden" id="so-class-summary-wrap">
+                    <label>Class Assignment</label>
+                    <div id="so-class-summary" class="text-secondary"></div>
+                </div>
                 <div class="form-group">
-                    <label>Quantity (Max: ${item.stock})</label>
+                    <label id="so-qty-label">Quantity</label>
                     <input type="number" id="so-qty" class="form-control" min="1" max="${item.stock}" value="1">
                     <small class="text-muted" style="display:block;margin-top:0.35rem;"><strong>QTY:</strong> <span id="so-qty-preview">1x</span> | <strong>Stock After:</strong> <span id="so-stock-preview">${Math.max(0, item.stock - 1)}</span></small>
+                    <small id="so-qty-hint" class="text-muted" style="display:block;margin-top:0.25rem;"></small>
                 </div>
             </div>
             <div class="modal-footer">
@@ -6461,16 +6466,53 @@ async function openSignOutModal(itemId) {
         const soProjectSelect = document.getElementById('so-project');
         const soClassWrap = document.getElementById('so-class-wrap');
         const soClassSelect = document.getElementById('so-class');
+        const soAssigneeWrap = document.getElementById('so-assignee-wrap');
         const soAssigneeSelect = document.getElementById('so-assignee');
+        const soClassSummaryWrap = document.getElementById('so-class-summary-wrap');
+        const soClassSummary = document.getElementById('so-class-summary');
+        const soQtyLabel = document.getElementById('so-qty-label');
+        const soQtyHint = document.getElementById('so-qty-hint');
         const duePreviewEl = document.getElementById('so-due-preview');
+
+        const getClassStudentsForCheckout = (classId) => {
+            const cls = staffClasses.find(c => String(c.id) === String(classId));
+            if (!cls || !Array.isArray(cls.students)) return [];
+
+            const studentIdSet = new Set(cls.students.map(studentId => String(studentId)));
+            return mockUsers.filter(user => user.role === 'student' && studentIdSet.has(String(user.id)));
+        };
 
         const refreshQtyPreview = () => {
             if (!soQtyInput) return;
+            const mode = String(soModeSelect?.value || defaultDestinationMode);
+
+            if (mode === 'class') {
+                const selectedClassId = String(soClassSelect?.value || staffClasses[0]?.id || '').trim();
+                const classStudents = getClassStudentsForCheckout(selectedClassId);
+                const classSize = classStudents.length;
+                const maxQty = classSize > 0 ? Math.max(1, Math.floor(item.stock / classSize)) : Math.max(1, item.stock || 1);
+                const normalizedQty = Math.max(1, Math.min(maxQty, parseInt(soQtyInput.value, 10) || 1));
+                const totalQty = classSize > 0 ? normalizedQty * classSize : normalizedQty;
+                soQtyInput.max = String(maxQty);
+                soQtyInput.value = String(normalizedQty);
+                if (soQtyLabel) soQtyLabel.textContent = 'Quantity per Student';
+                if (soQtyPreview) soQtyPreview.textContent = classSize > 0 ? `${normalizedQty}x each (${totalQty} total)` : `${normalizedQty}x each`;
+                if (soStockPreview) soStockPreview.textContent = String(classSize > 0 ? Math.max(0, item.stock - totalQty) : item.stock);
+                if (soQtyHint) {
+                    soQtyHint.textContent = classSize > 0
+                        ? `${classSize} student${classSize === 1 ? '' : 's'} will receive this item.`
+                        : 'This class currently has no students.';
+                }
+                return;
+            }
+
             const maxQty = Math.max(1, parseInt(soQtyInput.max, 10) || item.stock || 1);
             const normalizedQty = Math.max(1, Math.min(maxQty, parseInt(soQtyInput.value, 10) || 1));
             soQtyInput.value = String(normalizedQty);
+            if (soQtyLabel) soQtyLabel.textContent = 'Quantity';
             if (soQtyPreview) soQtyPreview.textContent = `${normalizedQty}x`;
             if (soStockPreview) soStockPreview.textContent = String(Math.max(0, item.stock - normalizedQty));
+            if (soQtyHint) soQtyHint.textContent = '';
         };
 
         const buildProjectAssigneeOptions = (projId) => {
@@ -6520,6 +6562,8 @@ async function openSignOutModal(itemId) {
 
             if (soProjectWrap) soProjectWrap.classList.toggle('hidden', mode !== 'project');
             if (soClassWrap) soClassWrap.classList.toggle('hidden', mode !== 'class');
+            if (soAssigneeWrap) soAssigneeWrap.classList.toggle('hidden', mode !== 'project');
+            if (soClassSummaryWrap) soClassSummaryWrap.classList.toggle('hidden', mode !== 'class');
 
             if (mode === 'project') {
                 const selectedProjectId = soProjectSelect?.value || staffProjects[0]?.id || '';
@@ -6533,6 +6577,7 @@ async function openSignOutModal(itemId) {
                 if (duePreviewEl) {
                     duePreviewEl.textContent = new Date(calculateDueDate(new Date(), currentUser, selectedProject)).toLocaleString();
                 }
+                refreshQtyPreview();
                 return;
             }
 
@@ -6541,14 +6586,18 @@ async function openSignOutModal(itemId) {
                 if (soClassSelect && selectedClassId) {
                     soClassSelect.value = selectedClassId;
                 }
-                if (soAssigneeSelect) {
-                    soAssigneeSelect.innerHTML = buildClassAssigneeOptions(selectedClassId);
-                }
                 const selectedClass = staffClasses.find(cls => String(cls.id) === String(selectedClassId)) || null;
                 const selectedProject = selectedClass ? getOrCreateClassProjectForCheckout(selectedClass, currentUser.id) : null;
+                const classStudents = getClassStudentsForCheckout(selectedClassId);
+                if (soClassSummary) {
+                    soClassSummary.textContent = selectedClass
+                        ? `${selectedClass.name} has ${classStudents.length} student${classStudents.length === 1 ? '' : 's'}. This will assign the item to every student in the class.`
+                        : 'Select a class to assign the item to every student.';
+                }
                 if (duePreviewEl) {
                     duePreviewEl.textContent = new Date(calculateDueDate(new Date(), currentUser, selectedProject)).toLocaleString();
                 }
+                refreshQtyPreview();
                 return;
             }
 
@@ -6558,6 +6607,7 @@ async function openSignOutModal(itemId) {
             if (duePreviewEl) {
                 duePreviewEl.textContent = new Date(calculateDueDate(new Date(), currentUser, getOrCreatePersonalProject(currentUser.id))).toLocaleString();
             }
+            refreshQtyPreview();
         };
 
         soQtyInput?.addEventListener('input', refreshQtyPreview);
@@ -6574,19 +6624,28 @@ async function openSignOutModal(itemId) {
             let project = null;
 
             if (qty > 0 && qty <= item.stock) {
-                const constraintError = exceedsCheckoutConstraints({
-                    distinctItems: 1,
-                    totalQuantity: qty
-                });
-                if (constraintError) {
-                    showToast(constraintError, 'error');
-                    return;
-                }
-
                 if (destinationMode === 'personal') {
+                    const constraintError = exceedsCheckoutConstraints({
+                        distinctItems: 1,
+                        totalQuantity: qty
+                    });
+                    if (constraintError) {
+                        showToast(constraintError, 'error');
+                        return;
+                    }
+
                     project = getOrCreatePersonalProject(currentUser.id);
                     assignedToUserId = currentUser.id;
                 } else if (destinationMode === 'project') {
+                    const constraintError = exceedsCheckoutConstraints({
+                        distinctItems: 1,
+                        totalQuantity: qty
+                    });
+                    if (constraintError) {
+                        showToast(constraintError, 'error');
+                        return;
+                    }
+
                     const selectedProjectId = String(soProjectSelect?.value || '').trim() || staffProjects[0]?.id || '';
                     project = projects.find(p => p.id === selectedProjectId) || null;
                     if (!project) {
@@ -7027,7 +7086,6 @@ function renderClasses() {
         `;
     }).join('');
 
-    // Edit class handler
     document.querySelectorAll('.edit-class-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
             const id = e.currentTarget.getAttribute('data-id');
@@ -7045,15 +7103,12 @@ function renderClasses() {
                     showToast('Failed to delete class from database.', 'error');
                     return;
                 }
-                
-                // Delete students who are only in this class
+
                 let deletedStudentCount = 0;
                 if (cls.students && cls.students.length > 0) {
                     for (const studentId of cls.students) {
-                        // Check if this student is in any other class
                         const otherClasses = studentClasses.filter(c => c.id !== id && c.students.includes(studentId));
                         if (otherClasses.length === 0) {
-                            // Student is only in this class, delete them
                             const userDeleted = await deleteUserFromSupabase(studentId);
                             if (userDeleted) {
                                 mockUsers = mockUsers.filter(u => u.id !== studentId);
@@ -7062,9 +7117,9 @@ function renderClasses() {
                         }
                     }
                 }
-                
+
                 studentClasses = studentClasses.filter(c => c.id !== id);
-                const toastMsg = deletedStudentCount > 0 
+                const toastMsg = deletedStudentCount > 0
                     ? `Class ${cls.name} deleted. ${deletedStudentCount} student(s) also deleted.`
                     : `Class ${cls.name} deleted.`;
                 showToast(toastMsg, 'success');
@@ -7072,45 +7127,6 @@ function renderClasses() {
                 renderClasses();
                 renderUsers();
             }
-        });
-    });
-}
-
-function bindCheckboxListControls({
-    searchInputId,
-    listContainerId,
-    checkboxClass,
-    selectAllBtnId,
-    clearBtnId
-}) {
-    const searchInput = document.getElementById(searchInputId);
-    const listContainer = document.getElementById(listContainerId);
-    const selectAllBtn = document.getElementById(selectAllBtnId);
-    const clearBtn = document.getElementById(clearBtnId);
-
-    if (!listContainer) return;
-
-    const applyFilter = () => {
-        const query = (searchInput?.value || '').trim().toLowerCase();
-        listContainer.querySelectorAll('.class-list-option').forEach(option => {
-            const label = option.getAttribute('data-label') || '';
-            option.style.display = !query || label.includes(query) ? '' : 'none';
-        });
-    };
-
-    searchInput?.addEventListener('input', applyFilter);
-
-    selectAllBtn?.addEventListener('click', () => {
-        listContainer.querySelectorAll(`.${checkboxClass}`).forEach(cb => {
-            const option = cb.closest('.class-list-option');
-            if (!option || option.style.display !== 'none') cb.checked = true;
-        });
-    });
-
-    clearBtn?.addEventListener('click', () => {
-        listContainer.querySelectorAll(`.${checkboxClass}`).forEach(cb => {
-            const option = cb.closest('.class-list-option');
-            if (!option || option.style.display !== 'none') cb.checked = false;
         });
     });
 }
