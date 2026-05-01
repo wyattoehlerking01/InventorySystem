@@ -113,6 +113,12 @@ Typical flow:
 3. Complete `Bulk Checkout`.
 4. Process returns/sign-in when items come back.
 
+Single-item class sign-out (on behalf):
+1. Click `Sign Out` on an item.
+2. Set destination to `Class` and pick the class.
+3. Confirm sign-out to assign one item to each student in that class.
+4. Each student receives their own `My Items (Personal)` sign-out record.
+
 If hardware unlock is enabled:
 - Checkout/return can be blocked when unlock is denied.
 - Resolve hardware/access issues before retrying.

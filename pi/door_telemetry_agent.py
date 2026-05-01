@@ -136,11 +136,26 @@ class LocalQueue:
 
 
 class SupabaseRpcClient:
-    def __init__(self, url: str, key: str, timeout_seconds: float = 8.0):
+    def __init__(
+        self,
+        url: str,
+        key: str,
+        timeout_seconds: float = 8.0,
+        endpoint_override: str = "",
+        user_agent: str = "inventory-door-telemetry-agent/1.0",
+    ):
         base = url.rstrip("/")
-        self.endpoint = f"{base}/rest/v1/rpc/log_door_events_batch"
+        self.endpoint = endpoint_override.strip() or f"{base}/rest/v1/rpc/log_door_events_batch"
         self.key = key
         self.timeout_seconds = max(2.0, timeout_seconds)
+        self.user_agent = user_agent.strip() or "inventory-door-telemetry-agent/1.0"
+
+    def _read_error_body(self, error: urllib.error.HTTPError) -> str:
+        try:
+            payload = error.read().decode("utf-8", errors="replace").strip()
+            return payload[:400]
+        except Exception:
+            return ""
 
     def send_batch(self, kiosk_id: str, sensor_id: str, events: List[Dict[str, Any]]) -> Dict[str, Any]:
         body = json.dumps(
@@ -160,12 +175,20 @@ class SupabaseRpcClient:
                 "apikey": self.key,
                 "Authorization": f"Bearer {self.key}",
                 "Connection": "keep-alive",
+                "User-Agent": self.user_agent,
             },
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=self.timeout_seconds) as resp:
-            raw = resp.read().decode("utf-8")
-            return json.loads(raw) if raw else {}
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout_seconds) as resp:
+                raw = resp.read().decode("utf-8")
+                return json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as error:
+            body_preview = self._read_error_body(error)
+            detail = f"HTTP {error.code} {error.reason}"
+            if body_preview:
+                detail += f" body={body_preview}"
+            raise RuntimeError(detail) from error
 
 
 class DoorTelemetryAgent:
@@ -182,6 +205,11 @@ class DoorTelemetryAgent:
         self.batch_size = int(os.getenv("DOOR_QUEUE_BATCH_SIZE", "40"))
         self.heartbeat_seconds = float(os.getenv("DOOR_HEARTBEAT_SECONDS", "60"))
         self.retention_days = float(os.getenv("DOOR_QUEUE_RETENTION_DAYS", "7"))
+        self.rpc_timeout_seconds = float(os.getenv("DOOR_RPC_TIMEOUT_SECONDS", "8"))
+        self.rpc_max_backoff_seconds = float(os.getenv("DOOR_RPC_MAX_BACKOFF_SECONDS", "30"))
+        self.rpc_endpoint_override = os.getenv("DOOR_RPC_ENDPOINT", "").strip()
+        self.event_source = os.getenv("DOOR_EVENT_SOURCE", "pi-agent").strip() or "pi-agent"
+        self.event_method = os.getenv("DOOR_EVENT_METHOD", "sensor_edge").strip() or "sensor_edge"
         self.unlock_context_window_seconds = float(
             os.getenv("DOOR_UNLOCK_CONTEXT_WINDOW_SECONDS", "30")
         )
@@ -198,7 +226,12 @@ class DoorTelemetryAgent:
             raise RuntimeError("SUPABASE_PI_RPC_KEY is required")
 
         self.queue = LocalQueue(self.db_path)
-        self.client = SupabaseRpcClient(self.supabase_url, self.supabase_key)
+        self.client = SupabaseRpcClient(
+            self.supabase_url,
+            self.supabase_key,
+            timeout_seconds=self.rpc_timeout_seconds,
+            endpoint_override=self.rpc_endpoint_override,
+        )
         self.stop_event = threading.Event()
 
         self.seq = int(self.queue.get_state("seq", "0") or "0")
@@ -230,14 +263,18 @@ class DoorTelemetryAgent:
 
     def _build_base_event(self, event_type: str) -> Dict[str, Any]:
         context = self._read_unlock_context()
+        method = str(context.get("unlock_method") or self.event_method).strip() or self.event_method
         return {
             "local_seq": self._next_seq(),
             "event_type": event_type,
             "event_ts": _utc_now_iso(),
-            "source": "pi-agent",
+            "source": self.event_source,
             "unlock_job_id": context.get("unlock_job_id"),
             "actor_user_id": context.get("actor_user_id"),
-            "metadata": {},
+            "metadata": {
+                "transport": "rest-rpc",
+                "method": method,
+            },
         }
 
     def on_open(self) -> None:
@@ -279,11 +316,15 @@ class DoorTelemetryAgent:
 
     def emit_heartbeat(self) -> None:
         event = self._build_base_event("heartbeat")
-        event["metadata"] = {"queue_depth": self.queue.size()}
+        event["metadata"] = {
+            **event.get("metadata", {}),
+            "queue_depth": self.queue.size(),
+        }
         self._enqueue_event(event)
 
     def _sender_loop(self) -> None:
         backoff_seconds = 0.5
+        max_backoff = max(1.0, self.rpc_max_backoff_seconds)
         last_prune = 0.0
         while not self.stop_event.is_set():
             try:
@@ -308,18 +349,18 @@ class DoorTelemetryAgent:
                     "[telemetry] batch sent"
                     f" count={len(events)} queue_depth={self.queue.size()} result={result}"
                 )
-            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
+            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, RuntimeError) as error:
                 self.queue.mark_error(ids if "ids" in locals() else [], str(error))
-                wait_for = min(backoff_seconds, 30.0)
+                wait_for = min(backoff_seconds, max_backoff)
                 print(f"[telemetry] send failed: {error}. retry in {wait_for:.1f}s")
                 self.stop_event.wait(wait_for)
-                backoff_seconds = min(backoff_seconds * 2.0, 30.0)
+                backoff_seconds = min(backoff_seconds * 2.0, max_backoff)
             except Exception as error:
                 self.queue.mark_error(ids if "ids" in locals() else [], str(error))
-                wait_for = min(backoff_seconds, 30.0)
+                wait_for = min(backoff_seconds, max_backoff)
                 print(f"[telemetry] unexpected sender error: {error}. retry in {wait_for:.1f}s")
                 self.stop_event.wait(wait_for)
-                backoff_seconds = min(backoff_seconds * 2.0, 30.0)
+                backoff_seconds = min(backoff_seconds * 2.0, max_backoff)
 
     def _heartbeat_loop(self) -> None:
         while not self.stop_event.is_set():

@@ -34,6 +34,11 @@ DOOR_QUEUE_BATCH_SIZE = int(os.getenv("DOOR_QUEUE_BATCH_SIZE", "40"))
 DOOR_QUEUE_FLUSH_SECONDS = float(os.getenv("DOOR_QUEUE_FLUSH_SECONDS", "0.6"))
 DOOR_QUEUE_RETENTION_DAYS = float(os.getenv("DOOR_QUEUE_RETENTION_DAYS", "7"))
 DOOR_HEARTBEAT_SECONDS = float(os.getenv("DOOR_HEARTBEAT_SECONDS", "60"))
+DOOR_RPC_TIMEOUT_SECONDS = float(os.getenv("DOOR_RPC_TIMEOUT_SECONDS", "8"))
+DOOR_RPC_MAX_BACKOFF_SECONDS = float(os.getenv("DOOR_RPC_MAX_BACKOFF_SECONDS", "30"))
+DOOR_RPC_ENDPOINT = str(os.getenv("DOOR_RPC_ENDPOINT", "")).strip()
+DOOR_EVENT_SOURCE = str(os.getenv("DOOR_EVENT_SOURCE", "LED_Door.py")).strip() or "LED_Door.py"
+DOOR_EVENT_METHOD = str(os.getenv("DOOR_EVENT_METHOD", "sensor_edge")).strip() or "sensor_edge"
 DOOR_UNLOCK_CONTEXT_WINDOW_SECONDS = float(
     os.getenv("DOOR_UNLOCK_CONTEXT_WINDOW_SECONDS", "30")
 )
@@ -188,14 +193,19 @@ class Telemetry:
 
     def _enqueue_event(self, event_type: str, metadata=None, session=None):
         actor_user_id, unlock_job_id = self._current_context()
+        merged_metadata = {
+            "transport": "rest-rpc",
+            "method": DOOR_EVENT_METHOD,
+            **(metadata or {}),
+        }
         event = {
             "local_seq": self._next_seq(),
             "event_type": event_type,
             "event_ts": _utc_now_iso(),
-            "source": "LED_Door.py",
+            "source": DOOR_EVENT_SOURCE,
             "unlock_job_id": unlock_job_id,
             "actor_user_id": actor_user_id,
-            "metadata": metadata or {},
+            "metadata": merged_metadata,
         }
         if session is not None:
             event["session"] = session
@@ -224,10 +234,13 @@ class Telemetry:
             "local_seq": self._next_seq(),
             "event_type": "close",
             "event_ts": _utc_now_iso(),
-            "source": "LED_Door.py",
+            "source": DOOR_EVENT_SOURCE,
             "unlock_job_id": unlock_job_id,
             "actor_user_id": actor_user_id,
-            "metadata": {},
+            "metadata": {
+                "transport": "rest-rpc",
+                "method": DOOR_EVENT_METHOD,
+            },
             "session": {
                 "open_local_seq": self.open_local_seq,
                 "close_local_seq": None,
@@ -263,7 +276,7 @@ class Telemetry:
         self._enqueue_event("heartbeat", metadata={"queue_depth": self.queue.size()})
 
     def _rpc_send(self, events):
-        endpoint = f"{SUPABASE_URL.rstrip('/')}/rest/v1/rpc/log_door_events_batch"
+        endpoint = DOOR_RPC_ENDPOINT or f"{SUPABASE_URL.rstrip('/')}/rest/v1/rpc/log_door_events_batch"
         body = json.dumps(
             {
                 "p_kiosk_id": KIOSK_ID,
@@ -281,11 +294,22 @@ class Telemetry:
                 "Accept": "application/json",
                 "apikey": SUPABASE_PI_RPC_KEY,
                 "Authorization": f"Bearer {SUPABASE_PI_RPC_KEY}",
+                "User-Agent": "inventory-led-door/1.0",
             },
         )
-        with urllib.request.urlopen(req, timeout=8.0) as resp:
-            raw = resp.read().decode("utf-8")
-            return json.loads(raw) if raw else {}
+        try:
+            with urllib.request.urlopen(req, timeout=max(2.0, DOOR_RPC_TIMEOUT_SECONDS)) as resp:
+                raw = resp.read().decode("utf-8")
+                return json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as error:
+            try:
+                payload = error.read().decode("utf-8", errors="replace").strip()[:400]
+            except Exception:
+                payload = ""
+            detail = f"HTTP {error.code} {error.reason}"
+            if payload:
+                detail += f" body={payload}"
+            raise RuntimeError(detail) from error
 
     def sender_loop(self):
         if not SUPABASE_URL or not SUPABASE_PI_RPC_KEY:
@@ -295,6 +319,7 @@ class Telemetry:
             return
 
         backoff = 0.5
+        max_backoff = max(1.0, DOOR_RPC_MAX_BACKOFF_SECONDS)
         last_prune = 0.0
         while not self.stop_event.is_set():
             try:
@@ -327,19 +352,19 @@ class Telemetry:
                 with self.lock:
                     self.last_rpc_error = str(error)
                     self.last_rpc_error_at = _utc_now_iso()
-                wait_for = min(backoff, 30.0)
+                wait_for = min(backoff, max_backoff)
                 print(f"[telemetry] send failed ({error}); retrying in {wait_for:.1f}s")
                 self.stop_event.wait(wait_for)
-                backoff = min(backoff * 2.0, 30.0)
+                backoff = min(backoff * 2.0, max_backoff)
             except Exception as error:
                 self.queue.mark_error(ids if "ids" in locals() else [], str(error))
                 with self.lock:
                     self.last_rpc_error = str(error)
                     self.last_rpc_error_at = _utc_now_iso()
-                wait_for = min(backoff, 30.0)
+                wait_for = min(backoff, max_backoff)
                 print(f"[telemetry] sender error ({error}); retrying in {wait_for:.1f}s")
                 self.stop_event.wait(wait_for)
-                backoff = min(backoff * 2.0, 30.0)
+                backoff = min(backoff * 2.0, max_backoff)
 
     def heartbeat_loop(self):
         while not self.stop_event.is_set():

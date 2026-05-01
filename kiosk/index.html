@@ -16,6 +16,22 @@
     <!-- Supabase JS Library -->
     <script src="supabase.js"></script>
     <link rel="stylesheet" href="index.css">
+    <style>
+        /* Visual affordance for restricted controls when not authenticated */
+        .locked {
+            opacity: 0.65 !important;
+            filter: grayscale(30%);
+            position: relative;
+        }
+        .locked::after {
+            content: "🔒";
+            position: absolute;
+            right: 8px;
+            top: 6px;
+            font-size: 0.9em;
+            pointer-events: none;
+        }
+    </style>
 </head>
 
 <body class="dark-theme">

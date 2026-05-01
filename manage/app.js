@@ -165,6 +165,20 @@ let inventorySmartSearchTerm = '';
 let inventorySearchDebounceTimer = null;
 let ordersTabMode = 'orders';
 let kioskRuntimeSettings = getDefaultKioskSettings();
+let doorTelemetryChannel = null;
+let doorTelemetryUiTickInterval = null;
+const doorRuntimeState = {
+    known: false,
+    isOpen: false,
+    openedAtMs: 0,
+    openedByUserId: null,
+    lastEventType: '',
+    lastEventMs: 0,
+    lastVisitDurationSeconds: 0,
+    lastVisitUserId: null,
+    blockingModalShown: false,
+    blockingModalOpenAtMs: 0
+};
 
 // Modals & Toasts
 const modalContainer = document.getElementById('modal-container');
@@ -263,6 +277,12 @@ const loginRateLimit = {
 
 function canAttemptLogin() {
     const now = Date.now();
+
+    // Prevent login when door is open and known
+    if (typeof doorRuntimeState !== 'undefined' && doorRuntimeState && doorRuntimeState.known && doorRuntimeState.isOpen) {
+        showToast('Door is open. Please close the door before signing in.', 'error');
+        return false;
+    }
 
 
     // Still in lockout?
@@ -739,9 +759,9 @@ function buildTimezoneOptionsHtml(selectedTz) {
 function buildPeriodRowHtml(start = '', end = '', dueAtTime = '') {
     return `
         <div class="period-row" style="display:grid;grid-template-columns:1fr 1fr 1fr 36px;gap:0.5rem;align-items:center;margin-bottom:0.5rem">
-            <input type="time" class="form-control period-start" value="${start}" title="Period start time">
-            <input type="time" class="form-control period-end" value="${end}" title="Period end time">
-            <input type="time" class="form-control period-due-at" value="${dueAtTime || end || ''}" title="Due back time for this period">
+            <input type="time" class="form-control period-start" value="${escapeHtml(start)}" title="Period start time">
+            <input type="time" class="form-control period-end" value="${escapeHtml(end)}" title="Period end time">
+            <input type="time" class="form-control period-due-at" value="${escapeHtml(dueAtTime || end || '')}" title="Due back time for this period">
             <button type="button" class="btn btn-secondary remove-period-row-btn" style="padding:0.25rem 0.5rem" title="Remove period"><i class="ph ph-trash"></i></button>
         </div>`;
 }
@@ -1575,6 +1595,16 @@ function resolveKioskRuntimeSettings(source = {}, fallbackOverrides = null) {
             merged.enforceHours,
             merged.enforce_hours
         ], fallback.enforceHours),
+        doorOpenWarningSeconds: Math.round(readKioskNumberSetting([
+            merged.doorOpenWarningSeconds,
+            merged.door_open_warning_seconds,
+            merged.door_warning_seconds
+        ], fallback.doorOpenWarningSeconds, 30, 3600)),
+        doorOpenBlockSeconds: Math.round(readKioskNumberSetting([
+            merged.doorOpenBlockSeconds,
+            merged.door_open_block_seconds,
+            merged.door_block_seconds
+        ], fallback.doorOpenBlockSeconds, 30, 7200)),
         doorUnlockDuration: readKioskNumberSetting([
             merged.doorUnlockDuration,
             merged.door_unlock_duration,
@@ -1616,6 +1646,8 @@ async function saveKioskSettingsToSupabase(settings, targetKioskId = kioskId) {
             show_order_form: settings.showOrderForm,
             show_credential_request: settings.showCredentialRequest,
             branding_text: settings.brandingText,
+            door_open_warning_seconds: settings.doorOpenWarningSeconds,
+            door_open_block_seconds: settings.doorOpenBlockSeconds,
             door_unlock_duration: settings.doorUnlockDuration,
             start_time: settings.startTime,
             end_time: settings.endTime,
@@ -1629,6 +1661,8 @@ async function saveKioskSettingsToSupabase(settings, targetKioskId = kioskId) {
             show_order_form: settings.showOrderForm,
             show_credential_request: settings.showCredentialRequest,
             branding_text: settings.brandingText,
+            door_open_warning_seconds: settings.doorOpenWarningSeconds,
+            door_open_block_seconds: settings.doorOpenBlockSeconds,
             door_unlock_duration_seconds: settings.doorUnlockDuration,
             operating_start_time: settings.startTime,
             operating_end_time: settings.endTime,
@@ -1643,6 +1677,8 @@ async function saveKioskSettingsToSupabase(settings, targetKioskId = kioskId) {
                 showOrderForm: settings.showOrderForm,
                 showCredentialRequest: settings.showCredentialRequest,
                 brandingText: settings.brandingText,
+                doorOpenWarningSeconds: settings.doorOpenWarningSeconds,
+                doorOpenBlockSeconds: settings.doorOpenBlockSeconds,
                 doorUnlockDuration: settings.doorUnlockDuration,
                 startTime: settings.startTime,
                 endTime: settings.endTime,
@@ -1658,6 +1694,8 @@ async function saveKioskSettingsToSupabase(settings, targetKioskId = kioskId) {
                 showOrderForm: settings.showOrderForm,
                 showCredentialRequest: settings.showCredentialRequest,
                 brandingText: settings.brandingText,
+                doorOpenWarningSeconds: settings.doorOpenWarningSeconds,
+                doorOpenBlockSeconds: settings.doorOpenBlockSeconds,
                 doorUnlockDuration: settings.doorUnlockDuration,
                 startTime: settings.startTime,
                 endTime: settings.endTime,
@@ -1700,7 +1738,7 @@ function showNewUpdateOverlay(newVersion) {
         <div class="app-update-card glass-panel">
             <h3>New Update Available</h3>
             <p class="text-secondary" style="margin:0.5rem 0 1rem 0;">A new kiosk version is ready:</p>
-            <p class="app-update-version" style="font-weight:700;color:var(--accent-secondary);margin-bottom:1rem">${newVersion}</p>
+            <p class="app-update-version" style="font-weight:700;color:var(--accent-secondary);margin-bottom:1rem">${escapeHtml(newVersion)}</p>
             <div style="display:flex;gap:0.75rem;justify-content:center;">
                 <button class="btn btn-secondary" id="dismiss-update-overlay">Later</button>
                 <button class="btn btn-primary" id="apply-update-overlay">Reload Now</button>
@@ -2122,6 +2160,220 @@ function waitForMs(ms) {
     return new Promise(resolve => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
 }
 
+function getDoorSensorId() {
+    return String(envConfig.DOOR_SENSOR_ID || 'door-1').trim() || 'door-1';
+}
+
+function getDoorWarningSeconds() {
+    const fromSettings = Math.floor(Number(kioskRuntimeSettings?.doorOpenWarningSeconds));
+    if (Number.isFinite(fromSettings) && fromSettings >= 30) return fromSettings;
+
+    const fromEnv = Math.floor(Number(envConfig.DOOR_OPEN_WARNING_SECONDS));
+    if (Number.isFinite(fromEnv) && fromEnv >= 30) return fromEnv;
+
+    return 300;
+}
+
+function getDoorBlockSeconds() {
+    const warningSeconds = getDoorWarningSeconds();
+    const fromSettings = Math.floor(Number(kioskRuntimeSettings?.doorOpenBlockSeconds));
+    if (Number.isFinite(fromSettings) && fromSettings >= warningSeconds) return fromSettings;
+
+    const fromEnv = Math.floor(Number(envConfig.DOOR_OPEN_BLOCK_SECONDS));
+    if (Number.isFinite(fromEnv) && fromEnv >= warningSeconds) return fromEnv;
+
+    return Math.max(600, warningSeconds);
+}
+
+function getDoorOpenDurationSeconds() {
+    if (!doorRuntimeState.isOpen || !doorRuntimeState.openedAtMs) return 0;
+    return Math.max(0, Math.floor((Date.now() - doorRuntimeState.openedAtMs) / 1000));
+}
+
+function formatDoorDurationDhms(totalSeconds) {
+    const seconds = Math.max(0, Math.floor(Number(totalSeconds) || 0));
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor((seconds % 86400) / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = seconds % 60;
+
+    if (days > 0) return `${days}d ${hours}h ${minutes}m ${secs}s`;
+    if (hours > 0) return `${hours}h ${minutes}m ${secs}s`;
+    if (minutes > 0) return `${minutes}m ${secs}s`;
+    return `${secs}s`;
+}
+
+function isDoorBlockingWarningVisible() {
+    return !!dynamicModal.querySelector('[data-door-open-warning="1"]');
+}
+
+function openDoorBlockingWarningModal() {
+    const durationLabel = formatDoorDurationDhms(getDoorOpenDurationSeconds());
+    const html = `
+        <div class="modal-header">
+            <h3><i class="ph ph-warning-circle"></i> Door Open Warning</h3>
+        </div>
+        <div class="modal-body" data-door-open-warning="1">
+            <p style="font-size:1.05rem;line-height:1.5;margin-bottom:0.8rem;">
+                Door has been open for <strong id="door-open-warning-duration">${escapeHtml(durationLabel)}</strong>. Please close the door.
+            </p>
+            <p class="text-muted" style="margin-bottom:0;">Logout is blocked while the door remains open.</p>
+        </div>
+    `;
+    openModal(html);
+    doorRuntimeState.blockingModalShown = true;
+    doorRuntimeState.blockingModalOpenAtMs = doorRuntimeState.openedAtMs || Date.now();
+}
+
+function refreshDoorBlockingWarningModalText() {
+    const durationEl = document.getElementById('door-open-warning-duration');
+    if (!durationEl) return;
+    durationEl.textContent = formatDoorDurationDhms(getDoorOpenDurationSeconds());
+}
+
+function closeDoorBlockingWarningModal() {
+    if (!doorRuntimeState.blockingModalShown) return;
+
+    doorRuntimeState.blockingModalShown = false;
+    doorRuntimeState.blockingModalOpenAtMs = 0;
+    if (isDoorBlockingWarningVisible()) {
+        closeModal({ force: true });
+    }
+}
+
+function syncDoorBlockingWarningState() {
+    if (!doorRuntimeState.known || !doorRuntimeState.isOpen) {
+        closeDoorBlockingWarningModal();
+        return;
+    }
+
+    const openSeconds = getDoorOpenDurationSeconds();
+    const blockSeconds = getDoorBlockSeconds();
+
+    if (openSeconds < blockSeconds) {
+        closeDoorBlockingWarningModal();
+        return;
+    }
+
+    if (!doorRuntimeState.blockingModalShown || !isDoorBlockingWarningVisible()) {
+        openDoorBlockingWarningModal();
+        addLog('SYSTEM', 'Door Open Warning', `Door has been open for ${formatDoorDurationDhms(openSeconds)} on ${kioskId || 'kiosk'}.`);
+    }
+
+    refreshDoorBlockingWarningModalText();
+}
+
+function applyDoorSensorEvent(eventRow) {
+    if (!eventRow || typeof eventRow !== 'object') return;
+
+    const eventType = String(eventRow.event_type || '').trim().toLowerCase();
+    if (!eventType) return;
+
+    const eventTsMs = Date.parse(String(eventRow.event_ts || '')) || Date.now();
+    const actorUserId = String(eventRow.actor_user_id || '').trim() || null;
+
+    doorRuntimeState.known = true;
+    doorRuntimeState.lastEventType = eventType;
+    doorRuntimeState.lastEventMs = eventTsMs;
+
+    if (eventType === 'open') {
+        doorRuntimeState.isOpen = true;
+        doorRuntimeState.openedAtMs = eventTsMs;
+        doorRuntimeState.openedByUserId = actorUserId;
+        doorRuntimeState.lastVisitDurationSeconds = 0;
+        doorRuntimeState.lastVisitUserId = null;
+    } else if (eventType === 'close') {
+        if (doorRuntimeState.isOpen && doorRuntimeState.openedAtMs) {
+            doorRuntimeState.lastVisitDurationSeconds = Math.max(0, Math.floor((eventTsMs - doorRuntimeState.openedAtMs) / 1000));
+            doorRuntimeState.lastVisitUserId = doorRuntimeState.openedByUserId;
+        }
+        doorRuntimeState.isOpen = false;
+        doorRuntimeState.openedAtMs = 0;
+        doorRuntimeState.openedByUserId = null;
+    }
+
+    syncDoorBlockingWarningState();
+}
+
+async function bootstrapDoorSensorState(targetKioskId = kioskId) {
+    if (!targetKioskId) return;
+
+    const client = getSettingsSupabaseClient();
+    if (!client) return;
+
+    try {
+        const { data, error } = await client
+            .from('door_sensor_events')
+            .select('event_type, event_ts, actor_user_id, sensor_id, kiosk_id, local_seq')
+            .eq('kiosk_id', targetKioskId)
+            .eq('sensor_id', getDoorSensorId())
+            .in('event_type', ['open', 'close'])
+            .order('event_ts', { ascending: false })
+            .order('local_seq', { ascending: false })
+            .limit(1);
+
+        if (error) {
+            console.warn('Failed to bootstrap door sensor state:', error);
+            return;
+        }
+
+        if (Array.isArray(data) && data.length > 0) {
+            applyDoorSensorEvent(data[0]);
+        }
+    } catch (error) {
+        console.warn('Door sensor bootstrap request failed:', error);
+    }
+}
+
+function startDoorSensorRealtimeListener(targetKioskId = kioskId) {
+    if (!targetKioskId) return;
+
+    const client = getSettingsSupabaseClient();
+    if (!client) return;
+
+    if (doorTelemetryChannel) {
+        client.removeChannel(doorTelemetryChannel);
+        doorTelemetryChannel = null;
+    }
+
+    doorTelemetryChannel = client
+        .channel(`door-sensor-events-${targetKioskId}`)
+        .on('postgres_changes', {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'door_sensor_events',
+            filter: `kiosk_id=eq.${targetKioskId}`
+        }, payload => {
+            const row = payload?.new;
+            const sensorId = String(row?.sensor_id || '').trim() || 'door-1';
+            if (sensorId !== getDoorSensorId()) return;
+            applyDoorSensorEvent(row);
+        })
+        .subscribe(status => {
+            if (status === 'CHANNEL_ERROR') {
+                console.warn('door_sensor_events realtime channel error');
+            }
+        });
+}
+
+function startDoorTelemetryUiTicker() {
+    if (doorTelemetryUiTickInterval) {
+        clearInterval(doorTelemetryUiTickInterval);
+        doorTelemetryUiTickInterval = null;
+    }
+
+    doorTelemetryUiTickInterval = setInterval(() => {
+        syncDoorBlockingWarningState();
+    }, 1000);
+}
+
+function ensureDoorClosedForLogout(message = 'Please close the door before logging out.') {
+    if (!doorRuntimeState.known || !doorRuntimeState.isOpen) return true;
+    syncDoorBlockingWarningState();
+    showToast(message, 'error');
+    return false;
+}
+
 function normalizeDoorActionType(actionType) {
     const normalized = String(actionType || '').trim().toLowerCase();
     if (normalized === 'sign-in') return 'sign-in';
@@ -2337,10 +2589,23 @@ async function requestDoorReleaseAndLogAccess(reason = 'manual door release') {
 }
 
 async function fetchDoorStatus() {
+    const openSeconds = getDoorOpenDurationSeconds();
+    const warningSeconds = getDoorWarningSeconds();
+    const doorPosition = !doorRuntimeState.known
+        ? 'unknown'
+        : (doorRuntimeState.isOpen ? 'open' : 'closed');
+
     return {
         status: 'success',
         held_open: false,
-        door_position: 'unknown',
+        door_position: doorPosition,
+        door_open_seconds: openSeconds,
+        active_user_id: doorRuntimeState.openedByUserId,
+        active_user_seconds: openSeconds,
+        left_open_too_long: doorRuntimeState.isOpen && openSeconds >= warningSeconds,
+        door_open_alert_seconds: warningSeconds,
+        last_visit_duration_seconds: doorRuntimeState.lastVisitDurationSeconds,
+        last_visit_user_id: doorRuntimeState.lastVisitUserId,
         led_attention_mode: true,
         message: 'LED-only attention mode active.'
     };
@@ -2777,6 +3042,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     setRuntimeAppVersion(kioskSettings.app_version);
     await applyKioskLock(!!kioskSettings.is_locked, kioskSettings.lock_screen || 'systemLocked');
     startKioskVersionRealtimeListener(kioskId);
+    await bootstrapDoorSensorState(kioskId);
+    startDoorSensorRealtimeListener(kioskId);
+    startDoorTelemetryUiTicker();
 
     if (!verification.valid) {
         const unavailableDescription = verification.reason === 'invalid_license'
@@ -2887,9 +3155,19 @@ async function handleBarcodeLogin(rawId) {
     if (isManageMode) {
         const rawToken = String(rawId || usernameInput?.value || barcodeInput?.value || '').trim();
         const typedPassword = String(passwordInput?.value || '').trim();
+        const fromScanner = Boolean(rawId);
+        const hasUsernameTyped = Boolean(String(usernameInput?.value || '').trim());
 
+        // If a password is present, prefer credential login.
         if (typedPassword) {
             await handleManageCredentialLogin(usernameInput?.value || '', typedPassword);
+            return;
+        }
+
+        // If the user manually typed a username and did not provide a password, do not attempt barcode login.
+        // Barcode login must come from the scanner (rawId) or the barcode input field.
+        if (hasUsernameTyped && !fromScanner && !String(barcodeInput?.value || '').trim()) {
+            showToast('Enter your password to sign in, or scan your barcode with the scanner.', 'error');
             return;
         }
 
@@ -3452,6 +3730,10 @@ function logout(message = 'Logged out successfully') {
         return;
     }
 
+    if (!ensureDoorClosedForLogout()) {
+        return;
+    }
+
     closeModal();
 
     _trackLogout();
@@ -3483,6 +3765,10 @@ function logout(message = 'Logged out successfully') {
 function returnToLoginView(options = {}) {
     const message = options.message || 'Logged out successfully';
     const showMessage = options.showMessage !== false;
+
+    if (!ensureDoorClosedForLogout()) {
+        return;
+    }
 
     closeModal();
 
@@ -6485,6 +6771,29 @@ async function openSignOutModal(itemId) {
 
         const refreshQtyPreview = () => {
             if (!soQtyInput) return;
+            const mode = String(soModeSelect?.value || defaultDestinationMode);
+
+            if (mode === 'class') {
+                const selectedClassId = String(soClassSelect?.value || staffClasses[0]?.id || '').trim();
+                const classStudents = getClassStudentsForCheckout(selectedClassId);
+                const classSize = classStudents.length;
+                const totalQty = classSize;
+                soQtyInput.max = String(Math.max(1, item.stock || 1));
+                soQtyInput.value = '1';
+                soQtyInput.disabled = true;
+                if (soQtyLabel) soQtyLabel.textContent = 'Quantity';
+                if (soQtyPreview) soQtyPreview.textContent = classSize > 0 ? `1x each (${totalQty} total)` : '1x each (0 total)';
+                if (soStockPreview) soStockPreview.textContent = String(Math.max(0, item.stock - totalQty));
+                if (soQtyHint) {
+                    soQtyHint.textContent = classSize > 0
+                        ? `${classSize} student${classSize === 1 ? '' : 's'} will each receive 1 item in My Items.`
+                        : 'This class has no students to assign.';
+                }
+                return;
+            }
+
+            soQtyInput.disabled = false;
+            soQtyInput.max = String(Math.max(1, item.stock || 1));
             const maxQty = Math.max(1, parseInt(soQtyInput.max, 10) || item.stock || 1);
             const normalizedQty = Math.max(1, Math.min(maxQty, parseInt(soQtyInput.value, 10) || 1));
             soQtyInput.value = String(normalizedQty);
@@ -6520,21 +6829,14 @@ async function openSignOutModal(itemId) {
 
         const buildClassAssigneeOptions = (classId) => {
             const cls = staffClasses.find(c => String(c.id) === String(classId));
-            if (!cls) return '<option value="">No students in this class</option>';
+            if (!cls) return '<option value="">All students in class</option>';
 
             const studentIdSet = new Set((Array.isArray(cls.students) ? cls.students : []).map(id => String(id)));
             const classStudents = mockUsers.filter(user => user.role === 'student' && studentIdSet.has(String(user.id)));
-            let options = '';
-
-            classStudents.forEach(student => {
-                options += `<option value="${escapeHtml(student.id)}">${escapeHtml(student.name)} (${escapeHtml(student.id)})</option>`;
-            });
-
             if (classStudents.length === 0) {
-                options = '<option value="">No students in this class</option>';
+                return '<option value="">All students in class</option>';
             }
-
-            return options;
+            return `<option value="all">All students in class (${classStudents.length})</option>`;
         };
 
         const refreshSignOutDestination = () => {
@@ -6563,24 +6865,25 @@ async function openSignOutModal(itemId) {
             }
 
             if (mode === 'class') {
-                if (soAssigneeLabel) soAssigneeLabel.textContent = 'Assign To Student';
+                if (soAssigneeLabel) soAssigneeLabel.textContent = 'Assign To';
                 const selectedClassId = soClassSelect?.value || staffClasses[0]?.id || '';
                 if (soClassSelect && selectedClassId) {
                     soClassSelect.value = selectedClassId;
                 }
                 const selectedClass = staffClasses.find(cls => String(cls.id) === String(selectedClassId)) || null;
-                const selectedProject = selectedClass ? getOrCreateClassProjectForCheckout(selectedClass, currentUser.id) : null;
+                const classPolicyProject = selectedClass ? getOrCreateClassProjectForCheckout(selectedClass, currentUser.id) : null;
                 const classStudents = getClassStudentsForCheckout(selectedClassId);
                 if (soAssigneeSelect) {
                     soAssigneeSelect.innerHTML = buildClassAssigneeOptions(selectedClassId);
                 }
                 if (soClassSummary) {
                     soClassSummary.textContent = selectedClass
-                        ? `${selectedClass.name} has ${classStudents.length} student${classStudents.length === 1 ? '' : 's'}. Choose a student to sign out on their behalf.`
-                        : 'Select a class, then choose a student to assign this sign-out.';
+                        ? `${selectedClass.name} has ${classStudents.length} student${classStudents.length === 1 ? '' : 's'}. This will sign out one item to each student on your behalf.`
+                        : 'Select a class to sign out one item per student.';
                 }
                 if (duePreviewEl) {
-                    duePreviewEl.textContent = new Date(calculateDueDate(new Date(), currentUser, selectedProject)).toLocaleString();
+                    const dueTarget = classStudents[0] || currentUser;
+                    duePreviewEl.textContent = new Date(calculateDueDate(new Date(), dueTarget, classPolicyProject)).toLocaleString();
                 }
                 refreshQtyPreview();
                 return;
@@ -6642,39 +6945,161 @@ async function openSignOutModal(itemId) {
                     const assigneeUser = mockUsers.find(user => String(user.id) === String(assignedToUserId));
                     assignedToUserName = assigneeUser?.name || assignedToUserId;
                 } else {
-                    const constraintError = exceedsCheckoutConstraints({
-                        distinctItems: 1,
-                        totalQuantity: qty
-                    });
-                    if (constraintError) {
-                        showToast(constraintError, 'error');
-                        return;
-                    }
-
                     const selectedClassId = String(soClassSelect?.value || '').trim() || staffClasses[0]?.id || '';
                     const selectedClass = staffClasses.find(cls => String(cls.id) === selectedClassId);
                     if (!selectedClass) {
                         showToast('Select a class before signing out.', 'error');
                         return;
                     }
-                    project = getOrCreateClassProjectForCheckout(selectedClass, currentUser.id);
-                    const ensured = await ensureProjectExistsInSupabase(project);
-                    if (!ensured) {
-                        showToast('Failed to create class project in database.', 'error');
-                        return;
-                    }
 
                     const classStudents = getClassStudentsForCheckout(selectedClassId);
-                    const classStudentIdSet = new Set(classStudents.map(student => String(student.id)));
-                    const selectedAssigneeId = String(soAssigneeSelect?.value || '').trim();
-                    if (!selectedAssigneeId || !classStudentIdSet.has(selectedAssigneeId)) {
-                        showToast('Select a student in this class before signing out.', 'error');
+                    if (classStudents.length === 0) {
+                        showToast('This class has no students to sign out to.', 'error');
                         return;
                     }
 
-                    assignedToUserId = selectedAssigneeId;
-                    const assigneeUser = classStudents.find(student => String(student.id) === selectedAssigneeId);
-                    assignedToUserName = assigneeUser?.name || selectedAssigneeId;
+                    const totalClassQty = classStudents.length;
+                    const constraintError = exceedsCheckoutConstraints({
+                        distinctItems: 1,
+                        totalQuantity: totalClassQty
+                    });
+                    if (constraintError) {
+                        showToast(constraintError, 'error');
+                        return;
+                    }
+                    if (totalClassQty > item.stock) {
+                        showToast(`Not enough stock to sign out to all students. Need ${totalClassQty}, have ${item.stock}.`, 'error');
+                        return;
+                    }
+
+                    const classPolicyProject = getOrCreateClassProjectForCheckout(selectedClass, currentUser.id);
+                    if (!classPolicyProject) {
+                        showToast('Unable to resolve class due policy.', 'error');
+                        return;
+                    }
+
+                    const createdRows = [];
+                    for (const student of classStudents) {
+                        const studentProject = getOrCreatePersonalProject(student.id);
+                        const ensuredStudentProject = await ensureProjectExistsInSupabase(studentProject);
+                        if (!ensuredStudentProject) {
+                            for (const savedRow of createdRows.reverse()) {
+                                if (savedRow.id) {
+                                    await returnItemToSupabase(savedRow.id);
+                                } else {
+                                    await returnItemByCompositeToSupabase({
+                                        projectId: savedRow.projectId,
+                                        itemId: savedRow.itemId,
+                                        signoutDate: savedRow.signoutDate,
+                                        quantity: savedRow.quantity
+                                    });
+                                }
+                            }
+                            showToast(`Failed to create personal project for ${student.name}. Class sign-out was rolled back.`, 'error');
+                            return;
+                        }
+
+                        const signoutDate = new Date().toISOString();
+                        const signoutData = {
+                            id: generateId('OUT'),
+                            itemId: item.id,
+                            quantity: 1,
+                            signoutDate,
+                            dueDate: calculateDueDate(new Date(signoutDate), student, classPolicyProject),
+                            assignedToUserId: student.id,
+                            signedOutByUserId: currentUser.id
+                        };
+
+                        const savedSignout = await addProjectItemOutToSupabase({
+                            id: signoutData.id,
+                            projectId: studentProject.id,
+                            itemId: item.id,
+                            quantity: signoutData.quantity,
+                            signoutDate: signoutData.signoutDate,
+                            dueDate: signoutData.dueDate,
+                            assignedToUserId: signoutData.assignedToUserId,
+                            signedOutByUserId: signoutData.signedOutByUserId,
+                            requiresDoorUnlock: item.requiresDoorUnlock ?? item.requires_door_unlock ?? false
+                        });
+
+                        if (!savedSignout) {
+                            for (const savedRow of createdRows.reverse()) {
+                                if (savedRow.id) {
+                                    await returnItemToSupabase(savedRow.id);
+                                } else {
+                                    await returnItemByCompositeToSupabase({
+                                        projectId: savedRow.projectId,
+                                        itemId: savedRow.itemId,
+                                        signoutDate: savedRow.signoutDate,
+                                        quantity: savedRow.quantity
+                                    });
+                                }
+                            }
+                            const errDetail = typeof getLastProjectItemOutError === 'function'
+                                ? String(getLastProjectItemOutError() || '').slice(0, 180)
+                                : '';
+                            showToast(`Failed to save class sign-out for ${student.name}. ${errDetail || 'All class sign-outs were rolled back.'}`, 'error');
+                            return;
+                        }
+
+                        const persistedRow = {
+                            id: savedSignout?.id || signoutData.id,
+                            projectId: studentProject.id,
+                            itemId: signoutData.itemId,
+                            quantity: signoutData.quantity,
+                            signoutDate: signoutData.signoutDate,
+                            dueDate: signoutData.dueDate,
+                            assignedToUserId: signoutData.assignedToUserId,
+                            signedOutByUserId: signoutData.signedOutByUserId
+                        };
+                        createdRows.push(persistedRow);
+                    }
+
+                    const nextStock = item.stock - totalClassQty;
+                    const stockUpdated = await updateItemInSupabase(item.id, { stock: nextStock });
+                    if (!stockUpdated) {
+                        for (const savedRow of createdRows.reverse()) {
+                            if (savedRow.id) {
+                                await returnItemToSupabase(savedRow.id);
+                            } else {
+                                await returnItemByCompositeToSupabase({
+                                    projectId: savedRow.projectId,
+                                    itemId: savedRow.itemId,
+                                    signoutDate: savedRow.signoutDate,
+                                    quantity: savedRow.quantity
+                                });
+                            }
+                        }
+                        showToast('Failed to update stock. Class sign-out was rolled back.', 'error');
+                        return;
+                    }
+
+                    item.stock = nextStock;
+                    classStudents.forEach(student => {
+                        const studentProject = getOrCreatePersonalProject(student.id);
+                        const createdRow = createdRows.find(row => String(row.assignedToUserId) === String(student.id));
+                        if (createdRow) {
+                            studentProject.itemsOut.push(createdRow);
+                        }
+                    });
+
+                    _trackItemSignout(item, totalClassQty);
+                    addLog(currentUser.id, 'Class Sign-out', `Signed out ${totalClassQty}x ${item.name} (SKU: ${item.sku}) to all ${classStudents.length} students in class ${selectedClass.name} (1 each)`);
+
+                    await Promise.all([refreshProjectsFromSupabase(), refreshInventoryFromSupabase()]);
+
+                    showToast(
+                        itemRequiresDoorUnlock(item)
+                            ? `Signed out 1x each to ${classStudents.length} students. Door opened.`
+                            : `Signed out 1x each to ${classStudents.length} students successfully.`,
+                        'success'
+                    );
+                    closeModal();
+
+                    renderInventory();
+                    renderProjects();
+                    loadDashboard();
+                    return;
                 }
 
                 if (!project) {
@@ -6744,9 +7169,6 @@ async function openSignOutModal(itemId) {
                 _trackItemSignout(item, qty);
                 if (destinationMode === 'personal') {
                     addLog(currentUser.id, 'Personal Sign-out', `Signed out ${qty}x ${item.name} (SKU: ${item.sku}) to self`);
-                } else if (destinationMode === 'class') {
-                    const selectedClass = staffClasses.find(cls => String(cls.id) === String(soClassSelect?.value || '').trim());
-                    addLog(currentUser.id, 'Class Sign-out', `Signed out ${qty}x ${item.name} (SKU: ${item.sku}) for ${assignedToUserName} in class ${selectedClass ? selectedClass.name : project.name}`);
                 } else {
                     addLog(currentUser.id, 'Project Sign-out', `Signed out ${qty}x ${item.name} (SKU: ${item.sku}) for ${assignedToUserName} in project ${project.name}`);
                 }
@@ -9085,7 +9507,12 @@ function openModal(contentHtml) {
     focusModalPrimaryInput();
 }
 
-function closeModal() {
+function closeModal(options = {}) {
+    const force = !!options.force;
+    if (!force && doorRuntimeState.blockingModalShown && isDoorBlockingWarningVisible()) {
+        return;
+    }
+
     modalContainer.classList.add('hidden');
     dynamicModal.replaceChildren();
     dynamicModal.classList.remove('debug-modal', 'class-modal', 'order-request-modal');
@@ -11578,6 +12005,8 @@ function getDefaultKioskSettings() {
         startTime: '08:00',
         endTime: '18:00',
         enforceHours: true,
+        doorOpenWarningSeconds: 300,
+        doorOpenBlockSeconds: 600,
         doorUnlockDuration: 2
     };
 }
@@ -11619,6 +12048,8 @@ async function handleSaveKioskSettings() {
         showOrderForm: document.getElementById('kiosk-show-order-form').checked,
         showCredentialRequest: document.getElementById('kiosk-show-credential-request').checked,
         brandingText: document.getElementById('kiosk-branding-text').value.trim(),
+        doorOpenWarningSeconds: Math.round(Number(kioskRuntimeSettings?.doorOpenWarningSeconds) || 300),
+        doorOpenBlockSeconds: Math.round(Number(kioskRuntimeSettings?.doorOpenBlockSeconds) || 600),
         doorUnlockDuration: parseFloat(document.getElementById('kiosk-door-unlock-duration').value) || 2,
         startTime: document.getElementById('kiosk-start-time').value,
         endTime: document.getElementById('kiosk-end-time').value,

@@ -701,7 +701,59 @@ async function loadActivityLogs() {
         return;
     }
     activityLogs = data || [];
-    console.log(`Loaded ${activityLogs.length} activity logs`);
+
+    // Also load recent door open sessions and merge into activity logs for visibility
+    try {
+        const { data: doorSessions, error: dsErr } = await dbClient
+            .from('door_open_sessions')
+            .select('*')
+            .eq('kiosk_id', kioskId)
+            .order('closed_at', { ascending: false })
+            .limit(50);
+
+        if (dsErr) {
+            console.warn('Error loading door open sessions:', dsErr);
+        } else if (Array.isArray(doorSessions) && doorSessions.length > 0) {
+            const doorActivities = doorSessions.map(s => {
+                const openedAt = s.opened_at ? new Date(s.opened_at) : null;
+                const closedAt = s.closed_at ? new Date(s.closed_at) : null;
+                const durMs = Number(s.duration_ms || 0);
+                const durSec = Math.max(0, Math.floor(durMs / 1000));
+                const durText = (() => {
+                    if (durSec < 60) return `${durSec}s`;
+                    const mins = Math.floor(durSec / 60);
+                    const secs = durSec % 60;
+                    return `${mins}m ${secs}s`;
+                })();
+                const actor = s.actor_user_id || s.actorUserId || 'SYSTEM';
+                const openedText = openedAt ? openedAt.toLocaleString() : 'Unknown';
+                const closedText = closedAt ? closedAt.toLocaleString() : 'Open';
+
+                return {
+                    id: `door_session:${s.id}`,
+                    user_id: actor,
+                    action: `Door opened at ${openedText} by ${actor}. Closed at ${closedText} — open for ${durText}.`,
+                    timestamp: s.closed_at || s.opened_at || s.created_at
+                };
+            });
+
+            activityLogs = (activityLogs || []).concat(doorActivities);
+        }
+    } catch (err) {
+        console.warn('Failed to load door session activity:', err);
+    }
+
+    // Normalize and sort by timestamp desc
+    activityLogs = (activityLogs || []).map(row => ({
+        ...row,
+        timestamp: row.timestamp || row.created_at || row.ts || null
+    })).sort((a, b) => {
+        const ta = Date.parse(String(a.timestamp || '')) || 0;
+        const tb = Date.parse(String(b.timestamp || '')) || 0;
+        return tb - ta;
+    });
+
+    console.log(`Loaded ${activityLogs.length} activity logs (including door sessions)`);
 }
 
 /**

@@ -66,6 +66,8 @@ function getDefaultKioskRuntimeSettings() {
         showCredentialRequest: true,
         requireDoorUnlockForSignout: true,
         doorCallingEnabled: true,
+        doorOpenWarningSeconds: 300,
+        doorOpenBlockSeconds: 600,
         startTime: '08:00',
         endTime: '16:00',
         enforceHours: true
@@ -168,6 +170,16 @@ function resolveKioskRuntimeSettings(source = {}, fallbackOverrides = null) {
             merged.door_calling_enabled,
             merged.door_unlock_enabled
         ], fallback.doorCallingEnabled),
+        doorOpenWarningSeconds: Math.round(readKioskNumberSetting([
+            merged.doorOpenWarningSeconds,
+            merged.door_open_warning_seconds,
+            merged.door_warning_seconds
+        ], fallback.doorOpenWarningSeconds, 30, 3600)),
+        doorOpenBlockSeconds: Math.round(readKioskNumberSetting([
+            merged.doorOpenBlockSeconds,
+            merged.door_open_block_seconds,
+            merged.door_block_seconds
+        ], fallback.doorOpenBlockSeconds, 30, 7200)),
         startTime: readKioskTimeSetting([
             merged.startTime,
             merged.start_time,
@@ -191,6 +203,20 @@ function loadKioskRuntimeSettings() {
 
 let kioskRuntimeSettings = loadKioskRuntimeSettings();
 let sessionStartedAtMs = null;
+let doorTelemetryChannel = null;
+let doorTelemetryUiTickInterval = null;
+const doorRuntimeState = {
+    known: false,
+    isOpen: false,
+    openedAtMs: 0,
+    openedByUserId: null,
+    lastEventType: '',
+    lastEventMs: 0,
+    lastVisitDurationSeconds: 0,
+    lastVisitUserId: null,
+    blockingModalShown: false,
+    blockingModalOpenAtMs: 0
+};
 
 // DOM Elements - Login
 const loginView = document.getElementById('login-view');
@@ -410,6 +436,12 @@ const loginRateLimit = {
 
 function canAttemptLogin() {
     const now = Date.now();
+
+    // Prevent login when door is open and known
+    if (typeof doorRuntimeState !== 'undefined' && doorRuntimeState && doorRuntimeState.known && doorRuntimeState.isOpen) {
+        showToast('Door is open. Please close the door before signing in.', 'error');
+        return false;
+    }
 
 
     // Still in lockout?
@@ -704,9 +736,9 @@ function buildTimezoneOptionsHtml(selectedTz) {
 function buildPeriodRowHtml(start = '', end = '', dueAtTime = '') {
     return `
         <div class="period-row" style="display:grid;grid-template-columns:1fr 1fr 1fr 36px;gap:0.5rem;align-items:center;margin-bottom:0.5rem">
-            <input type="time" class="form-control period-start" value="${start}" title="Period start time">
-            <input type="time" class="form-control period-end" value="${end}" title="Period end time">
-            <input type="time" class="form-control period-due-at" value="${dueAtTime || end || ''}" title="Due back time for this period">
+            <input type="time" class="form-control period-start" value="${escapeHtml(start)}" title="Period start time">
+            <input type="time" class="form-control period-end" value="${escapeHtml(end)}" title="Period end time">
+            <input type="time" class="form-control period-due-at" value="${escapeHtml(dueAtTime || end || '')}" title="Due back time for this period">
             <button type="button" class="btn btn-secondary remove-period-row-btn" style="padding:0.25rem 0.5rem" title="Remove period"><i class="ph ph-trash"></i></button>
         </div>`;
 }
@@ -1359,7 +1391,7 @@ function showNewUpdateOverlay(newVersion) {
         <div class="app-update-card glass-panel">
             <h3>New Update Available</h3>
             <p class="text-secondary" style="margin:0.5rem 0 1rem 0;">A new kiosk version is ready:</p>
-            <p class="app-update-version" style="font-weight:700;color:var(--accent-secondary);margin-bottom:1rem">${newVersion}</p>
+            <p class="app-update-version" style="font-weight:700;color:var(--accent-secondary);margin-bottom:1rem">${escapeHtml(newVersion)}</p>
             <div style="display:flex;gap:0.75rem;justify-content:center;">
                 <button class="btn btn-secondary" id="dismiss-update-overlay">Later</button>
                 <button class="btn btn-primary" id="apply-update-overlay">Reload Now</button>
@@ -1908,6 +1940,220 @@ function waitForMs(ms) {
     return new Promise(resolve => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
 }
 
+function getDoorSensorId() {
+    return String(envConfig.DOOR_SENSOR_ID || 'door-1').trim() || 'door-1';
+}
+
+function getDoorWarningSeconds() {
+    const fromSettings = Math.floor(Number(kioskRuntimeSettings?.doorOpenWarningSeconds));
+    if (Number.isFinite(fromSettings) && fromSettings >= 30) return fromSettings;
+
+    const fromEnv = Math.floor(Number(envConfig.DOOR_OPEN_WARNING_SECONDS));
+    if (Number.isFinite(fromEnv) && fromEnv >= 30) return fromEnv;
+
+    return 300;
+}
+
+function getDoorBlockSeconds() {
+    const warningSeconds = getDoorWarningSeconds();
+    const fromSettings = Math.floor(Number(kioskRuntimeSettings?.doorOpenBlockSeconds));
+    if (Number.isFinite(fromSettings) && fromSettings >= warningSeconds) return fromSettings;
+
+    const fromEnv = Math.floor(Number(envConfig.DOOR_OPEN_BLOCK_SECONDS));
+    if (Number.isFinite(fromEnv) && fromEnv >= warningSeconds) return fromEnv;
+
+    return Math.max(600, warningSeconds);
+}
+
+function getDoorOpenDurationSeconds() {
+    if (!doorRuntimeState.isOpen || !doorRuntimeState.openedAtMs) return 0;
+    return Math.max(0, Math.floor((Date.now() - doorRuntimeState.openedAtMs) / 1000));
+}
+
+function formatDoorDurationDhms(totalSeconds) {
+    const seconds = Math.max(0, Math.floor(Number(totalSeconds) || 0));
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor((seconds % 86400) / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = seconds % 60;
+
+    if (days > 0) return `${days}d ${hours}h ${minutes}m ${secs}s`;
+    if (hours > 0) return `${hours}h ${minutes}m ${secs}s`;
+    if (minutes > 0) return `${minutes}m ${secs}s`;
+    return `${secs}s`;
+}
+
+function isDoorBlockingWarningVisible() {
+    return !!dynamicModal.querySelector('[data-door-open-warning="1"]');
+}
+
+function openDoorBlockingWarningModal() {
+    const durationLabel = formatDoorDurationDhms(getDoorOpenDurationSeconds());
+    const html = `
+        <div class="modal-header">
+            <h3><i class="ph ph-warning-circle"></i> Door Open Warning</h3>
+        </div>
+        <div class="modal-body" data-door-open-warning="1">
+            <p style="font-size:1.05rem;line-height:1.5;margin-bottom:0.8rem;">
+                Door has been open for <strong id="door-open-warning-duration">${escapeHtml(durationLabel)}</strong>. Please close the door.
+            </p>
+            <p class="text-muted" style="margin-bottom:0;">Logout is blocked while the door remains open.</p>
+        </div>
+    `;
+    openModal(html);
+    doorRuntimeState.blockingModalShown = true;
+    doorRuntimeState.blockingModalOpenAtMs = doorRuntimeState.openedAtMs || Date.now();
+}
+
+function refreshDoorBlockingWarningModalText() {
+    const durationEl = document.getElementById('door-open-warning-duration');
+    if (!durationEl) return;
+    durationEl.textContent = formatDoorDurationDhms(getDoorOpenDurationSeconds());
+}
+
+function closeDoorBlockingWarningModal() {
+    if (!doorRuntimeState.blockingModalShown) return;
+
+    doorRuntimeState.blockingModalShown = false;
+    doorRuntimeState.blockingModalOpenAtMs = 0;
+    if (isDoorBlockingWarningVisible()) {
+        closeModal({ force: true });
+    }
+}
+
+function syncDoorBlockingWarningState() {
+    if (!doorRuntimeState.known || !doorRuntimeState.isOpen) {
+        closeDoorBlockingWarningModal();
+        return;
+    }
+
+    const openSeconds = getDoorOpenDurationSeconds();
+    const blockSeconds = getDoorBlockSeconds();
+
+    if (openSeconds < blockSeconds) {
+        closeDoorBlockingWarningModal();
+        return;
+    }
+
+    if (!doorRuntimeState.blockingModalShown || !isDoorBlockingWarningVisible()) {
+        openDoorBlockingWarningModal();
+        addLog('SYSTEM', 'Door Open Warning', `Door has been open for ${formatDoorDurationDhms(openSeconds)} on ${kioskId || 'kiosk'}.`);
+    }
+
+    refreshDoorBlockingWarningModalText();
+}
+
+function applyDoorSensorEvent(eventRow) {
+    if (!eventRow || typeof eventRow !== 'object') return;
+
+    const eventType = String(eventRow.event_type || '').trim().toLowerCase();
+    if (!eventType) return;
+
+    const eventTsMs = Date.parse(String(eventRow.event_ts || '')) || Date.now();
+    const actorUserId = String(eventRow.actor_user_id || '').trim() || null;
+
+    doorRuntimeState.known = true;
+    doorRuntimeState.lastEventType = eventType;
+    doorRuntimeState.lastEventMs = eventTsMs;
+
+    if (eventType === 'open') {
+        doorRuntimeState.isOpen = true;
+        doorRuntimeState.openedAtMs = eventTsMs;
+        doorRuntimeState.openedByUserId = actorUserId;
+        doorRuntimeState.lastVisitDurationSeconds = 0;
+        doorRuntimeState.lastVisitUserId = null;
+    } else if (eventType === 'close') {
+        if (doorRuntimeState.isOpen && doorRuntimeState.openedAtMs) {
+            doorRuntimeState.lastVisitDurationSeconds = Math.max(0, Math.floor((eventTsMs - doorRuntimeState.openedAtMs) / 1000));
+            doorRuntimeState.lastVisitUserId = doorRuntimeState.openedByUserId;
+        }
+        doorRuntimeState.isOpen = false;
+        doorRuntimeState.openedAtMs = 0;
+        doorRuntimeState.openedByUserId = null;
+    }
+
+    syncDoorBlockingWarningState();
+}
+
+async function bootstrapDoorSensorState(targetKioskId = kioskId) {
+    if (!targetKioskId) return;
+
+    const client = getSettingsSupabaseClient();
+    if (!client) return;
+
+    try {
+        const { data, error } = await client
+            .from('door_sensor_events')
+            .select('event_type, event_ts, actor_user_id, sensor_id, kiosk_id, local_seq')
+            .eq('kiosk_id', targetKioskId)
+            .eq('sensor_id', getDoorSensorId())
+            .in('event_type', ['open', 'close'])
+            .order('event_ts', { ascending: false })
+            .order('local_seq', { ascending: false })
+            .limit(1);
+
+        if (error) {
+            console.warn('Failed to bootstrap door sensor state:', error);
+            return;
+        }
+
+        if (Array.isArray(data) && data.length > 0) {
+            applyDoorSensorEvent(data[0]);
+        }
+    } catch (error) {
+        console.warn('Door sensor bootstrap request failed:', error);
+    }
+}
+
+function startDoorSensorRealtimeListener(targetKioskId = kioskId) {
+    if (!targetKioskId) return;
+
+    const client = getSettingsSupabaseClient();
+    if (!client) return;
+
+    if (doorTelemetryChannel) {
+        client.removeChannel(doorTelemetryChannel);
+        doorTelemetryChannel = null;
+    }
+
+    doorTelemetryChannel = client
+        .channel(`door-sensor-events-${targetKioskId}`)
+        .on('postgres_changes', {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'door_sensor_events',
+            filter: `kiosk_id=eq.${targetKioskId}`
+        }, payload => {
+            const row = payload?.new;
+            const sensorId = String(row?.sensor_id || '').trim() || 'door-1';
+            if (sensorId !== getDoorSensorId()) return;
+            applyDoorSensorEvent(row);
+        })
+        .subscribe(status => {
+            if (status === 'CHANNEL_ERROR') {
+                console.warn('door_sensor_events realtime channel error');
+            }
+        });
+}
+
+function startDoorTelemetryUiTicker() {
+    if (doorTelemetryUiTickInterval) {
+        clearInterval(doorTelemetryUiTickInterval);
+        doorTelemetryUiTickInterval = null;
+    }
+
+    doorTelemetryUiTickInterval = setInterval(() => {
+        syncDoorBlockingWarningState();
+    }, 1000);
+}
+
+function ensureDoorClosedForLogout(message = 'Please close the door before logging out.') {
+    if (!doorRuntimeState.known || !doorRuntimeState.isOpen) return true;
+    syncDoorBlockingWarningState();
+    showToast(message, 'error');
+    return false;
+}
+
 function normalizeDoorActionType(actionType) {
     const normalized = String(actionType || '').trim().toLowerCase();
     if (normalized === 'sign-in') return 'sign-in';
@@ -2062,6 +2308,8 @@ async function triggerSignInAttentionIfEnabled(user) {
 }
 
 async function requestDoorUnlockAndLogAccess({ actionType, item, quantity = 1, projectName = 'Personal' }) {
+    const okAuth = await ensurePrivilegedActionAuth('unlocking the door');
+    if (!okAuth) return false;
     const actorId = currentUser?.id || 'SYSTEM';
     const actorRole = currentUser?.role || 'system';
     const itemName = item?.name || 'Unknown Item';
@@ -2089,6 +2337,8 @@ function itemRequiresDoorUnlock(item) {
 }
 
 async function requestDoorHoldOpenAndLogAccess(reason = 'manual door hold-open') {
+    const okAuth = await ensurePrivilegedActionAuth('holding the door open');
+    if (!okAuth) return false;
     const actorId = currentUser?.id || 'SYSTEM';
     const actorRole = currentUser?.role || 'system';
 
@@ -2099,6 +2349,8 @@ async function requestDoorHoldOpenAndLogAccess(reason = 'manual door hold-open')
 }
 
 async function requestDoorReleaseAndLogAccess(reason = 'manual door release') {
+    const okAuth = await ensurePrivilegedActionAuth('releasing the door');
+    if (!okAuth) return false;
     const actorId = currentUser?.id || 'SYSTEM';
     const actorRole = currentUser?.role || 'system';
 
@@ -2109,10 +2361,23 @@ async function requestDoorReleaseAndLogAccess(reason = 'manual door release') {
 }
 
 async function fetchDoorStatus() {
+    const openSeconds = getDoorOpenDurationSeconds();
+    const warningSeconds = getDoorWarningSeconds();
+    const doorPosition = !doorRuntimeState.known
+        ? 'unknown'
+        : (doorRuntimeState.isOpen ? 'open' : 'closed');
+
     return {
         status: 'success',
         held_open: false,
-        door_position: 'unknown',
+        door_position: doorPosition,
+        door_open_seconds: openSeconds,
+        active_user_id: doorRuntimeState.openedByUserId,
+        active_user_seconds: openSeconds,
+        left_open_too_long: doorRuntimeState.isOpen && openSeconds >= warningSeconds,
+        door_open_alert_seconds: warningSeconds,
+        last_visit_duration_seconds: doorRuntimeState.lastVisitDurationSeconds,
+        last_visit_user_id: doorRuntimeState.lastVisitUserId,
         led_attention_mode: true,
         message: 'LED-only attention mode active.'
     };
@@ -2127,6 +2392,8 @@ function formatDoorDuration(totalSeconds) {
 }
 
 async function requestManualDoorUnlockAndLogAccess(reason = 'manual debug control') {
+    const okAuth = await ensurePrivilegedActionAuth('manual door unlock');
+    if (!okAuth) return false;
     const actorId = currentUser?.id || 'SYSTEM';
     const actorRole = currentUser?.role || 'system';
 
@@ -2567,6 +2834,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     await syncOperatingHoursLockState();
     startOperatingHoursEnforcer();
     startKioskVersionRealtimeListener(kioskId);
+    await bootstrapDoorSensorState(kioskId);
+    startDoorSensorRealtimeListener(kioskId);
+    startDoorTelemetryUiTicker();
+
+    // Ensure restricted UI reflects current privileged session state
+    try { updateRestrictedUiState(); } catch (e) { /* ignore */ }
 
     if (!verification.valid) {
         const unavailableDescription = verification.reason === 'invalid_license'
@@ -3100,6 +3373,10 @@ function logout(message = 'Logged out successfully') {
         return;
     }
 
+    if (!ensureDoorClosedForLogout()) {
+        return;
+    }
+
     closeModal();
 
     _trackLogout();
@@ -3130,6 +3407,10 @@ function logout(message = 'Logged out successfully') {
 function returnToLoginView(options = {}) {
     const message = options.message || 'Logged out successfully';
     const showMessage = options.showMessage !== false;
+
+    if (!ensureDoorClosedForLogout()) {
+        return;
+    }
 
     closeModal();
 
@@ -3400,8 +3681,8 @@ async function promptSetPrivilegedActionPassword(reason = 'this action', forcedR
                 showErr('Failed to save authentication password to server. Check your connection and permissions, then try again.');
                 return;
             }
-
             privilegedSessionAuthenticated = true;
+            schedulePrivilegedSessionExpiry();
             showToast('Authentication password saved.', 'success');
             finish(true);
         };
@@ -3468,6 +3749,8 @@ function requestPrivilegedActionAuth(reason = 'this action') {
             const enteredHash = await hashDebugPin(enteredPassword);
             if (enteredHash && enteredHash === expectedHash) {
                 privilegedSessionAuthenticated = true;
+                schedulePrivilegedSessionExpiry();
+                try { updateRestrictedUiState(); } catch (e) { /* ignore */ }
                 showToast('Session authenticated.', 'success');
                 finish(true);
                 return;
@@ -3499,6 +3782,20 @@ function requestPrivilegedActionAuth(reason = 'this action') {
     });
 }
 
+let _privilegedExpiryTimerId = null;
+function schedulePrivilegedSessionExpiry(timeoutMs = 10 * 60 * 1000) {
+    if (_privilegedExpiryTimerId) {
+        clearTimeout(_privilegedExpiryTimerId);
+        _privilegedExpiryTimerId = null;
+    }
+    _privilegedExpiryTimerId = setTimeout(() => {
+        privilegedSessionAuthenticated = false;
+        _privilegedExpiryTimerId = null;
+        showToast('Privileged session expired. Re-authentication required for admin actions.', 'info');
+        try { updateRestrictedUiState(); } catch (e) { /* ignore */ }
+    }, timeoutMs);
+}
+
 async function ensurePrivilegedActionAuth(reason = 'this action') {
     if (!userCanPerformPrivilegedActions()) return true;
     if (privilegedSessionAuthenticated) return true;
@@ -3517,6 +3814,34 @@ async function ensurePrivilegedActionAuth(reason = 'this action') {
     return requestPrivilegedActionAuth(reason);
 }
 
+// Update UI affordances for restricted controls when privileged session changes
+function updateRestrictedUiState() {
+    const lockedSelectors = [
+        '#manage-categories-btn',
+        '#manage-visibility-tags-btn',
+        '#bulk-manage-items-btn',
+        '#bulk-import-items-btn',
+        '#bulk-delete-items-btn',
+        '#add-item-btn',
+        '#bulk-delete-users-btn'
+    ];
+
+    const shouldLock = !privilegedSessionAuthenticated;
+    lockedSelectors.forEach(sel => {
+        const el = document.querySelector(sel);
+        if (!el) return;
+        el.classList.toggle('locked', shouldLock);
+        el.setAttribute('aria-disabled', shouldLock ? 'true' : 'false');
+        try { el.disabled = shouldLock && el.tagName === 'BUTTON'; } catch (e) { }
+    });
+
+    // Nav buttons marked restricted
+    document.querySelectorAll('.nav-btn.restricted').forEach(el => {
+        el.classList.toggle('locked', !privilegedSessionAuthenticated);
+        el.setAttribute('aria-disabled', (!privilegedSessionAuthenticated) ? 'true' : 'false');
+    });
+}
+
 navBtns.forEach(btn => {
     btn.addEventListener('click', async () => {
         const target = btn.getAttribute('data-target');
@@ -3524,6 +3849,41 @@ navBtns.forEach(btn => {
         await switchPage(target, title);
     });
 });
+
+// Intercept clicks on restricted controls to require privileged auth
+function guardRestrictedClick(selector, reason) {
+    document.querySelectorAll(selector).forEach(el => {
+        el.addEventListener('click', async (e) => {
+            // If already authenticated or user cannot perform privileged actions, allow
+            if (!userCanPerformPrivilegedActions()) return;
+            if (privilegedSessionAuthenticated) return;
+
+            e.preventDefault();
+            e.stopPropagation();
+
+            const ok = await ensurePrivilegedActionAuth(reason || 'a privileged action');
+            if (!ok) return;
+
+            // Re-dispatch original click after auth
+            try {
+                el.click();
+            } catch (err) {
+                // If recursion occurs, fallback to executing default handlers by creating a new event
+                const ev = new MouseEvent('click', { bubbles: true, cancelable: true });
+                el.dispatchEvent(ev);
+            }
+        }, { capture: true });
+    });
+}
+
+// Guard restricted nav buttons
+guardRestrictedClick('.nav-btn.restricted', 'accessing an admin page');
+
+// Guard admin toolbar buttons on inventory page
+guardRestrictedClick('#manage-categories-btn, #manage-visibility-tags-btn, #bulk-manage-items-btn, #bulk-import-items-btn, #bulk-delete-items-btn, #add-item-btn', 'managing inventory');
+
+// Guard class/user/project actions
+guardRestrictedClick('#create-class-btn, #create-project-btn, #nav-users, #nav-classes', 'performing administrative actions');
 
 async function refreshPageDataFromSupabase(targetId) {
     if (targetId === 'requests') {
@@ -8132,6 +8492,8 @@ document.getElementById('bulk-users-btn')?.addEventListener('click', () => {
 });
 
 document.getElementById('bulk-delete-users-btn')?.addEventListener('click', async () => {
+    const okAuth = await ensurePrivilegedActionAuth('deleting users');
+    if (!okAuth) return;
     const selectedCbs = Array.from(document.querySelectorAll('.user-select-cb:checked'));
     if (selectedCbs.length === 0) {
         showToast('Please select users to delete using the checkboxes on the left.', 'error');
@@ -8246,7 +8608,12 @@ function openModal(contentHtml) {
     focusModalPrimaryInput();
 }
 
-function closeModal() {
+function closeModal(options = {}) {
+    const force = !!options.force;
+    if (!force && doorRuntimeState.blockingModalShown && isDoorBlockingWarningVisible()) {
+        return;
+    }
+
     modalContainer.classList.add('hidden');
     dynamicModal.replaceChildren();
     dynamicModal.classList.remove('debug-modal', 'class-modal', 'order-request-modal');
