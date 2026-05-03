@@ -644,6 +644,144 @@ async function loadExtensionRequests() {
 }
 
 /**
+ * Load student messages for a user. Falls back to localStorage if DB unavailable.
+ */
+async function loadStudentMessages(userId) {
+    if (!userId) return [];
+    if (typeof dbClient === 'undefined' || !dbClient) {
+        try {
+            const key = `student_messages:${userId}`;
+            const raw = localStorage.getItem(key);
+            return raw ? JSON.parse(raw) : [];
+        } catch (e) {
+            console.warn('loadStudentMessages fallback failed', e);
+            return [];
+        }
+    }
+
+    try {
+        const { data, error } = await dbClient
+            .from('student_messages')
+            .select('*')
+            .eq('target_user_id', userId)
+            .order('created_at', { ascending: false });
+
+        if (error) {
+            console.warn('Error loading student messages:', error);
+            return [];
+        }
+
+        return (data || []).map(row => ({
+            ...row,
+            unread: !row.read_at
+        }));
+    } catch (err) {
+        console.warn('loadStudentMessages failed', err);
+        return [];
+    }
+}
+
+async function markStudentMessagesRead(userId, messageIds = []) {
+    if (!userId) return false;
+    const ids = Array.from(new Set((messageIds || []).map(id => String(id || '').trim()).filter(Boolean)));
+    if (ids.length === 0) return false;
+
+    if (typeof dbClient === 'undefined' || !dbClient) {
+        try {
+            const key = `student_messages:${userId}`;
+            const messages = JSON.parse(localStorage.getItem(key) || '[]');
+            const now = new Date().toISOString();
+            const updated = (messages || []).map(message => ids.includes(String(message.id || '')) ? { ...message, read_at: now } : message);
+            localStorage.setItem(key, JSON.stringify(updated));
+            return true;
+        } catch (e) {
+            console.warn('markStudentMessagesRead fallback failed', e);
+            return false;
+        }
+    }
+
+    try {
+        const { error } = await dbClient
+            .from('student_messages')
+            .update({ read_at: new Date().toISOString() })
+            .eq('target_user_id', userId)
+            .in('id', ids);
+        if (error) {
+            console.warn('markStudentMessagesRead failed:', error);
+            return false;
+        }
+        return true;
+    } catch (err) {
+        console.warn('markStudentMessagesRead failed', err);
+        return false;
+    }
+}
+
+/**
+ * Onboarding state helpers. For now persist in DB when available, else localStorage.
+ */
+async function loadOnboardingState(userId) {
+    if (!userId) return { completed: false };
+    if (typeof dbClient === 'undefined' || !dbClient) {
+        try {
+            const key = `onboarding_state:${userId}`;
+            const raw = localStorage.getItem(key);
+            return raw ? JSON.parse(raw) : { completed: false };
+        } catch (e) {
+            console.warn('loadOnboardingState fallback failed', e);
+            return { completed: false };
+        }
+    }
+
+    try {
+        const { data, error } = await dbClient.from('onboarding_state').select('*').eq('user_id', userId).maybeSingle();
+        if (error) {
+            console.warn('Error loading onboarding state:', error);
+            return { completed: false };
+        }
+        return data || { completed: false };
+    } catch (err) {
+        console.warn('loadOnboardingState failed', err);
+        return { completed: false };
+    }
+}
+
+async function setOnboardingComplete(userId) {
+    if (!userId) return false;
+    if (typeof dbClient === 'undefined' || !dbClient) {
+        try {
+            const key = `onboarding_state:${userId}`;
+            const payload = { completed: true, completed_at: new Date().toISOString() };
+            localStorage.setItem(key, JSON.stringify(payload));
+            return true;
+        } catch (e) {
+            console.warn('setOnboardingComplete fallback failed', e);
+            return false;
+        }
+    }
+
+    try {
+        const existing = await dbClient.from('onboarding_state').select('*').eq('user_id', userId).maybeSingle();
+        if (existing.error) {
+            // Try insert
+            const { data, error } = await dbClient.from('onboarding_state').insert([{ user_id: userId, completed: true, completed_at: new Date().toISOString() }]).select();
+            return !error;
+        }
+        // Upsert
+        const { data, error } = await dbClient.from('onboarding_state').upsert({ user_id: userId, completed: true, completed_at: new Date().toISOString() }).select();
+        return !error;
+    } catch (err) {
+        console.warn('setOnboardingComplete failed', err);
+        return false;
+    }
+}
+
+async function isStudentTourCompleted(userId) {
+    const state = await loadOnboardingState(userId);
+    return !!state?.completed;
+}
+
+/**
  * Load order requests from public.order_requests table
  */
 async function loadOrderRequests() {

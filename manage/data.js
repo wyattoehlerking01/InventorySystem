@@ -794,6 +794,64 @@ async function loadExtensionRequests() {
 }
 
 /**
+ * Add a student message (teacher -> student)
+ */
+async function addStudentMessage(payload) {
+    if (!payload || !payload.sender_id) return { error: 'invalid_payload' };
+    if (typeof dbClient === 'undefined' || !dbClient) {
+        try {
+            const key = `student_messages:${String(payload.target_user_id || 'local')}`;
+            const existing = JSON.parse(localStorage.getItem(key) || '[]');
+            existing.unshift({ ...payload, id: generateId('MSG'), created_at: new Date().toISOString(), read_at: null });
+            localStorage.setItem(key, JSON.stringify(existing));
+            return { data: payload };
+        } catch (e) {
+            console.error('addStudentMessage local fallback failed', e);
+            return { error: e };
+        }
+    }
+
+    try {
+        const { data, error } = await dbClient.from('student_messages').insert([{ ...payload, read_at: null }]).select();
+        if (error) return { error };
+        return { data };
+    } catch (err) {
+        console.error('addStudentMessage failed', err);
+        return { error: err };
+    }
+}
+
+/**
+ * Reset onboarding state for a given user (teacher action)
+ */
+async function resetOnboardingForUser(userId) {
+    if (!userId) return false;
+    if (typeof dbClient === 'undefined' || !dbClient) {
+        try {
+            const key = `onboarding_state:${userId}`;
+            localStorage.removeItem(key);
+            return true;
+        } catch (e) {
+            console.warn('resetOnboardingForUser fallback failed', e);
+            return false;
+        }
+    }
+
+    try {
+        const { data, error } = await dbClient.from('onboarding_state').upsert({ user_id: userId, completed: false, completed_at: null }).select();
+        if (error) {
+            // Try delete then insert
+            await dbClient.from('onboarding_state').delete().eq('user_id', userId);
+            await dbClient.from('onboarding_state').insert([{ user_id: userId, completed: false }]);
+        }
+        return true;
+    } catch (err) {
+        console.warn('resetOnboardingForUser failed', err);
+        return false;
+    }
+}
+
+/**
  * Load order requests from public.order_requests table
  */
 async function loadOrderRequests() {
