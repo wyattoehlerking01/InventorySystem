@@ -3295,7 +3295,8 @@ function login(user) {
     // Access Control & Permission Enforcement
     const navRequests = document.getElementById('nav-requests');
     if (user.role === 'student') {
-        navLogs?.classList.add('hidden');
+        // Keep activity log visible in kiosk mode for students
+        navLogs?.classList.remove('hidden');
         navUsers?.classList.add('hidden');
         navClasses?.classList.add('hidden');
         navDoor?.classList.add('hidden');
@@ -7388,7 +7389,7 @@ function renderLogs() {
     const actionFilter = document.getElementById('logs-action-filter');
     const actorFilter = document.getElementById('logs-actor-filter');
     if (!tbody) return;
-    if (currentUser.role === 'student') return; // Double check protection
+    // Allow kiosk users (including students) to view activity logs in kiosk mode
 
     if (actionFilter) {
         const previousValue = actionFilter.value || 'all';
@@ -7450,12 +7451,18 @@ function renderLogs() {
         const actionLabel = escapeHtml(log.action || 'Unknown Action');
         const detailsLabel = escapeHtml(log.details || '');
         const userLabel = escapeHtml(trUser?.name || idToMatch || 'Unknown User');
+        // Use a door icon for sensor-related activity rows to improve visibility
+        let roleIconHtml = getRoleIcon(trUser?.role);
+        if (String(log.sourceTable || '').toLowerCase() === 'door_sensor_events' || String(log.id || '').startsWith('door_sensor') || String(log.id || '').startsWith('door_session')) {
+            roleIconHtml = '<i class="ph ph-door-open"></i>';
+        }
+
         return `
             <tr>
                 <td class="text-muted"><small>${timestampLabel}</small></td>
                 <td>
                     <div style="display:flex;align-items:center;gap:0.5rem">
-                        <span style="font-size:1.2rem">${getRoleIcon(trUser?.role)}</span>
+                        <span style="font-size:1.2rem">${roleIconHtml}</span>
                         ${userLabel}
                     </div>
                 </td>

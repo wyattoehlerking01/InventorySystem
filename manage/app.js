@@ -3419,7 +3419,14 @@ if (isManageMode || canUseCredentialLogin) {
         const username = String(usernameInput?.value || '').trim();
         const password = String(passwordInput?.value || '').trim();
         if (isManageMode && username && !password) {
-            await handleBarcodeLogin(username);
+            // Only allow barcode-style login when an actual barcode input exists.
+            const scanned = String(barcodeInput?.value || '').trim();
+            if (scanned) {
+                await handleBarcodeLogin(scanned);
+                return;
+            }
+            showToast('Password is required for manual sign-in to the management console.', 'error');
+            passwordInput?.focus();
             return;
         }
         await handleManageCredentialLogin(username, password);
@@ -3443,7 +3450,13 @@ if (isManageMode || canUseCredentialLogin) {
         const username = String(usernameInput?.value || '').trim();
         const password = String(passwordInput?.value || '').trim();
         if (isManageMode && username && !password) {
-            await handleBarcodeLogin(username);
+            const scanned = String(barcodeInput?.value || '').trim();
+            if (scanned) {
+                await handleBarcodeLogin(scanned);
+                return;
+            }
+            showToast('Password is required for manual sign-in to the management console.', 'error');
+            passwordInput?.focus();
             return;
         }
         await handleManageCredentialLogin(username, password);
