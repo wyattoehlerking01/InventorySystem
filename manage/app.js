@@ -132,7 +132,6 @@ const mainView = document.getElementById('main-view');
 const barcodeInput = document.getElementById('barcode-input');
 const usernameInput = document.getElementById('username-input');
 const passwordInput = document.getElementById('password-input');
-const loginForm = document.getElementById('login-form');
 const loginSubmitBtn = document.getElementById('login-submit-btn');
 const showHelpBtn = document.getElementById('show-help-btn');
 const backToLoginBtn = document.getElementById('back-to-login-btn');
@@ -280,18 +279,11 @@ const loginRateLimit = {
 function canAttemptLogin() {
     const now = Date.now();
 
-    // Prevent login when door is open and known
-    if (typeof doorRuntimeState !== 'undefined' && doorRuntimeState && doorRuntimeState.known && doorRuntimeState.isOpen) {
-        showToast('Door is open. Please close the door before signing in.', 'error');
-        return false;
-    }
-
 
     // Still in lockout?
     if (loginRateLimit.lockedUntil && now < loginRateLimit.lockedUntil) {
-        const remainingMs = Math.max(0, loginRateLimit.lockedUntil - now);
-        const remaining = Math.ceil(remainingMs / 1000);
-        showToast(`Too many attempts. Try again in ${remaining}s.`, 'error', { key: 'login-lockout', pinned: true, ttl: remainingMs });
+        const remaining = Math.ceil((loginRateLimit.lockedUntil - now) / 1000);
+        showToast(`Too many attempts. Try again in ${remaining}s.`, 'error');
         return false;
     }
 
@@ -314,8 +306,7 @@ function recordFailedLoginAttempt() {
 
     if (loginRateLimit.attempts.length >= loginRateLimit.maxAttempts) {
         loginRateLimit.lockedUntil = now + loginRateLimit.lockoutMs;
-        showToast('Too many login attempts. Locked for 60 seconds.', 'error', { key: 'login-lockout', pinned: true, ttl: loginRateLimit.lockoutMs });
-        try { setTimeout(() => removeToastByKey('login-lockout'), loginRateLimit.lockoutMs); } catch (e) { /* ignore */ }
+        showToast('Too many login attempts. Locked for 60 seconds.', 'error');
         return false;
     }
 
@@ -2352,46 +2343,26 @@ function startDoorSensorRealtimeListener(targetKioskId = kioskId) {
             const sensorId = String(row?.sensor_id || '').trim() || 'door-1';
             if (sensorId !== getDoorSensorId()) return;
             applyDoorSensorEvent(row);
-            if (typeof appendDoorSensorActivityLog === 'function') {
-                appendDoorSensorActivityLog(row);
+            try {
+                const ts = row.event_ts || row.created_at || new Date().toISOString();
+                const actor = row.actor_user_id || row.actorUserId || 'SYSTEM';
+                const sensor = row.sensor_id || 'door-1';
+                const verb = String(row.event_type || '').toLowerCase();
+                pushActivityLogRealtime({
+                    id: `door_sensor:${row.id}`,
+                    timestamp: ts,
+                    user_id: actor,
+                    action: `Sensor ${sensor} reported ${verb}`,
+                    details: `Sensor ${sensor} ${verb} at ${new Date(ts).toLocaleString()} (actor: ${actor})`
+                });
+            } catch (e) {
+                // ignore
             }
         })
         .subscribe(status => {
             if (status === 'CHANNEL_ERROR') {
                 console.warn('door_sensor_events realtime channel error');
             }
-        });
-}
-
-function startActivityLogsRealtimeListener() {
-    const client = getSettingsSupabaseClient();
-    if (!client) return;
-
-    if (activityLogsChannel) {
-        client.removeChannel(activityLogsChannel);
-        activityLogsChannel = null;
-    }
-
-    activityLogsChannel = client
-        .channel('activity-logs')
-        .on('postgres_changes', {
-            event: 'INSERT',
-            schema: 'public',
-            table: 'activity_logs'
-        }, payload => {
-            const row = payload?.new;
-            if (!row || !row.id) return;
-            try {
-                if ((activityLogs || []).some(l => String(l.id) === String(row.id))) return;
-                activityLogs.unshift(row);
-                activityLogs.sort((a, b) => (Date.parse(String(b.timestamp || b.created_at || '')) || 0) - (Date.parse(String(a.timestamp || a.created_at || '')) || 0));
-                try { renderLogs(); } catch (e) { /* ignore race */ }
-            } catch (e) {
-                console.warn('manage activity log realtime handler error', e);
-            }
-        })
-        .subscribe(status => {
-            if (status === 'CHANNEL_ERROR') console.warn('activity_logs realtime channel error (manage)');
         });
 }
 
@@ -3192,9 +3163,67 @@ submitHelpBtn?.addEventListener('click', async () => {
 });
 
 async function handleBarcodeLogin(rawId) {
-    // For manage mode, do not allow barcode-based login. Require credentials.
     if (isManageMode) {
-        showToast('Management console requires password login.', 'error');
+        const rawToken = String(rawId || usernameInput?.value || barcodeInput?.value || '').trim();
+        const typedPassword = String(passwordInput?.value || '').trim();
+
+        if (typedPassword) {
+            await handleManageCredentialLogin(usernameInput?.value || '', typedPassword);
+            return;
+        }
+
+        if (!rawToken) {
+            showToast('Scan a user barcode or enter credentials.', 'error');
+            return;
+        }
+
+        if (typeof loginWithBarcode !== 'function') {
+            showToast('Barcode login module is not loaded. Refresh and verify script loading.', 'error');
+            return;
+        }
+
+        if (!checkLoginRateLimit()) return;
+        if (loginRequestInFlight) return;
+
+        loginRequestInFlight = true;
+        if (loginSubmitBtn) loginSubmitBtn.disabled = true;
+
+        try {
+            const scanToken = rawToken.toUpperCase();
+            const loginResult = await loginWithBarcode(scanToken);
+            if (loginResult.error) {
+                recordFailedLoginAttempt();
+                addLog('SYSTEM', 'Login Failed', `Manage barcode login failed for input ${scanToken}. Reason: ${loginResult.error || 'Unknown'}`);
+                showToast(loginResult.error || 'Login failed', 'error');
+                return;
+            }
+
+            const user = loginResult.user || null;
+            if (!user) {
+                recordFailedLoginAttempt();
+                addLog('SYSTEM', 'Login Failed', `Manage barcode login failed for input ${scanToken}. Reason: Invalid barcode scanned.`);
+                showToast('Invalid barcode scanned.', 'error');
+                return;
+            }
+
+            if (user.role === 'student') {
+                showToast('Management console access is restricted to teachers and developers.', 'error');
+                return;
+            }
+
+            if (usernameInput) usernameInput.value = '';
+            if (passwordInput) passwordInput.value = '';
+            if (barcodeInput) barcodeInput.value = '';
+
+            await completeAuthenticatedSession(user);
+        } catch (error) {
+            console.error('Manage barcode login failed:', error);
+            showToast('Database lookup failed during login.', 'error');
+        } finally {
+            loginRequestInFlight = false;
+            if (loginSubmitBtn) loginSubmitBtn.disabled = false;
+        }
+
         return;
     }
 
@@ -3386,11 +3415,13 @@ if (barcodeInput) {
 
 const canUseCredentialLogin = !!(usernameInput && passwordInput && loginSubmitBtn);
 if (isManageMode || canUseCredentialLogin) {
-    loginForm?.addEventListener('submit', async (e) => {
-        e.preventDefault();
+    loginSubmitBtn?.addEventListener('click', async () => {
         const username = String(usernameInput?.value || '').trim();
         const password = String(passwordInput?.value || '').trim();
-        // Manage mode requires a password; do not allow username-only barcode fallback.
+        if (isManageMode && username && !password) {
+            await handleBarcodeLogin(username);
+            return;
+        }
         await handleManageCredentialLogin(username, password);
     });
 
@@ -3409,91 +3440,21 @@ if (isManageMode || canUseCredentialLogin) {
     usernameInput?.addEventListener('keydown', async (e) => {
         if (e.key !== 'Enter' && e.key !== 'NumpadEnter') return;
         e.preventDefault();
-        if (typeof loginForm?.requestSubmit === 'function') {
-            loginForm.requestSubmit();
+        const username = String(usernameInput?.value || '').trim();
+        const password = String(passwordInput?.value || '').trim();
+        if (isManageMode && username && !password) {
+            await handleBarcodeLogin(username);
             return;
         }
-        loginSubmitBtn?.click();
+        await handleManageCredentialLogin(username, password);
     });
 
     passwordInput?.addEventListener('keydown', async (e) => {
         if (e.key !== 'Enter' && e.key !== 'NumpadEnter') return;
         e.preventDefault();
-        if (typeof loginForm?.requestSubmit === 'function') {
-            loginForm.requestSubmit();
-            return;
-        }
-        loginSubmitBtn?.click();
+        await handleManageCredentialLogin(usernameInput?.value || '', passwordInput?.value || '');
     });
 }
-
-// Teacher-side quick message & reset-tour handlers (scaffolding)
-document.getElementById('send-message-btn')?.addEventListener('click', async () => {
-    const targetId = String(document.getElementById('message-target-id')?.value || '').trim();
-    if (!targetId) {
-        showToast('Enter a target user id to send a message.', 'error');
-        return;
-    }
-
-    const html = `
-        <div class="modal-header">
-            <h3>Send Message to ${escapeHtml(targetId)}</h3>
-            <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
-        </div>
-        <div class="modal-body">
-            <div class="form-group">
-                <label>Subject</label>
-                <input id="message-subject-input" class="form-control" />
-            </div>
-            <div class="form-group">
-                <label>Message</label>
-                <textarea id="message-body-input" class="form-control" rows="6"></textarea>
-            </div>
-        </div>
-        <div class="modal-footer">
-            <button class="btn btn-secondary" id="cancel-send-msg">Cancel</button>
-            <button class="btn btn-primary" id="confirm-send-msg">Send Message</button>
-        </div>
-    `;
-    openModal(html);
-
-    document.getElementById('cancel-send-msg')?.addEventListener('click', () => closeModal());
-    document.getElementById('confirm-send-msg')?.addEventListener('click', async () => {
-        const subject = String(document.getElementById('message-subject-input')?.value || '').trim();
-        const body = String(document.getElementById('message-body-input')?.value || '').trim();
-        if (!body) {
-            showToast('Message body cannot be empty.', 'error');
-            return;
-        }
-        closeModal();
-        const payload = {
-            sender_id: currentUser?.id || 'SYSTEM',
-            target_user_id: targetId,
-            subject,
-            body
-        };
-
-        const res = await addStudentMessage(payload);
-        if (res && res.error) {
-            showToast('Failed to send message.', 'error');
-            return;
-        }
-        addLog(currentUser?.id || 'SYSTEM', 'Student Message Sent', `Sent a message to ${targetId}${subject ? ` with subject ${subject}` : ''}.`);
-        showToast('Message queued/sent.', 'success');
-    });
-});
-
-document.getElementById('reset-tour-btn')?.addEventListener('click', async () => {
-    const uid = String(document.getElementById('reset-tour-userid')?.value || '').trim();
-    if (!uid) { showToast('Enter a user id to reset tour for.', 'error'); return; }
-    const ok = await resetOnboardingForUser(uid);
-    if (ok) {
-        addLog(currentUser?.id || 'SYSTEM', 'Student Tour Reset', `Reset onboarding tour for ${uid}.`);
-        showToast('Onboarding tour reset for user.', 'success');
-    } else {
-        showToast('Failed to reset onboarding.', 'error');
-    }
-});
 
 document.addEventListener('keydown', async (e) => {
     if (currentUser) return;
@@ -4408,7 +4369,10 @@ function loadDashboard() {
 
         list1.replaceChildren();
         if (myItemsOut.length === 0) {
-            list1.appendChild(renderEmptyStatePanel('ph-package', 'No items signed out', 'You do not have any items checked out right now.'));
+            const p = document.createElement('p');
+            p.className = 'text-muted';
+            p.textContent = 'No items currently signed out.';
+            list1.appendChild(p);
         } else {
             myItemsOut.forEach(io => {
                 const item = inventoryItems.find(i => i.id === io.itemId);
@@ -4770,7 +4734,10 @@ function loadDashboard() {
                     while (tabContent.firstChild) {
                         tabContent.removeChild(tabContent.firstChild);
                     }
-                    tabContent.appendChild(renderEmptyStatePanel('ph-package', 'No items signed out', 'There are no open sign-outs for this section.'));
+                    const p = document.createElement('p');
+                    p.className = 'text-muted';
+                    p.textContent = 'No items currently signed out.';
+                    tabContent.appendChild(p);
                 } else {
                     while (tabContent.firstChild) {
                         tabContent.removeChild(tabContent.firstChild);
@@ -5120,7 +5087,7 @@ function renderInventory() {
     }
 
     if (filtered.length === 0) {
-        tbody.innerHTML = renderEmptyStateRow(6, 'ph-package', 'No items found', 'Adjust your search or add a new inventory item.');
+        tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No items match your current search.</td></tr>';
         updateInventoryBulkSelectionState();
         return;
     }
@@ -5156,17 +5123,6 @@ function renderInventory() {
                     <div class="inventory-stock-status-content">
                         <span class="inventory-stock-value">${Math.max(0, parseInt(item?.stock, 10) || 0)} of ${getItemTotalQuantity(item)}</span>
                         <span class="status-badge ${statusClass}">${currentStatus}</span>
-                        <div class="stock-bar-wrap">
-                            <div class="stock-bar ${(() => {
-                                const total = Math.max(1, getItemTotalQuantity(item));
-                                const stock = Math.max(0, parseInt(item?.stock, 10) || 0);
-                                const pct = Math.round((stock / total) * 100);
-                                if (pct <= 0) return 'stock-bar-empty';
-                                if (pct <= 10) return 'stock-bar-critical';
-                                if (pct <= 35) return 'stock-bar-warning';
-                                return 'stock-bar-good';
-                            })()}" style="width:${Math.max(0, Math.min(100, Math.round((Math.max(0, parseInt(item?.stock,10)||0) / Math.max(1,getItemTotalQuantity(item))) * 100 )))}%"></div>
-                        </div>
                     </div>
                 </td>
                 <td>
@@ -6579,7 +6535,7 @@ function renderProjects() {
                     </div>
                 </div>
             `;
-        }).join('') : renderEmptyStatePanel('ph-package', 'No personal items', 'Nothing is currently signed out to your personal project.').outerHTML;
+        }).join('') : '<p class="text-muted text-sm">No items currently signed out to your personal project.</p>';
 
         html += `
             <div class="project-card glass-panel flex-col" style="border-left:4px solid var(--accent);">
@@ -6649,7 +6605,7 @@ function renderProjects() {
                 <div class="project-footer"><strong>${outCount}</strong> items signed out</div>
                 ${itemsOutHtml}
                 <div class="project-meta">
-                    <span class="text-muted text-sm">${proj.itemsOut.length > 0 ? 'Use Sign In to return tools.' : 'No items signed out yet.'}</span>
+                    <span class="text-muted text-sm">${proj.itemsOut.length > 0 ? 'Use Sign In to return tools.' : 'No items currently signed out.'}</span>
                     <div class="project-action-buttons">
                         ${canManage ? `<button class="btn btn-secondary text-sm edit-proj-btn" data-id="${escapeHtml(proj.id)}">
                             <i class="ph ph-pencil-simple"></i> Edit
@@ -8248,7 +8204,63 @@ function renderLogs() {
                 <td>${detailsLabel}</td>
             </tr>
         `;
-    }).join('') || renderEmptyStateRow(4, 'ph-notebook', 'No log entries', 'No activity matches the selected filters.');
+    }).join('') || '<tr><td colspan="4" class="text-center text-muted">No log entries for this action.</td></tr>';
+}
+
+/**
+ * Push an activity log received via realtime into the in-memory array and refresh UI.
+ */
+function pushActivityLogRealtime(row) {
+    if (!row || typeof row !== 'object') return;
+
+    const normalized = {
+        id: String(row.id || row.log_id || row.id === 0 ? row.id : `log-${Date.now()}`),
+        timestamp: row.timestamp || row.created_at || new Date().toISOString(),
+        userId: row.user_id || row.userId || row.userId || row.userId || row.userId,
+        action: row.action || row.name || row.type || row.event || '',
+        details: row.details || row.payload || ''
+    };
+
+    const existingId = String(normalized.id || '').trim();
+    if (!existingId) return;
+
+    if ((activityLogs || []).some(log => String(log.id || '') === existingId)) return;
+
+    activityLogs = [normalized, ...(activityLogs || [])].sort((a, b) => {
+        const ta = Date.parse(String(a.timestamp || '')) || 0;
+        const tb = Date.parse(String(b.timestamp || '')) || 0;
+        return tb - ta;
+    });
+
+    try {
+        renderLogs();
+    } catch (e) {
+        // ignore render errors
+    }
+}
+
+function startActivityLogsRealtimeListener() {
+    const client = getSettingsSupabaseClient();
+    if (!client) return;
+
+    if (activityLogsChannel) {
+        try { client.removeChannel(activityLogsChannel); } catch {};
+        activityLogsChannel = null;
+    }
+
+    activityLogsChannel = client
+        .channel('activity-logs')
+        .on('postgres_changes', {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'activity_logs'
+        }, payload => {
+            const row = payload?.new;
+            pushActivityLogRealtime(row);
+        })
+        .subscribe(status => {
+            if (status === 'CHANNEL_ERROR') console.warn('activity_logs realtime channel error');
+        });
 }
 
 
@@ -8398,7 +8410,7 @@ function renderUsers() {
     }).join('');
 
     if (filteredUsers.length === 0) {
-        tbody.innerHTML = renderEmptyStateRow(5, 'ph-users-three', 'No users found', 'Try a different search term.');
+        tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No users match your search.</td></tr>';
         updateUsersBulkSelectionState();
         return;
     }
@@ -9638,94 +9650,28 @@ function sanitizeModalHtml(contentHtml) {
     return template.content;
 }
 
-// Toast registry to avoid duplicate toasts piling up
-const _activeToasts = new Map();
+function showToast(message, type = 'success') {
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
 
-function removeToastByKey(key) {
-    try {
-        const record = _activeToasts.get(key);
-        if (!record) return;
-        if (record.timeoutId) clearTimeout(record.timeoutId);
-        record.el.style.animation = 'fadeOut 0.25s ease forwards';
-        setTimeout(() => {
-            record.el.remove();
-        }, 250);
-        _activeToasts.delete(key);
-    } catch (e) {
-        console.warn('removeToastByKey error', e);
-    }
-}
+    const icon = type === 'success' ? 'ph-check-circle' : type === 'error' ? 'ph-warning-circle' : 'ph-info';
 
-function showToast(message, type = 'success', options = {}) {
-    try {
-        const normalizedMessage = String(message || '').trim();
-        const key = options.key || `${type}:${normalizedMessage}`;
+    const iconEl = document.createElement('i');
+    iconEl.className = `ph ${icon}`;
+    iconEl.style.fontSize = '1.5rem';
 
-        // If a toast with the same key exists, do not duplicate it.
-        const existing = _activeToasts.get(key);
-        if (existing) {
-            // If existing is pinned, keep it.
-            if (existing.pinned) return;
-            // refresh ttl for non-pinned
-            if (existing.timeoutId) clearTimeout(existing.timeoutId);
-            const ttl = Number(options.ttl || 4500);
-            existing.timeoutId = setTimeout(() => removeToastByKey(key), ttl);
-            return;
-        }
+    const messageEl = document.createElement('span');
+    messageEl.textContent = String(message || '');
 
-        const toast = document.createElement('div');
-        toast.className = `toast toast-${type}`;
+    toast.appendChild(iconEl);
+    toast.appendChild(messageEl);
 
-        const icon = type === 'success' ? 'ph-check-circle' : type === 'error' ? 'ph-warning-circle' : 'ph-info';
-        const iconEl = document.createElement('i');
-        iconEl.className = `ph ${icon}`;
-        iconEl.style.fontSize = '1.5rem';
+    toastContainer.appendChild(toast);
 
-        const messageEl = document.createElement('span');
-        messageEl.textContent = normalizedMessage;
-
-        toast.appendChild(iconEl);
-        toast.appendChild(messageEl);
-
-        toastContainer.appendChild(toast);
-
-        const pinned = !!options.pinned;
-        const ttl = Number(options.ttl || 4500);
-
-        const record = { el: toast, timeoutId: null, pinned };
-        _activeToasts.set(key, record);
-
-        if (!pinned) {
-            record.timeoutId = setTimeout(() => removeToastByKey(key), ttl);
-        }
-    } catch (err) {
-        console.error('showToast error', err);
-    }
-}
-
-function renderEmptyStateRow(colspan, icon, title, description) {
-    return `
-        <tr class="empty-state-row">
-            <td colspan="${Math.max(1, parseInt(colspan, 10) || 1)}">
-                <div class="empty-state">
-                    <i class="ph ${icon || 'ph-inbox'}"></i>
-                    <h4>${escapeHtml(String(title || 'Nothing here yet'))}</h4>
-                    <p>${escapeHtml(String(description || ''))}</p>
-                </div>
-            </td>
-        </tr>
-    `;
-}
-
-function renderEmptyStatePanel(icon, title, description) {
-    const container = document.createElement('div');
-    container.className = 'empty-state';
-    container.innerHTML = `
-        <i class="ph ${icon || 'ph-inbox'}"></i>
-        <h4>${escapeHtml(String(title || 'Nothing here yet'))}</h4>
-        <p>${escapeHtml(String(description || ''))}</p>
-    `;
-    return container;
+    setTimeout(() => {
+        toast.style.animation = 'fadeOut 0.3s ease forwards';
+        setTimeout(() => toast.remove(), 300);
+    }, 3000);
 }
 
 // Close Modal on outside click

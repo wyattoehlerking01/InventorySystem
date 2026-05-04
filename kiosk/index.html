@@ -175,11 +175,23 @@
                 <button class="nav-btn" data-target="projects">
                     <i class="ph ph-folder-open"></i> Projects
                 </button>
+                <button class="nav-btn" id="nav-class-display" data-target="class-display">
+                    <i class="ph ph-monitor-play"></i> Class Display
+                </button>
+                <button class="nav-btn" id="nav-orders" data-target="orders">
+                    <i class="ph ph-rows-plus-bottom"></i> Operations Hub
+                </button>
+                <button class="nav-btn" id="nav-logs" data-target="logs">
+                    <i class="ph ph-list-dashes"></i> Activity Log
+                </button>
                 <button class="nav-btn restricted" id="nav-classes" data-target="classes">
                     <i class="ph ph-users-four"></i> Classes
                 </button>
                 <button class="nav-btn restricted" id="nav-users" data-target="users">
                     <i class="ph ph-users"></i> Users
+                </button>
+                <button class="nav-btn" id="nav-kiosk-settings" data-target="kiosk-settings">
+                    <i class="ph ph-gear-six"></i> Kiosk Settings
                 </button>
                 <button class="nav-btn restricted" id="nav-door" data-target="door">
                     <i class="ph ph-door-open"></i> Door
@@ -337,6 +349,22 @@
 
                     <div class="projects-grid" id="projects-container">
                         <!-- Injected via JS -->
+                    </div>
+                </div>
+
+                <!-- Class Display Page (for classroom view of items out) -->
+                <div id="page-class-display" class="page hidden">
+                    <div class="action-bar">
+                        <h3>Class Display - Items Not Returned</h3>
+                        <div class="text-muted text-sm" style="font-weight: normal; margin-left: 1rem;">
+                            <i class="ph ph-info"></i> Display live status of items checked out to students
+                        </div>
+                    </div>
+                    <div id="class-display-container" class="glass-panel" style="padding: 2rem; min-height: 400px;">
+                        <div class="text-muted text-center py-8">
+                            <i class="ph ph-hourglass" style="font-size: 3rem;"></i>
+                            <p>Loading class display...</p>
+                        </div>
                     </div>
                 </div>
 
@@ -513,6 +541,99 @@
                                 <!-- Injected via JS -->
                             </tbody>
                         </table>
+                    </div>
+                </div>
+
+                <div id="page-kiosk-settings" class="page hidden">
+                    <div class="action-bar" style="gap: 1rem; margin-bottom: 2rem;">
+                        <h3 style="margin: 0; flex: 1;">Kiosk Configuration</h3>
+                        <button class="btn btn-primary" id="save-kiosk-settings-btn">
+                            <i class="ph ph-save"></i> Save Settings
+                        </button>
+                    </div>
+
+                    <div class="glass-panel" style="padding: 2rem; max-width: 900px;">
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2.5rem;">
+                            <!-- Session Settings Column -->
+                            <div>
+                                <h4 style="margin-bottom: 1.5rem; color: var(--text-primary); font-size: 1.1rem;">Session Management</h4>
+                                <div class="form-group">
+                                    <label>Session Timeout (minutes)</label>
+                                    <input type="number" id="kiosk-session-timeout" class="form-control" min="5" max="480" value="30" placeholder="e.g. 30">
+                                    <small class="text-muted" style="display: block; margin-top: 0.3rem;">Auto-logout idle sessions</small>
+                                </div>
+                                <div class="form-group">
+                                    <label>No Activity Expiry (minutes)</label>
+                                    <input type="number" id="kiosk-no-activity-expiry" class="form-control" min="1" max="60" value="3" placeholder="e.g. 3">
+                                    <small class="text-muted" style="display: block; margin-top: 0.3rem;">Logout after no user action</small>
+                                </div>
+                                <div class="form-group">
+                                    <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                                        <input type="checkbox" id="kiosk-enforce-privilege-unlock" checked>
+                                        Require Privilege Password for Unlock
+                                    </label>
+                                    <small class="text-muted" style="display: block; margin-top: 0.3rem;">Prevent students from unlocking screens</small>
+                                </div>
+                            </div>
+
+                            <!-- Feature Toggles Column -->
+                            <div>
+                                <h4 style="margin-bottom: 1.5rem; color: var(--text-primary); font-size: 1.1rem;">Feature Toggles</h4>
+                                <div class="form-group" style="margin-bottom: 1.5rem;">
+                                    <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                                        <input type="checkbox" id="kiosk-show-order-form" checked>
+                                        Show Order Form
+                                    </label>
+                                    <small class="text-muted" style="display: block; margin-top: 0.3rem;">Allow students to place orders</small>
+                                </div>
+                                <div class="form-group" style="margin-bottom: 1.5rem;">
+                                    <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                                        <input type="checkbox" id="kiosk-show-credential-request" checked>
+                                        Show Credential Request Form
+                                    </label>
+                                    <small class="text-muted" style="display: block; margin-top: 0.3rem;">Allow students to request passwords</small>
+                                </div>
+                                <div class="form-group">
+                                    <label>Kiosk Branding Text</label>
+                                    <input type="text" id="kiosk-branding-text" class="form-control" placeholder="e.g. Equipment Room A" maxlength="100">
+                                    <small class="text-muted" style="display: block; margin-top: 0.3rem;">Display location or description</small>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Hardware Settings Section -->
+                        <div style="margin-top: 2.5rem; padding-top: 2.5rem; border-top: 1px solid var(--glass-border);">
+                            <h4 style="margin-bottom: 1.5rem; color: var(--text-primary); font-size: 1.1rem;">Hardware Settings</h4>
+                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1.5rem;">
+                                <div class="form-group">
+                                    <label>Door Unlock Duration (seconds)</label>
+                                    <input type="number" id="kiosk-door-unlock-duration" class="form-control" min="0.5" max="10" step="0.5" value="2" placeholder="e.g. 2">
+                                    <small class="text-muted" style="display: block; margin-top: 0.3rem;">How long the door solenoid stays unlocked</small>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Sign-in Hours Section -->
+                        <div style="margin-top: 2.5rem; padding-top: 2.5rem; border-top: 1px solid var(--glass-border);">
+                            <h4 style="margin-bottom: 1.5rem; color: var(--text-primary); font-size: 1.1rem;">Operating Hours</h4>
+                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1.5rem;">
+                                <div class="form-group">
+                                    <label>Start Time (HH:MM)</label>
+                                    <input type="time" id="kiosk-start-time" class="form-control" value="08:00">
+                                </div>
+                                <div class="form-group">
+                                    <label>End Time (HH:MM)</label>
+                                    <input type="time" id="kiosk-end-time" class="form-control" value="16:00">
+                                </div>
+                                <div class="form-group">
+                                    <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                                        <input type="checkbox" id="kiosk-enforce-hours" checked>
+                                        Enforce Operating Hours
+                                    </label>
+                                    <small class="text-muted" style="display: block; margin-top: 0.3rem;">Block access outside these hours</small>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
 

@@ -57,12 +57,6 @@ if (typeof window.generateId !== 'function') {
         return `${String(prefix || 'ID').toUpperCase()}-${ts}-${rand}`;
     };
 }
-document.getElementById('mark-messages-read-btn')?.addEventListener('click', async () => {
-    if (!currentUser || currentUser.role !== 'student') return;
-    const ok = await markAllStudentMessagesRead(currentUser.id);
-    if (ok) showToast('Messages marked as read.', 'success');
-    else showToast('Failed to update message read status.', 'error');
-});
 const generateId = window.generateId;
 function getDefaultKioskRuntimeSettings() {
     return {
@@ -106,9 +100,6 @@ function resolveKioskSettingsBlob(sourceRow = {}) {
 }
 
 function readKioskBooleanSetting(values, fallback) {
-                studentTourActive = false;
-                studentTourShownThisSession = false;
-                cleanupStudentSessionListeners();
     for (const value of values) {
         if (value === undefined || value === null || value === '') continue;
         if (typeof value === 'boolean') return value;
@@ -215,10 +206,6 @@ let sessionStartedAtMs = null;
 let doorTelemetryChannel = null;
 let activityLogsChannel = null;
 let doorTelemetryUiTickInterval = null;
- let studentMessagesChannel = null;
- let onboardingStateChannel = null;
- let studentTourActive = false;
- let studentTourShownThisSession = false;
 const doorRuntimeState = {
     known: false,
     isOpen: false,
@@ -451,18 +438,11 @@ const loginRateLimit = {
 function canAttemptLogin() {
     const now = Date.now();
 
-    // Prevent login when door is open and known
-    if (typeof doorRuntimeState !== 'undefined' && doorRuntimeState && doorRuntimeState.known && doorRuntimeState.isOpen) {
-        showToast('Door is open. Please close the door before signing in.', 'error');
-        return false;
-    }
-
 
     // Still in lockout?
     if (loginRateLimit.lockedUntil && now < loginRateLimit.lockedUntil) {
-        const remainingMs = Math.max(0, loginRateLimit.lockedUntil - now);
-        const remaining = Math.ceil(remainingMs / 1000);
-        showToast(`Too many attempts. Try again in ${remaining}s.`, 'error', { key: 'login-lockout', pinned: true, ttl: remainingMs });
+        const remaining = Math.ceil((loginRateLimit.lockedUntil - now) / 1000);
+        showToast(`Too many attempts. Try again in ${remaining}s.`, 'error');
         return false;
     }
 
@@ -485,9 +465,7 @@ function recordFailedLoginAttempt() {
 
     if (loginRateLimit.attempts.length >= loginRateLimit.maxAttempts) {
         loginRateLimit.lockedUntil = now + loginRateLimit.lockoutMs;
-        showToast('Too many login attempts. Locked for 60 seconds.', 'error', { key: 'login-lockout', pinned: true, ttl: loginRateLimit.lockoutMs });
-        // Ensure the pinned lockout toast is removed when lockout expires
-        try { setTimeout(() => removeToastByKey('login-lockout'), loginRateLimit.lockoutMs); } catch (e) { /* ignore */ }
+        showToast('Too many login attempts. Locked for 60 seconds.', 'error');
         return false;
     }
 
@@ -2145,45 +2123,27 @@ function startDoorSensorRealtimeListener(targetKioskId = kioskId) {
             const sensorId = String(row?.sensor_id || '').trim() || 'door-1';
             if (sensorId !== getDoorSensorId()) return;
             applyDoorSensorEvent(row);
+            try {
+                // also push a human-readable activity log entry for realtime UI
+                const ts = row.event_ts || row.created_at || new Date().toISOString();
+                const actor = row.actor_user_id || row.actorUserId || 'SYSTEM';
+                const sensor = row.sensor_id || 'door-1';
+                const verb = String(row.event_type || '').toLowerCase();
+                pushActivityLogRealtime({
+                    id: `door_sensor:${row.id}`,
+                    timestamp: ts,
+                    user_id: actor,
+                    action: `Sensor ${sensor} reported ${verb}`,
+                    details: `Sensor ${sensor} ${verb} at ${new Date(ts).toLocaleString()} (actor: ${actor})`
+                });
+            } catch (e) {
+                // ignore
+            }
         })
         .subscribe(status => {
             if (status === 'CHANNEL_ERROR') {
                 console.warn('door_sensor_events realtime channel error');
             }
-        });
-}
-
-function startActivityLogsRealtimeListener() {
-    const client = getSettingsSupabaseClient();
-    if (!client) return;
-
-    if (activityLogsChannel) {
-        client.removeChannel(activityLogsChannel);
-        activityLogsChannel = null;
-    }
-
-    activityLogsChannel = client
-        .channel('activity-logs')
-        .on('postgres_changes', {
-            event: 'INSERT',
-            schema: 'public',
-            table: 'activity_logs'
-        }, payload => {
-            const row = payload?.new;
-            if (!row || !row.id) return;
-            try {
-                // avoid duplicates
-                if ((activityLogs || []).some(l => String(l.id) === String(row.id))) return;
-                activityLogs.unshift(row);
-                // keep sorted by timestamp
-                activityLogs.sort((a, b) => (Date.parse(String(b.timestamp || b.created_at || '')) || 0) - (Date.parse(String(a.timestamp || a.created_at || '')) || 0));
-                try { renderLogs(); } catch (e) { /* ignore render race */ }
-            } catch (e) {
-                console.warn('activity log realtime handler error', e);
-            }
-        })
-        .subscribe(status => {
-            if (status === 'CHANNEL_ERROR') console.warn('activity_logs realtime channel error');
         });
 }
 
@@ -2359,8 +2319,6 @@ async function triggerSignInAttentionIfEnabled(user) {
 }
 
 async function requestDoorUnlockAndLogAccess({ actionType, item, quantity = 1, projectName = 'Personal' }) {
-    const okAuth = await ensurePrivilegedActionAuth('unlocking the door');
-    if (!okAuth) return false;
     const actorId = currentUser?.id || 'SYSTEM';
     const actorRole = currentUser?.role || 'system';
     const itemName = item?.name || 'Unknown Item';
@@ -2388,8 +2346,6 @@ function itemRequiresDoorUnlock(item) {
 }
 
 async function requestDoorHoldOpenAndLogAccess(reason = 'manual door hold-open') {
-    const okAuth = await ensurePrivilegedActionAuth('holding the door open');
-    if (!okAuth) return false;
     const actorId = currentUser?.id || 'SYSTEM';
     const actorRole = currentUser?.role || 'system';
 
@@ -2400,8 +2356,6 @@ async function requestDoorHoldOpenAndLogAccess(reason = 'manual door hold-open')
 }
 
 async function requestDoorReleaseAndLogAccess(reason = 'manual door release') {
-    const okAuth = await ensurePrivilegedActionAuth('releasing the door');
-    if (!okAuth) return false;
     const actorId = currentUser?.id || 'SYSTEM';
     const actorRole = currentUser?.role || 'system';
 
@@ -2443,8 +2397,6 @@ function formatDoorDuration(totalSeconds) {
 }
 
 async function requestManualDoorUnlockAndLogAccess(reason = 'manual debug control') {
-    const okAuth = await ensurePrivilegedActionAuth('manual door unlock');
-    if (!okAuth) return false;
     const actorId = currentUser?.id || 'SYSTEM';
     const actorRole = currentUser?.role || 'system';
 
@@ -2889,9 +2841,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     startDoorSensorRealtimeListener(kioskId);
     startDoorTelemetryUiTicker();
     startActivityLogsRealtimeListener();
-
-    // Ensure restricted UI reflects current privileged session state
-    try { updateRestrictedUiState(); } catch (e) { /* ignore */ }
 
     if (!verification.valid) {
         const unavailableDescription = verification.reason === 'invalid_license'
@@ -3412,17 +3361,6 @@ function login(user) {
         // Load initial Dashboard from fresh Supabase state
         switchPage('dashboard', 'Dashboard').catch(err => console.error(err));
 
-        if (user.role === 'student') {
-            startStudentMessagesRealtimeListener(user.id);
-            startOnboardingStateRealtimeListener(user.id);
-            void refreshStudentMessagesWidget(user.id);
-            setTimeout(() => {
-                void maybeShowStudentTour(user);
-            }, 800);
-        } else {
-            cleanupStudentSessionListeners();
-        }
-
         // Run one-time authentication password setup audit for staff users.
         setTimeout(() => {
             void runPrivilegedStartupAudit();
@@ -3446,9 +3384,6 @@ function logout(message = 'Logged out successfully') {
     currentUser = null;
     privilegedSessionAuthenticated = false;
     privilegedStartupAuditShown = false;
-    studentTourActive = false;
-    studentTourShownThisSession = false;
-    cleanupStudentSessionListeners();
     inventoryBasket = [];
     toggleBasket(false);
     clearInterval(countdownInterval);
@@ -3484,9 +3419,6 @@ function returnToLoginView(options = {}) {
     currentUser = null;
     privilegedSessionAuthenticated = false;
     privilegedStartupAuditShown = false;
-    studentTourActive = false;
-    studentTourShownThisSession = false;
-    cleanupStudentSessionListeners();
     inventoryBasket = [];
     toggleBasket(false);
     clearInterval(countdownInterval);
@@ -3750,8 +3682,8 @@ async function promptSetPrivilegedActionPassword(reason = 'this action', forcedR
                 showErr('Failed to save authentication password to server. Check your connection and permissions, then try again.');
                 return;
             }
+
             privilegedSessionAuthenticated = true;
-            schedulePrivilegedSessionExpiry();
             showToast('Authentication password saved.', 'success');
             finish(true);
         };
@@ -3818,8 +3750,6 @@ function requestPrivilegedActionAuth(reason = 'this action') {
             const enteredHash = await hashDebugPin(enteredPassword);
             if (enteredHash && enteredHash === expectedHash) {
                 privilegedSessionAuthenticated = true;
-                schedulePrivilegedSessionExpiry();
-                try { updateRestrictedUiState(); } catch (e) { /* ignore */ }
                 showToast('Session authenticated.', 'success');
                 finish(true);
                 return;
@@ -3851,20 +3781,6 @@ function requestPrivilegedActionAuth(reason = 'this action') {
     });
 }
 
-let _privilegedExpiryTimerId = null;
-function schedulePrivilegedSessionExpiry(timeoutMs = 10 * 60 * 1000) {
-    if (_privilegedExpiryTimerId) {
-        clearTimeout(_privilegedExpiryTimerId);
-        _privilegedExpiryTimerId = null;
-    }
-    _privilegedExpiryTimerId = setTimeout(() => {
-        privilegedSessionAuthenticated = false;
-        _privilegedExpiryTimerId = null;
-        showToast('Privileged session expired. Re-authentication required for admin actions.', 'info');
-        try { updateRestrictedUiState(); } catch (e) { /* ignore */ }
-    }, timeoutMs);
-}
-
 async function ensurePrivilegedActionAuth(reason = 'this action') {
     if (!userCanPerformPrivilegedActions()) return true;
     if (privilegedSessionAuthenticated) return true;
@@ -3883,34 +3799,6 @@ async function ensurePrivilegedActionAuth(reason = 'this action') {
     return requestPrivilegedActionAuth(reason);
 }
 
-// Update UI affordances for restricted controls when privileged session changes
-function updateRestrictedUiState() {
-    const lockedSelectors = [
-        '#manage-categories-btn',
-        '#manage-visibility-tags-btn',
-        '#bulk-manage-items-btn',
-        '#bulk-import-items-btn',
-        '#bulk-delete-items-btn',
-        '#add-item-btn',
-        '#bulk-delete-users-btn'
-    ];
-
-    const shouldLock = !privilegedSessionAuthenticated;
-    lockedSelectors.forEach(sel => {
-        const el = document.querySelector(sel);
-        if (!el) return;
-        el.classList.toggle('locked', shouldLock);
-        el.setAttribute('aria-disabled', shouldLock ? 'true' : 'false');
-        try { el.disabled = shouldLock && el.tagName === 'BUTTON'; } catch (e) { }
-    });
-
-    // Nav buttons marked restricted
-    document.querySelectorAll('.nav-btn.restricted').forEach(el => {
-        el.classList.toggle('locked', !privilegedSessionAuthenticated);
-        el.setAttribute('aria-disabled', (!privilegedSessionAuthenticated) ? 'true' : 'false');
-    });
-}
-
 navBtns.forEach(btn => {
     btn.addEventListener('click', async () => {
         const target = btn.getAttribute('data-target');
@@ -3918,41 +3806,6 @@ navBtns.forEach(btn => {
         await switchPage(target, title);
     });
 });
-
-// Intercept clicks on restricted controls to require privileged auth
-function guardRestrictedClick(selector, reason) {
-    document.querySelectorAll(selector).forEach(el => {
-        el.addEventListener('click', async (e) => {
-            // If already authenticated or user cannot perform privileged actions, allow
-            if (!userCanPerformPrivilegedActions()) return;
-            if (privilegedSessionAuthenticated) return;
-
-            e.preventDefault();
-            e.stopPropagation();
-
-            const ok = await ensurePrivilegedActionAuth(reason || 'a privileged action');
-            if (!ok) return;
-
-            // Re-dispatch original click after auth
-            try {
-                el.click();
-            } catch (err) {
-                // If recursion occurs, fallback to executing default handlers by creating a new event
-                const ev = new MouseEvent('click', { bubbles: true, cancelable: true });
-                el.dispatchEvent(ev);
-            }
-        }, { capture: true });
-    });
-}
-
-// Guard restricted nav buttons
-guardRestrictedClick('.nav-btn.restricted', 'accessing an admin page');
-
-// Guard admin toolbar buttons on inventory page
-guardRestrictedClick('#manage-categories-btn, #manage-visibility-tags-btn, #bulk-manage-items-btn, #bulk-import-items-btn, #bulk-delete-items-btn, #add-item-btn', 'managing inventory');
-
-// Guard class/user/project actions
-guardRestrictedClick('#create-class-btn, #create-project-btn, #nav-users, #nav-classes', 'performing administrative actions');
 
 async function refreshPageDataFromSupabase(targetId) {
     if (targetId === 'requests') {
@@ -4151,7 +4004,10 @@ function loadDashboard() {
 
         list1.replaceChildren();
         if (myItemsOut.length === 0) {
-            list1.appendChild(renderEmptyStatePanel('ph-package', 'No items signed out', 'You do not have any items checked out right now.'));
+            const p = document.createElement('p');
+            p.className = 'text-muted';
+            p.textContent = 'No items currently signed out.';
+            list1.appendChild(p);
         } else {
             myItemsOut.forEach(io => {
                 const item = inventoryItems.find(i => i.id === io.itemId);
@@ -4249,8 +4105,6 @@ function loadDashboard() {
             });
         });
 
-        void refreshStudentMessagesWidget(currentUser.id);
-
         // Bind return item buttons
         document.querySelectorAll('.return-item-btn').forEach(btn => {
             btn.addEventListener('click', async (e) => {
@@ -4293,7 +4147,10 @@ function loadDashboard() {
 
         list2.replaceChildren();
         if (personalItems.length === 0) {
-            list2.appendChild(renderEmptyStatePanel('ph-folder-open', 'No personal items', 'You do not have anything signed out to your personal project.'));
+            const p = document.createElement('p');
+            p.className = 'text-muted';
+            p.textContent = 'No personal items are currently signed out.';
+            list2.appendChild(p);
         } else {
             personalItems.slice(0, 6).forEach(io => {
                 const item = inventoryItems.find(i => i.id === io.itemId);
@@ -4512,7 +4369,10 @@ function loadDashboard() {
                     while (tabContent.firstChild) {
                         tabContent.removeChild(tabContent.firstChild);
                     }
-                    tabContent.appendChild(renderEmptyStatePanel('ph-package', 'No items signed out', 'There are no open sign-outs for this section.'));
+                    const p = document.createElement('p');
+                    p.className = 'text-muted';
+                    p.textContent = 'No items currently signed out.';
+                    tabContent.appendChild(p);
                 } else {
                     while (tabContent.firstChild) {
                         tabContent.removeChild(tabContent.firstChild);
@@ -4862,7 +4722,7 @@ function renderInventory() {
     }
 
     if (filtered.length === 0) {
-        tbody.innerHTML = renderEmptyStateRow(5, 'ph-package', 'No items found', 'Adjust your search or add a new inventory item.');
+        tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No items match your current search.</td></tr>';
         updateInventoryBulkSelectionState();
         return;
     }
@@ -4897,17 +4757,6 @@ function renderInventory() {
                     <div class="inventory-stock-status-content">
                         <span class="inventory-stock-value">${Math.max(0, parseInt(item?.stock, 10) || 0)} of ${getItemTotalQuantity(item)}</span>
                         <span class="status-badge ${statusClass}">${currentStatus}</span>
-                        <div class="stock-bar-wrap">
-                            <div class="stock-bar ${(() => {
-                                const total = Math.max(1, getItemTotalQuantity(item));
-                                const stock = Math.max(0, parseInt(item?.stock, 10) || 0);
-                                const pct = Math.round((stock / total) * 100);
-                                if (pct <= 0) return 'stock-bar-empty';
-                                if (pct <= 10) return 'stock-bar-critical';
-                                if (pct <= 35) return 'stock-bar-warning';
-                                return 'stock-bar-good';
-                            })()}" style="width:${Math.max(0, Math.min(100, Math.round((Math.max(0, parseInt(item?.stock,10)||0) / Math.max(1,getItemTotalQuantity(item))) * 100 )))}%"></div>
-                        </div>
                     </div>
                 </td>
                 <td>
@@ -6161,7 +6010,7 @@ function renderProjects() {
                     </div>
                 </div>
             `;
-        }).join('') : renderEmptyStatePanel('ph-package', 'No personal items', 'Nothing is currently signed out to your personal project.').outerHTML;
+        }).join('') : '<p class="text-muted text-sm">No items currently signed out to your personal project.</p>';
 
         html += `
             <div class="project-card glass-panel flex-col" style="border-left:4px solid var(--accent);">
@@ -6231,7 +6080,7 @@ function renderProjects() {
                 <div class="project-footer"><strong>${outCount}</strong> items signed out</div>
                 ${itemsOutHtml}
                 <div class="project-meta">
-                    <span class="text-muted text-sm">${proj.itemsOut.length > 0 ? 'Use Sign In to return tools.' : 'No items signed out yet.'}</span>
+                    <span class="text-muted text-sm">${proj.itemsOut.length > 0 ? 'Use Sign In to return tools.' : 'No items currently signed out.'}</span>
                     <div class="project-action-buttons">
                         ${canManage ? `<button class="btn btn-secondary text-sm edit-proj-btn" data-id="${escapeHtml(proj.id)}">
                             <i class="ph ph-pencil-simple"></i> Edit
@@ -7614,7 +7463,57 @@ function renderLogs() {
                 <td>${detailsLabel}</td>
             </tr>
         `;
-    }).join('') || renderEmptyStateRow(4, 'ph-notebook', 'No log entries', 'No activity matches the selected filters.');
+    }).join('') || '<tr><td colspan="4" class="text-center text-muted">No log entries for this action.</td></tr>';
+}
+
+/**
+ * Push an activity log received via realtime into the in-memory array and refresh UI.
+ */
+function pushActivityLogRealtime(row) {
+    if (!row || typeof row !== 'object') return;
+
+    const normalized = {
+        id: String(row.id || row.log_id || `log-${Date.now()}-${Math.random().toString(36).slice(2,8)}`),
+        timestamp: row.timestamp || row.created_at || new Date().toISOString(),
+        userId: row.user_id || row.userId || row.userId || null,
+        action: row.action || row.name || row.event_type || '',
+        details: row.details || row.payload || ''
+    };
+
+    const existingId = String(normalized.id || '').trim();
+    if (!existingId) return;
+    if ((activityLogs || []).some(log => String(log.id || '') === existingId)) return;
+
+    activityLogs = [normalized, ...(activityLogs || [])].sort((a, b) => {
+        const ta = Date.parse(String(a.timestamp || '')) || 0;
+        const tb = Date.parse(String(b.timestamp || '')) || 0;
+        return tb - ta;
+    });
+
+    try { renderLogs(); } catch (e) { /* ignore */ }
+}
+
+function startActivityLogsRealtimeListener() {
+    const client = getSettingsSupabaseClient();
+    if (!client) return;
+
+    if (activityLogsChannel) {
+        try { client.removeChannel(activityLogsChannel); } catch {};
+        activityLogsChannel = null;
+    }
+
+    activityLogsChannel = client
+        .channel('activity-logs')
+        .on('postgres_changes', {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'activity_logs'
+        }, payload => {
+            pushActivityLogRealtime(payload?.new);
+        })
+        .subscribe(status => {
+            if (status === 'CHANNEL_ERROR') console.warn('activity_logs realtime channel error');
+        });
 }
 
 
@@ -7707,7 +7606,7 @@ function renderUsers() {
     }).join('');
 
     if (filteredUsers.length === 0) {
-        tbody.innerHTML = renderEmptyStateRow(4, 'ph-users-three', 'No users found', 'Try a different search term.');
+        tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">No users match your search.</td></tr>';
         return;
     }
 
@@ -8565,8 +8464,6 @@ document.getElementById('bulk-users-btn')?.addEventListener('click', () => {
 });
 
 document.getElementById('bulk-delete-users-btn')?.addEventListener('click', async () => {
-    const okAuth = await ensurePrivilegedActionAuth('deleting users');
-    if (!okAuth) return;
     const selectedCbs = Array.from(document.querySelectorAll('.user-select-cb:checked'));
     if (selectedCbs.length === 0) {
         showToast('Please select users to delete using the checkboxes on the left.', 'error');
@@ -8766,310 +8663,28 @@ function sanitizeModalHtml(contentHtml) {
     return template.content;
 }
 
-// Toast registry to avoid duplicate toasts piling up
-const _activeToasts = new Map();
+function showToast(message, type = 'success') {
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
 
-function removeToastByKey(key) {
-    try {
-        const record = _activeToasts.get(key);
-        if (!record) return;
-        if (record.timeoutId) clearTimeout(record.timeoutId);
-        record.el.style.animation = 'fadeOut 0.25s ease forwards';
-        setTimeout(() => {
-            record.el.remove();
-        }, 250);
-        _activeToasts.delete(key);
-    } catch (e) {
-        console.warn('removeToastByKey error', e);
-    }
-}
+    const icon = type === 'success' ? 'ph-check-circle' : type === 'error' ? 'ph-warning-circle' : 'ph-info';
 
-function showToast(message, type = 'success', options = {}) {
-    try {
-        const normalizedMessage = String(message || '').trim();
-        const key = options.key || `${type}:${normalizedMessage}`;
+    const iconEl = document.createElement('i');
+    iconEl.className = `ph ${icon}`;
+    iconEl.style.fontSize = '1.5rem';
 
-        // If a toast with the same key exists, do not duplicate it.
-        const existing = _activeToasts.get(key);
-        if (existing) {
-            // If existing is pinned, keep it.
-            if (existing.pinned) return;
-            // refresh ttl for non-pinned
-            if (existing.timeoutId) clearTimeout(existing.timeoutId);
-            const ttl = Number(options.ttl || 4500);
-            existing.timeoutId = setTimeout(() => removeToastByKey(key), ttl);
-            return;
-        }
+    const messageEl = document.createElement('span');
+    messageEl.textContent = String(message || '');
 
-        const toast = document.createElement('div');
-        toast.className = `toast toast-${type}`;
+    toast.appendChild(iconEl);
+    toast.appendChild(messageEl);
 
-        const icon = type === 'success' ? 'ph-check-circle' : type === 'error' ? 'ph-warning-circle' : 'ph-info';
-        const iconEl = document.createElement('i');
-        iconEl.className = `ph ${icon}`;
-        iconEl.style.fontSize = '1.5rem';
+    toastContainer.appendChild(toast);
 
-        const messageEl = document.createElement('span');
-        messageEl.textContent = normalizedMessage;
-
-        toast.appendChild(iconEl);
-        toast.appendChild(messageEl);
-
-        toastContainer.appendChild(toast);
-
-        const pinned = !!options.pinned;
-        const ttl = Number(options.ttl || 4500);
-
-        const record = { el: toast, timeoutId: null, pinned };
-        _activeToasts.set(key, record);
-
-        if (!pinned) {
-            record.timeoutId = setTimeout(() => removeToastByKey(key), ttl);
-        }
-    } catch (err) {
-        console.error('showToast error', err);
-    }
-}
-
-function renderEmptyStateRow(colspan, icon, title, description) {
-    return `
-        <tr class="empty-state-row">
-            <td colspan="${Math.max(1, parseInt(colspan, 10) || 1)}">
-                <div class="empty-state">
-                    <i class="ph ${icon || 'ph-inbox'}"></i>
-                    <h4>${escapeHtml(String(title || 'Nothing here yet'))}</h4>
-                    <p>${escapeHtml(String(description || ''))}</p>
-                </div>
-            </td>
-        </tr>
-    `;
-}
-
-function renderEmptyStatePanel(icon, title, description) {
-    const container = document.createElement('div');
-    container.className = 'empty-state';
-    container.innerHTML = `
-        <i class="ph ${icon || 'ph-inbox'}"></i>
-        <h4>${escapeHtml(String(title || 'Nothing here yet'))}</h4>
-        <p>${escapeHtml(String(description || ''))}</p>
-    `;
-    return container;
-}
-
-const STUDENT_TOUR_STEPS = [
-    {
-        title: 'Welcome to the kiosk',
-        body: 'This dashboard shows your active projects, items you signed out, and important status updates.'
-    },
-    {
-        title: 'Check your items',
-        body: 'Use Items Due Back to see what is out and when it needs to be returned.'
-    },
-    {
-        title: 'See messages',
-        body: 'Teachers can send you messages here. Watch for unread badges and login alerts.'
-    },
-    {
-        title: 'Watch the door status',
-        body: 'The door panel shows whether the supply room door is open or closed and whether it needs attention.'
-    }
-];
-
-function cleanupStudentSessionListeners() {
-    const client = getSettingsSupabaseClient();
-    if (!client) return;
-
-    if (studentMessagesChannel) {
-        client.removeChannel(studentMessagesChannel);
-        studentMessagesChannel = null;
-    }
-    if (onboardingStateChannel) {
-        client.removeChannel(onboardingStateChannel);
-        onboardingStateChannel = null;
-    }
-}
-
-async function refreshStudentMessagesWidget(userId = currentUser?.id) {
-    if (!userId) return;
-    const container = document.getElementById('dashboard-messages');
-    const badge = document.getElementById('dashboard-messages-unread');
-    const markReadBtn = document.getElementById('mark-messages-read-btn');
-
-    const messages = await loadStudentMessages(userId);
-    const unreadMessages = (messages || []).filter(message => !message.read_at);
-
-    if (badge) {
-        badge.textContent = String(unreadMessages.length);
-        badge.classList.toggle('hidden', unreadMessages.length === 0);
-    }
-
-    if (!container) return;
-    container.replaceChildren();
-
-    if (!Array.isArray(messages) || messages.length === 0) {
-        container.appendChild(renderEmptyStatePanel('ph-envelope-open', 'No messages', 'Teachers can send messages here.'));
-        if (markReadBtn) markReadBtn.disabled = true;
-        return;
-    }
-
-    if (markReadBtn) markReadBtn.disabled = unreadMessages.length === 0;
-
-    messages.slice(0, 6).forEach(message => {
-        const card = document.createElement('div');
-        card.className = `message-card ${message.read_at ? '' : 'is-unread'}`;
-
-        const header = document.createElement('div');
-        header.className = 'message-card-header';
-
-        const subject = document.createElement('div');
-        subject.className = 'message-subject';
-        subject.textContent = message.subject || 'Message';
-
-        const status = document.createElement('span');
-        status.className = 'message-read-state';
-        status.textContent = message.read_at ? 'Read' : 'Unread';
-
-        header.appendChild(subject);
-        header.appendChild(status);
-
-        const body = document.createElement('div');
-        body.className = 'message-body';
-        body.textContent = message.body || '';
-
-        card.appendChild(header);
-        card.appendChild(body);
-        container.appendChild(card);
-    });
-}
-
-async function markAllStudentMessagesRead(userId = currentUser?.id) {
-    if (!userId) return false;
-    const messages = await loadStudentMessages(userId);
-    const unreadIds = (messages || []).filter(message => !message.read_at).map(message => message.id);
-    if (unreadIds.length === 0) return true;
-    const ok = await markStudentMessagesRead(userId, unreadIds);
-    if (ok) await refreshStudentMessagesWidget(userId);
-    return ok;
-}
-
-function buildStudentTourModal(stepIndex = 0) {
-    const step = STUDENT_TOUR_STEPS[Math.max(0, Math.min(STUDENT_TOUR_STEPS.length - 1, stepIndex))] || STUDENT_TOUR_STEPS[0];
-    const isLastStep = stepIndex >= STUDENT_TOUR_STEPS.length - 1;
-    return `
-        <div class="modal-header">
-            <h3>Student Quick Tour</h3>
-            <button class="close-btn" id="student-tour-close-btn"><i class="ph ph-x"></i></button>
-        </div>
-        <div class="modal-body">
-            <div class="tour-step-chip">Step ${stepIndex + 1} of ${STUDENT_TOUR_STEPS.length}</div>
-            <h4 style="margin-top:0.75rem;">${escapeHtml(step.title)}</h4>
-            <p class="text-muted">${escapeHtml(step.body)}</p>
-        </div>
-        <div class="modal-footer">
-            <button class="btn btn-secondary" id="student-tour-skip-btn">Skip tour</button>
-            <button class="btn btn-secondary" id="student-tour-prev-btn" ${stepIndex === 0 ? 'disabled' : ''}>Back</button>
-            <button class="btn btn-primary" id="student-tour-next-btn">${isLastStep ? 'Finish' : 'Next'}</button>
-        </div>
-    `;
-}
-
-function openStudentTour(stepIndex = 0) {
-    if (!currentUser || currentUser.role !== 'student') return;
-    studentTourActive = true;
-    studentTourShownThisSession = true;
-    openModal(buildStudentTourModal(stepIndex));
-
-    document.getElementById('student-tour-close-btn')?.addEventListener('click', () => {
-        void finishStudentTour(false);
-    });
-    document.getElementById('student-tour-skip-btn')?.addEventListener('click', () => {
-        void finishStudentTour(false);
-    });
-    document.getElementById('student-tour-prev-btn')?.addEventListener('click', () => {
-        openStudentTour(Math.max(0, stepIndex - 1));
-    });
-    document.getElementById('student-tour-next-btn')?.addEventListener('click', () => {
-        if (stepIndex >= STUDENT_TOUR_STEPS.length - 1) {
-            void finishStudentTour(true);
-            return;
-        }
-        openStudentTour(stepIndex + 1);
-    });
-}
-
-async function finishStudentTour(markComplete = true) {
-    if (!currentUser || currentUser.role !== 'student') return;
-    if (markComplete) {
-        await setOnboardingComplete(currentUser.id);
-    }
-    studentTourActive = false;
-    closeModal({ force: true });
-    showToast('Tutorial closed.', 'success');
-}
-
-async function maybeShowStudentTour(user = currentUser) {
-    if (!user || user.role !== 'student') return;
-    if (studentTourShownThisSession || studentTourActive) return;
-    const state = await loadOnboardingState(user.id);
-    if (!state?.completed) {
-        openStudentTour(0);
-    }
-}
-
-function startStudentMessagesRealtimeListener(userId) {
-    const client = getSettingsSupabaseClient();
-    if (!client || !userId) return;
-
-    if (studentMessagesChannel) {
-        client.removeChannel(studentMessagesChannel);
-        studentMessagesChannel = null;
-    }
-
-    studentMessagesChannel = client
-        .channel(`student-messages-${userId}`)
-        .on('postgres_changes', {
-            event: 'INSERT',
-            schema: 'public',
-            table: 'student_messages',
-            filter: `target_user_id=eq.${userId}`
-        }, payload => {
-            const row = payload?.new;
-            if (!row || String(row.target_user_id || '') !== String(userId)) return;
-            showToast(row.subject ? `New message: ${row.subject}` : 'New message received.', 'warning');
-            void refreshStudentMessagesWidget(userId);
-        })
-        .subscribe(status => {
-            if (status === 'CHANNEL_ERROR') console.warn('student_messages realtime channel error');
-        });
-}
-
-function startOnboardingStateRealtimeListener(userId) {
-    const client = getSettingsSupabaseClient();
-    if (!client || !userId) return;
-
-    if (onboardingStateChannel) {
-        client.removeChannel(onboardingStateChannel);
-        onboardingStateChannel = null;
-    }
-
-    onboardingStateChannel = client
-        .channel(`onboarding-state-${userId}`)
-        .on('postgres_changes', {
-            event: '*',
-            schema: 'public',
-            table: 'onboarding_state',
-            filter: `user_id=eq.${userId}`
-        }, payload => {
-            const row = payload?.new || payload?.old;
-            if (!row || String(row.user_id || '') !== String(userId)) return;
-            if (row.completed) return;
-            if (!studentTourActive) {
-                openStudentTour(0);
-            }
-        })
-        .subscribe(status => {
-            if (status === 'CHANNEL_ERROR') console.warn('onboarding_state realtime channel error');
-        });
+    setTimeout(() => {
+        toast.style.animation = 'fadeOut 0.3s ease forwards';
+        setTimeout(() => toast.remove(), 300);
+    }, 3000);
 }
 
 // Close Modal on outside click

@@ -552,7 +552,7 @@ async function loadActivityLogs() {
     }
     activityLogs = data || [];
 
-    // Merge recent door open sessions into activity logs for kiosk view
+    // Merge recent door open sessions and raw door sensor events into activity logs for kiosk view
     try {
         const { data: doorSessions, error: dsErr } = await dbClient
             .from('door_open_sessions')
@@ -588,6 +588,40 @@ async function loadActivityLogs() {
             });
 
             activityLogs = (activityLogs || []).concat(doorActivities);
+        }
+
+        // Also include raw door sensor events (open/close) for richer activity context
+        try {
+            const { data: sensorEvents, error: seErr } = await dbClient
+                .from('door_sensor_events')
+                .select('id, event_type, event_ts, actor_user_id, sensor_id, kiosk_id, created_at')
+                .eq('kiosk_id', kioskId)
+                .in('event_type', ['open', 'close'])
+                .order('event_ts', { ascending: false })
+                .limit(50);
+
+            if (seErr) {
+                console.warn('Error loading door sensor events:', seErr);
+            } else if (Array.isArray(sensorEvents) && sensorEvents.length > 0) {
+                const sensorActivities = sensorEvents.map(s => {
+                    const ts = s.event_ts || s.created_at || null;
+                    const actor = s.actor_user_id || s.actorUserId || 'SYSTEM';
+                    const sensor = s.sensor_id || s.sensorId || 'door-1';
+                    const verb = String(s.event_type || '').toLowerCase();
+                    const timeText = ts ? new Date(ts).toLocaleString() : 'Unknown';
+
+                    return {
+                        id: `door_sensor:${s.id}`,
+                        user_id: actor,
+                        action: `Sensor ${sensor} reported ${verb} at ${timeText} (actor: ${actor}).`,
+                        timestamp: ts
+                    };
+                });
+
+                activityLogs = (activityLogs || []).concat(sensorActivities);
+            }
+        } catch (err) {
+            console.warn('Failed to load door sensor events for activity log:', err);
         }
     } catch (err) {
         console.warn('Failed to load door session activity:', err);
