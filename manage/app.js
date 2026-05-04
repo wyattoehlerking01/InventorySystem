@@ -132,6 +132,7 @@ const mainView = document.getElementById('main-view');
 const barcodeInput = document.getElementById('barcode-input');
 const usernameInput = document.getElementById('username-input');
 const passwordInput = document.getElementById('password-input');
+const loginForm = document.getElementById('login-form');
 const loginSubmitBtn = document.getElementById('login-submit-btn');
 const showHelpBtn = document.getElementById('show-help-btn');
 const backToLoginBtn = document.getElementById('back-to-login-btn');
@@ -2351,6 +2352,9 @@ function startDoorSensorRealtimeListener(targetKioskId = kioskId) {
             const sensorId = String(row?.sensor_id || '').trim() || 'door-1';
             if (sensorId !== getDoorSensorId()) return;
             applyDoorSensorEvent(row);
+            if (typeof appendDoorSensorActivityLog === 'function') {
+                appendDoorSensorActivityLog(row);
+            }
         })
         .subscribe(status => {
             if (status === 'CHANNEL_ERROR') {
@@ -3382,7 +3386,8 @@ if (barcodeInput) {
 
 const canUseCredentialLogin = !!(usernameInput && passwordInput && loginSubmitBtn);
 if (isManageMode || canUseCredentialLogin) {
-    loginSubmitBtn?.addEventListener('click', async () => {
+    loginForm?.addEventListener('submit', async (e) => {
+        e.preventDefault();
         const username = String(usernameInput?.value || '').trim();
         const password = String(passwordInput?.value || '').trim();
         // Manage mode requires a password; do not allow username-only barcode fallback.
@@ -3404,15 +3409,21 @@ if (isManageMode || canUseCredentialLogin) {
     usernameInput?.addEventListener('keydown', async (e) => {
         if (e.key !== 'Enter' && e.key !== 'NumpadEnter') return;
         e.preventDefault();
-        const username = String(usernameInput?.value || '').trim();
-        const password = String(passwordInput?.value || '').trim();
-        await handleManageCredentialLogin(username, password);
+        if (typeof loginForm?.requestSubmit === 'function') {
+            loginForm.requestSubmit();
+            return;
+        }
+        loginSubmitBtn?.click();
     });
 
     passwordInput?.addEventListener('keydown', async (e) => {
         if (e.key !== 'Enter' && e.key !== 'NumpadEnter') return;
         e.preventDefault();
-        await handleManageCredentialLogin(usernameInput?.value || '', passwordInput?.value || '');
+        if (typeof loginForm?.requestSubmit === 'function') {
+            loginForm.requestSubmit();
+            return;
+        }
+        loginSubmitBtn?.click();
     });
 }
 

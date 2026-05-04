@@ -702,6 +702,33 @@ async function loadActivityLogs() {
     }
     activityLogs = data || [];
 
+    // Fold door sensor telemetry into the activity log so operators can review
+    // door state changes alongside the rest of the system history.
+    try {
+        const doorEventsQuery = dbClient
+            .from('door_sensor_events')
+            .select('id, kiosk_id, sensor_id, local_seq, event_type, event_ts, source, unlock_job_id, actor_user_id, metadata, created_at')
+            .order('event_ts', { ascending: false })
+            .order('local_seq', { ascending: false })
+            .limit(100);
+
+        const doorEventsResult = kioskId
+            ? await doorEventsQuery.eq('kiosk_id', kioskId)
+            : await doorEventsQuery;
+
+        if (doorEventsResult.error) {
+            console.warn('Error loading door sensor events:', doorEventsResult.error);
+        } else if (Array.isArray(doorEventsResult.data) && doorEventsResult.data.length > 0) {
+            const doorSensorActivities = doorEventsResult.data
+                .map(mapDoorSensorEventToActivityLog)
+                .filter(Boolean);
+
+            activityLogs = (activityLogs || []).concat(doorSensorActivities);
+        }
+    } catch (err) {
+        console.warn('Failed to load door sensor activity:', err);
+    }
+
     // Also load recent door open sessions and merge into activity logs for visibility
     try {
         const { data: doorSessions, error: dsErr } = await dbClient
@@ -754,6 +781,64 @@ async function loadActivityLogs() {
     });
 
     console.log(`Loaded ${activityLogs.length} activity logs (including door sessions)`);
+}
+
+function mapDoorSensorEventToActivityLog(row) {
+    if (!row) return null;
+
+    const eventType = String(row.event_type || '').trim().toLowerCase();
+    const sensorId = String(row.sensor_id || 'door-1').trim() || 'door-1';
+    const actorId = String(row.actor_user_id || 'SYSTEM').trim() || 'SYSTEM';
+    const eventTimestamp = row.event_ts || row.created_at || null;
+    const source = String(row.source || '').trim();
+    const unlockJobId = String(row.unlock_job_id || '').trim();
+    const metadata = row.metadata && typeof row.metadata === 'object' ? row.metadata : null;
+
+    const actionLabels = {
+        open: 'Door Sensor Open',
+        close: 'Door Sensor Close',
+        heartbeat: 'Door Sensor Heartbeat',
+        fault: 'Door Sensor Fault'
+    };
+
+    const action = actionLabels[eventType] || `Door Sensor ${eventType || 'Event'}`;
+    const details = [
+        `Sensor ${sensorId}`,
+        eventType ? `Event ${eventType}` : null,
+        source ? `Source ${source}` : null,
+        unlockJobId ? `Unlock Job ${unlockJobId}` : null,
+        metadata && Object.keys(metadata).length > 0 ? `Metadata ${JSON.stringify(metadata)}` : null
+    ].filter(Boolean).join(' • ');
+
+    return {
+        id: `door_sensor_event:${String(row.id || row.local_seq || eventTimestamp || createUuid())}`,
+        user_id: actorId,
+        action,
+        details,
+        timestamp: eventTimestamp,
+        sourceTable: 'door_sensor_events'
+    };
+}
+
+function appendDoorSensorActivityLog(row) {
+    const activityLog = mapDoorSensorEventToActivityLog(row);
+    if (!activityLog) return;
+
+    const existingId = String(activityLog.id || '');
+    if (!existingId) return;
+    if ((activityLogs || []).some(log => String(log.id || '') === existingId)) return;
+
+    activityLogs = [activityLog, ...(activityLogs || [])].sort((a, b) => {
+        const ta = Date.parse(String(a.timestamp || '')) || 0;
+        const tb = Date.parse(String(b.timestamp || '')) || 0;
+        return tb - ta;
+    });
+
+    try {
+        renderLogs();
+    } catch {
+        // Ignore render timing races during realtime updates.
+    }
 }
 
 /**
