@@ -151,6 +151,13 @@ const navClasses = document.getElementById('nav-classes');
 const navClassDisplay = document.getElementById('nav-class-display');
 const navOrders = document.getElementById('nav-orders');
 const navDoor = document.getElementById('nav-door');
+const doorControlTabBtn = document.getElementById('door-control-tab-btn');
+const doorEventsTabBtn = document.getElementById('door-events-tab-btn');
+const doorControlPanel = document.getElementById('door-control-panel');
+const doorEventsPanel = document.getElementById('door-events-panel');
+const doorEventsRefreshBtn = document.getElementById('door-events-refresh-btn');
+const doorEventsTableBody = document.getElementById('door-events-table-body');
+const doorEventsSummary = document.getElementById('door-events-summary');
 
 // DOM Elements - Pages
 const pages = document.querySelectorAll('.page');
@@ -164,6 +171,7 @@ let ordersStudentViewEnabled = localStorage.getItem(ordersStudentViewStorageKey)
 let inventorySmartSearchTerm = '';
 let inventorySearchDebounceTimer = null;
 let ordersTabMode = 'orders';
+let doorPageActiveTab = 'control';
 let kioskRuntimeSettings = getDefaultKioskSettings();
 let doorTelemetryChannel = null;
 let activityLogsChannel = null;
@@ -2343,6 +2351,7 @@ function startDoorSensorRealtimeListener(targetKioskId = kioskId) {
             const sensorId = String(row?.sensor_id || '').trim() || 'door-1';
             if (sensorId !== getDoorSensorId()) return;
             applyDoorSensorEvent(row);
+            appendDoorSensorEventRecord(row);
             try {
                 const ts = row.event_ts || row.created_at || new Date().toISOString();
                 const actor = row.actor_user_id || row.actorUserId || 'SYSTEM';
@@ -2629,12 +2638,106 @@ function formatDoorDuration(totalSeconds) {
     return `${mins}m ${secs.toString().padStart(2, '0')}s`;
 }
 
+function formatDoorEventTimestamp(eventRow) {
+    const rawTimestamp = eventRow?.event_ts || eventRow?.created_at || null;
+    const parsedTimestamp = rawTimestamp ? new Date(rawTimestamp) : null;
+    return parsedTimestamp && !Number.isNaN(parsedTimestamp.getTime())
+        ? parsedTimestamp.toLocaleString()
+        : 'Unknown date';
+}
+
+function formatDoorEventDetails(eventRow) {
+    const metadata = eventRow?.metadata && typeof eventRow.metadata === 'object'
+        ? eventRow.metadata
+        : {};
+    const parts = [
+        eventRow?.unlock_job_id ? `Unlock job ${eventRow.unlock_job_id}` : '',
+        eventRow?.local_seq ? `Seq ${eventRow.local_seq}` : '',
+        Object.keys(metadata).length > 0 ? `Metadata ${JSON.stringify(metadata)}` : ''
+    ].filter(Boolean);
+
+    return parts.length > 0 ? parts.join(' • ') : 'No additional details';
+}
+
+function renderDoorSensorEvents() {
+    if (!doorEventsTableBody || !doorEventsSummary) return;
+
+    const events = Array.isArray(doorSensorEvents)
+        ? doorSensorEvents.filter(event => ['open', 'close'].includes(String(event?.event_type || '').toLowerCase()))
+        : [];
+
+    const kioskLabel = kioskId ? ` for kiosk ${kioskId}` : '';
+    doorEventsSummary.textContent = `${events.length} open/close record${events.length === 1 ? '' : 's'} loaded${kioskLabel}.`;
+
+    if (events.length === 0) {
+        doorEventsTableBody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No door open/close records found.</td></tr>';
+        return;
+    }
+
+    doorEventsTableBody.innerHTML = events.map(eventRow => {
+        const eventType = String(eventRow.event_type || '').toLowerCase();
+        const eventLabel = eventType === 'open' ? 'Door Open' : 'Door Close';
+        const sensorLabel = escapeHtml(String(eventRow.sensor_id || 'door-1'));
+        const actorLabel = escapeHtml(String(eventRow.actor_user_id || 'SYSTEM'));
+        const sourceLabel = escapeHtml(String(eventRow.source || 'pi-agent'));
+        const detailsLabel = escapeHtml(formatDoorEventDetails(eventRow));
+
+        return `
+            <tr>
+                <td class="text-muted"><small>${formatDoorEventTimestamp(eventRow)}</small></td>
+                <td><strong>${escapeHtml(eventLabel)}</strong></td>
+                <td>${sensorLabel}</td>
+                <td>${actorLabel}</td>
+                <td>${sourceLabel}</td>
+                <td>${detailsLabel}</td>
+            </tr>
+        `;
+    }).join('');
+}
+
+function setDoorPageTab(nextTab = 'control') {
+    doorPageActiveTab = nextTab === 'events' ? 'events' : 'control';
+
+    const isEventsTab = doorPageActiveTab === 'events';
+    doorControlPanel?.classList.toggle('hidden', isEventsTab);
+    doorEventsPanel?.classList.toggle('hidden', !isEventsTab);
+
+    if (doorControlTabBtn) {
+        doorControlTabBtn.classList.toggle('btn-primary', !isEventsTab);
+        doorControlTabBtn.classList.toggle('btn-secondary', isEventsTab);
+    }
+
+    if (doorEventsTabBtn) {
+        doorEventsTabBtn.classList.toggle('btn-primary', isEventsTab);
+        doorEventsTabBtn.classList.toggle('btn-secondary', !isEventsTab);
+    }
+
+    if (isEventsTab) {
+        renderDoorSensorEvents();
+    }
+}
+
 function renderDoorPage() {
     const normalBtn = document.getElementById('door-normal-btn');
     const holdBtn = document.getElementById('door-hold-btn');
     const testUnlockBtn = document.getElementById('door-test-unlock-btn');
     const statusEl = document.getElementById('door-status-text');
     if (!normalBtn || !holdBtn || !testUnlockBtn || !statusEl) return;
+
+    if (doorControlTabBtn && !doorControlTabBtn.dataset.bound) {
+        doorControlTabBtn.addEventListener('click', () => setDoorPageTab('control'));
+        doorControlTabBtn.dataset.bound = '1';
+    }
+
+    if (doorEventsTabBtn && !doorEventsTabBtn.dataset.bound) {
+        doorEventsTabBtn.addEventListener('click', () => setDoorPageTab('events'));
+        doorEventsTabBtn.dataset.bound = '1';
+    }
+
+    if (doorEventsRefreshBtn && !doorEventsRefreshBtn.dataset.bound) {
+        doorEventsRefreshBtn.addEventListener('click', () => renderDoorSensorEvents());
+        doorEventsRefreshBtn.dataset.bound = '1';
+    }
 
     const setStatus = (text) => {
         statusEl.textContent = text;
@@ -2705,6 +2808,7 @@ function renderDoorPage() {
         void refreshStatus();
     }, 1000);
 
+    setDoorPageTab(doorPageActiveTab);
     void refreshStatus();
 }
 

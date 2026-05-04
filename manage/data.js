@@ -4,6 +4,7 @@
 
 // Initialize Supabase client
 const { SUPABASE_URL, SUPABASE_KEY } = window.APP_ENV || {};
+const activeKioskId = String(window.APP_ENV?.KIOSK_ID ?? window.APP_ENV?.kioskId ?? '').trim();
 
 function resolveLedTriggerUrl() {
     const explicitUrl = String(window.APP_ENV?.LED_TRIGGER_URL || '').trim();
@@ -462,6 +463,7 @@ let studentClasses = [];
 let categories = [];
 let visibilityTags = [];
 let activityLogs = [];
+let doorSensorEvents = [];
 let helpRequests = [];
 let extensionRequests = [];
 let orderRequests = [];
@@ -489,6 +491,7 @@ async function loadAllData() {
             loadProjects(),
             loadCategories(),
             loadVisibilityTags(),
+            loadDoorSensorEvents(),
             loadActivityLogs(),
             loadHelpRequests(),
             loadExtensionRequests(),
@@ -783,6 +786,78 @@ async function loadActivityLogs() {
     console.log(`Loaded ${activityLogs.length} activity logs (including door sessions)`);
 }
 
+function normalizeDoorSensorEventRecord(row) {
+    if (!row) return null;
+
+    const eventType = String(row.event_type || '').trim().toLowerCase();
+    if (!eventType) return null;
+
+    return {
+        id: String(row.id || row.local_seq || createUuid()),
+        kiosk_id: String(row.kiosk_id || activeKioskId || '').trim(),
+        sensor_id: String(row.sensor_id || 'door-1').trim() || 'door-1',
+        local_seq: Number(row.local_seq || 0),
+        event_type: eventType,
+        event_ts: row.event_ts || row.created_at || null,
+        source: String(row.source || 'pi-agent').trim() || 'pi-agent',
+        unlock_job_id: row.unlock_job_id || null,
+        actor_user_id: String(row.actor_user_id || '').trim() || null,
+        metadata: row.metadata && typeof row.metadata === 'object' ? row.metadata : {},
+        created_at: row.created_at || row.event_ts || null
+    };
+}
+
+/**
+ * Load door sensor event rows from public.door_sensor_events table
+ */
+async function loadDoorSensorEvents() {
+    const isSchemaEntityError = (err) => {
+        const message = String(err?.message || '').toLowerCase();
+        const code = String(err?.code || '').toUpperCase();
+        return message.includes('does not exist')
+            || message.includes('schema cache')
+            || message.includes('could not find')
+            || code === '42703'
+            || code === '42P01'
+            || code === 'PGRST204';
+    };
+
+    let query = dbClient
+        .from('door_sensor_events')
+        .select('id, kiosk_id, sensor_id, local_seq, event_type, event_ts, source, unlock_job_id, actor_user_id, metadata, created_at')
+        .in('event_type', ['open', 'close'])
+        .order('event_ts', { ascending: false })
+        .order('local_seq', { ascending: false });
+
+    if (activeKioskId) {
+        query = query.eq('kiosk_id', activeKioskId);
+    }
+
+    const { data, error } = await query;
+    if (error) {
+        if (isSchemaEntityError(error)) {
+            console.warn('door_sensor_events table is unavailable yet.');
+            doorSensorEvents = [];
+            return;
+        }
+
+        console.error('Error loading door sensor events:', error);
+        return;
+    }
+
+    doorSensorEvents = (data || [])
+        .map(normalizeDoorSensorEventRecord)
+        .filter(Boolean)
+        .sort((a, b) => {
+            const ta = Date.parse(String(a.event_ts || a.created_at || '')) || 0;
+            const tb = Date.parse(String(b.event_ts || b.created_at || '')) || 0;
+            if (tb !== ta) return tb - ta;
+            return Number(b.local_seq || 0) - Number(a.local_seq || 0);
+        });
+
+    console.log(`Loaded ${doorSensorEvents.length} door sensor events`);
+}
+
 function mapDoorSensorEventToActivityLog(row) {
     if (!row) return null;
 
@@ -836,6 +911,28 @@ function appendDoorSensorActivityLog(row) {
 
     try {
         renderLogs();
+    } catch {
+        // Ignore render timing races during realtime updates.
+    }
+}
+
+function appendDoorSensorEventRecord(row) {
+    const eventRecord = normalizeDoorSensorEventRecord(row);
+    if (!eventRecord) return;
+
+    const existingId = String(eventRecord.id || '').trim();
+    if (!existingId) return;
+    if ((doorSensorEvents || []).some(event => String(event.id || '') === existingId)) return;
+
+    doorSensorEvents = [eventRecord, ...(doorSensorEvents || [])].sort((a, b) => {
+        const ta = Date.parse(String(a.event_ts || a.created_at || '')) || 0;
+        const tb = Date.parse(String(b.event_ts || b.created_at || '')) || 0;
+        if (tb !== ta) return tb - ta;
+        return Number(b.local_seq || 0) - Number(a.local_seq || 0);
+    });
+
+    try {
+        renderDoorPage();
     } catch {
         // Ignore render timing races during realtime updates.
     }
