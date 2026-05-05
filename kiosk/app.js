@@ -239,6 +239,7 @@ const pageTitle = document.getElementById('page-title');
 const navLogs = document.getElementById('nav-logs');
 const navUsers = document.getElementById('nav-users');
 const navClasses = document.getElementById('nav-classes');
+const navClassDisplay = document.getElementById('nav-class-display');
 const navOrders = document.getElementById('nav-orders');
 const navKioskSettings = document.getElementById('nav-kiosk-settings');
 const navDoor = document.getElementById('nav-door');
@@ -3402,6 +3403,7 @@ function login(user) {
         navLogs?.classList.add('hidden');
         navUsers?.classList.add('hidden');
         navClasses?.classList.add('hidden');
+        navClassDisplay?.classList.add('hidden');
         navKioskSettings?.classList.add('hidden');
         navDoor?.classList.add('hidden');
         navRequests?.classList.add('hidden');
@@ -3416,6 +3418,7 @@ function login(user) {
         navLogs?.classList.remove('hidden');
         navUsers?.classList.remove('hidden');
         navClasses?.classList.remove('hidden');
+        navClassDisplay?.classList.remove('hidden');
         navKioskSettings?.classList.remove('hidden');
         navDoor?.classList.remove('hidden');
         navRequests?.classList.add('hidden');
