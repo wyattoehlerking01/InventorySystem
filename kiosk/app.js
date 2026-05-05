@@ -2501,6 +2501,18 @@ function renderDoorPage() {
         await refreshStatus();
     };
 
+    // Wire up door page tab controls (if present)
+    const controlTabBtn = document.getElementById('door-control-tab-btn');
+    const eventsTabBtn = document.getElementById('door-events-tab-btn');
+    const eventsRefreshBtn = document.getElementById('door-events-refresh-btn');
+
+    if (controlTabBtn) controlTabBtn.onclick = () => setDoorPageTab('control');
+    if (eventsTabBtn) eventsTabBtn.onclick = () => setDoorPageTab('events');
+    if (eventsRefreshBtn) eventsRefreshBtn.onclick = () => { void renderDoorSensorEvents(); };
+
+    // Default to control tab when opening door page
+    setDoorPageTab('control');
+
     if (window.__doorStatusPollTimer) {
         clearInterval(window.__doorStatusPollTimer);
     }
@@ -2510,6 +2522,105 @@ function renderDoorPage() {
 
     void refreshStatus();
 }
+
+// Door page tab state and events listing
+let doorPageActiveTab = 'control';
+
+async function renderDoorSensorEvents() {
+    const tableBody = document.getElementById('door-events-table-body');
+    const summary = document.getElementById('door-events-summary');
+    if (!tableBody || !summary) return;
+
+    try {
+        const client = requireSupabaseClient('renderDoorSensorEvents');
+        let query = client
+            .from('door_sensor_events')
+            .select('id, kiosk_id, sensor_id, local_seq, event_type, event_ts, source, unlock_job_id, actor_user_id, metadata, created_at')
+            .in('event_type', ['open', 'close'])
+            .order('event_ts', { ascending: false })
+            .order('local_seq', { ascending: false })
+            .limit(200);
+
+        if (kioskId) query = query.eq('kiosk_id', kioskId);
+
+        const { data, error } = await query;
+        if (error) {
+            console.warn('Error loading door sensor events:', error);
+            summary.textContent = 'Failed to load door sensor events.';
+            tableBody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">Unable to load events.</td></tr>';
+            return;
+        }
+
+        const events = Array.isArray(data) ? data : [];
+        const kioskLabel = kioskId ? ` for kiosk ${kioskId}` : '';
+        summary.textContent = `${events.length} open/close record${events.length === 1 ? '' : 's'} loaded${kioskLabel}.`;
+
+        if (events.length === 0) {
+            tableBody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No door open/close records found.</td></tr>';
+            return;
+        }
+
+        tableBody.innerHTML = events.map(eventRow => {
+            const eventType = String(eventRow.event_type || '').toLowerCase();
+            const eventLabel = eventType === 'open' ? 'Door Open' : 'Door Close';
+            const sensorLabel = escapeHtml(String(eventRow.sensor_id || 'door-1'));
+            const actorLabel = escapeHtml(String(eventRow.actor_user_id || 'SYSTEM'));
+            const sourceLabel = escapeHtml(String(eventRow.source || 'pi-agent'));
+            const ts = eventRow.event_ts || eventRow.created_at || null;
+            const timeText = ts ? new Date(ts).toLocaleString() : 'Unknown';
+            const details = [];
+            if (eventRow.unlock_job_id) details.push(`Unlock Job ${escapeHtml(String(eventRow.unlock_job_id))}`);
+            if (eventRow.local_seq) details.push(`Seq ${escapeHtml(String(eventRow.local_seq))}`);
+            if (eventRow.metadata && typeof eventRow.metadata === 'object' && Object.keys(eventRow.metadata).length > 0) details.push(`Metadata ${escapeHtml(JSON.stringify(eventRow.metadata))}`);
+
+            return `
+                <tr>
+                    <td class="text-muted"><small>${escapeHtml(timeText)}</small></td>
+                    <td><strong>${escapeHtml(eventLabel)}</strong></td>
+                    <td>${sensorLabel}</td>
+                    <td>${actorLabel}</td>
+                    <td>${sourceLabel}</td>
+                    <td>${escapeHtml(details.join(' • ') || 'No additional details')}</td>
+                </tr>
+            `;
+        }).join('');
+
+    } catch (err) {
+        console.warn('Failed to load door sensor events:', err);
+        const tableBody = document.getElementById('door-events-table-body');
+        const summary = document.getElementById('door-events-summary');
+        if (summary) summary.textContent = 'Failed to load door sensor events.';
+        if (tableBody) tableBody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">Unable to load events.</td></tr>';
+    }
+}
+
+function setDoorPageTab(nextTab = 'control') {
+    doorPageActiveTab = nextTab === 'events' ? 'events' : 'control';
+
+    const isEventsTab = doorPageActiveTab === 'events';
+    const controlPanel = document.getElementById('door-control-panel');
+    const eventsPanel = document.getElementById('door-events-panel');
+    const controlBtn = document.getElementById('door-control-tab-btn');
+    const eventsBtn = document.getElementById('door-events-tab-btn');
+
+    if (controlPanel) controlPanel.classList.toggle('hidden', isEventsTab);
+    if (eventsPanel) eventsPanel.classList.toggle('hidden', !isEventsTab);
+
+    if (controlBtn) {
+        controlBtn.classList.toggle('btn-primary', !isEventsTab);
+        controlBtn.classList.toggle('btn-secondary', isEventsTab);
+    }
+
+    if (eventsBtn) {
+        eventsBtn.classList.toggle('btn-primary', isEventsTab);
+        eventsBtn.classList.toggle('btn-secondary', !isEventsTab);
+    }
+
+    if (isEventsTab) {
+        void renderDoorSensorEvents();
+    }
+}
+
 
 function openCheckoutReviewModal() {
     if (inventoryBasket.length === 0) {

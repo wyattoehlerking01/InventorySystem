@@ -2663,20 +2663,26 @@ function renderDoorSensorEvents() {
     if (!doorEventsTableBody || !doorEventsSummary) return;
 
     const events = Array.isArray(doorSensorEvents)
-        ? doorSensorEvents.filter(event => ['open', 'close'].includes(String(event?.event_type || '').toLowerCase()))
+        ? doorSensorEvents
         : [];
 
     const kioskLabel = kioskId ? ` for kiosk ${kioskId}` : '';
-    doorEventsSummary.textContent = `${events.length} open/close record${events.length === 1 ? '' : 's'} loaded${kioskLabel}.`;
+    doorEventsSummary.textContent = `${events.length} event record${events.length === 1 ? '' : 's'} loaded${kioskLabel}.`;
 
     if (events.length === 0) {
-        doorEventsTableBody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No door open/close records found.</td></tr>';
+        doorEventsTableBody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No door sensor events found.</td></tr>';
         return;
     }
 
     doorEventsTableBody.innerHTML = events.map(eventRow => {
         const eventType = String(eventRow.event_type || '').toLowerCase();
-        const eventLabel = eventType === 'open' ? 'Door Open' : 'Door Close';
+        const eventLabels = {
+            open: 'Door Open',
+            close: 'Door Close',
+            heartbeat: 'Heartbeat',
+            fault: 'Fault'
+        };
+        const eventLabel = eventLabels[eventType] || `Event: ${eventType || 'unknown'}`;
         const sensorLabel = escapeHtml(String(eventRow.sensor_id || 'door-1'));
         const actorLabel = escapeHtml(String(eventRow.actor_user_id || 'SYSTEM'));
         const sourceLabel = escapeHtml(String(eventRow.source || 'pi-agent'));

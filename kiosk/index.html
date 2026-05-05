@@ -638,10 +638,14 @@
                 </div>
 
                 <div id="page-door" class="page hidden">
-                    <div class="action-bar" style="gap: 1rem; margin-bottom: 1.5rem; align-items: center;">
+                    <div class="action-bar" style="gap: 1rem; margin-bottom: 1.5rem; align-items: center; flex-wrap:wrap;">
                         <h3 style="margin: 0; flex: 1;"><i class="ph ph-door-open"></i> Door Control</h3>
+                        <div style="display:flex;gap:0.5rem;align-items:center;">
+                            <button class="btn btn-primary" id="door-control-tab-btn" data-door-tab="control">Control</button>
+                            <button class="btn btn-secondary" id="door-events-tab-btn" data-door-tab="events">Sensor Log</button>
+                        </div>
                     </div>
-                    <div class="glass-panel" style="padding: 1.5rem; max-width: 700px;">
+                    <div id="door-control-panel" class="glass-panel" style="padding: 1.5rem; max-width: 700px;">
                         <p class="text-muted" id="door-status-text" style="margin-bottom: 1rem;">Checking door status...</p>
                         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.75rem;">
                             <button class="btn btn-secondary" id="door-normal-btn"><i class="ph ph-lock"></i> Normal Operation</button>
@@ -656,6 +660,33 @@
                             <button class="btn btn-secondary" id="door-calling-save-btn"><i class="ph ph-floppy-disk"></i> Save Door Setting</button>
                         </div>
                         <small class="text-muted" style="display:block;margin-top:0.75rem;">Normal Operation keeps the door closed/secured except during standard user unlock events. Hold Open keeps it unlocked until switched back (or safety timeout on hardware service).</small>
+                    </div>
+                    
+                    <div id="door-events-panel" class="hidden" style="margin-top: 1rem;">
+                        <div class="action-bar" style="gap:1rem;align-items:flex-start;margin-bottom:1rem;flex-wrap:wrap;">
+                            <div>
+                                <h3 style="margin:0;">Door Sensor Events</h3>
+                                <p class="text-muted" id="door-events-summary" style="margin:0.35rem 0 0;">Loading door sensor events...</p>
+                            </div>
+                            <button class="btn btn-secondary" id="door-events-refresh-btn"><i class="ph ph-arrow-clockwise"></i> Refresh</button>
+                        </div>
+                        <div class="table-container glass-panel">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>Timestamp</th>
+                                        <th>Event</th>
+                                        <th>Sensor</th>
+                                        <th>Actor</th>
+                                        <th>Source</th>
+                                        <th>Details</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="door-events-table-body">
+                                    <!-- Injected via JS -->
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                 </div>
             </div>

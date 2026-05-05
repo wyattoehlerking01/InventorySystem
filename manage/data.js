@@ -825,7 +825,6 @@ async function loadDoorSensorEvents() {
     let query = dbClient
         .from('door_sensor_events')
         .select('id, kiosk_id, sensor_id, local_seq, event_type, event_ts, source, unlock_job_id, actor_user_id, metadata, created_at')
-        .in('event_type', ['open', 'close'])
         .order('event_ts', { ascending: false })
         .order('local_seq', { ascending: false });
 
