@@ -6788,7 +6788,7 @@ async function openSignOutModal(itemId) {
     }
 
     if (currentUser.role !== 'student') {
-        const staffProjects = projects.filter(p => (p.ownerId === currentUser.id || p.collaborators.includes(currentUser.id)) && !String(p.id || '').startsWith('PERS-'));
+        const staffProjects = projects.filter(p => (p.ownerId === currentUser.id || (Array.isArray(p.collaborators) && p.collaborators.includes(currentUser.id))) && !String(p.id || '').startsWith('PERS-'));
         const staffClasses = getManagedClassesForCheckout();
         const defaultDestinationMode = staffProjects.length > 0
             ? 'project'
@@ -7319,7 +7319,7 @@ async function openSignOutModal(itemId) {
     }
 
     // Only show active projects where current user is owner or collaborator
-    const myProjects = projects.filter(p => (p.ownerId === currentUser.id || p.collaborators.includes(currentUser.id)) && !String(p.id || '').startsWith('PERS-'));
+    const myProjects = projects.filter(p => (p.ownerId === currentUser.id || (Array.isArray(p.collaborators) && p.collaborators.includes(currentUser.id))) && !String(p.id || '').startsWith('PERS-'));
 
     const personalOption = `<option value="personal">My Items (Personal)</option>`;
     const projectsOptions = personalOption + myProjects.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join('');
@@ -9103,6 +9103,81 @@ document.getElementById('add-user-btn')?.addEventListener('click', async () => {
     openUserModal();
 });
 
+async function openSendMessageModal() {
+    if (!currentUser || !userCanPerformPrivilegedActions()) {
+        showToast('Only teacher/developer accounts can send messages.', 'error');
+        return;
+    }
+
+    const targetUserId = String(document.getElementById('message-target-id')?.value || '').trim();
+    const html = `
+        <div class="modal-header">
+            <h3>Send Message</h3>
+            <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
+        </div>
+        <div class="modal-body">
+            <div class="form-group">
+                <label>Target User ID</label>
+                <input id="send-message-target-user-id" class="form-control" value="${escapeHtml(targetUserId)}" placeholder="Student user id">
+            </div>
+            <div class="form-group">
+                <label>Subject</label>
+                <input id="send-message-subject" class="form-control" placeholder="Optional subject">
+            </div>
+            <div class="form-group">
+                <label>Message</label>
+                <textarea id="send-message-body" class="form-control" rows="5" placeholder="Write your message here..."></textarea>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            <button class="btn btn-primary" id="confirm-send-message">Send Message</button>
+        </div>
+    `;
+
+    openModal(html);
+
+    document.getElementById('confirm-send-message')?.addEventListener('click', async () => {
+        const resolvedTargetUserId = String(document.getElementById('send-message-target-user-id')?.value || '').trim();
+        const subject = String(document.getElementById('send-message-subject')?.value || '').trim();
+        const body = String(document.getElementById('send-message-body')?.value || '').trim();
+        const targetUser = mockUsers.find(user => String(user.id) === resolvedTargetUserId);
+
+        if (!resolvedTargetUserId) {
+            showToast('Target user id is required.', 'error');
+            return;
+        }
+
+        if (!body) {
+            showToast('Message text is required.', 'error');
+            return;
+        }
+
+        const sendResult = await addStudentMessage({
+            sender_id: currentUser.id,
+            target_user_id: resolvedTargetUserId,
+            subject: subject || null,
+            body
+        });
+
+        if (!sendResult || sendResult.error) {
+            const errorDetail = sendResult?.error?.message || sendResult?.error || 'Unknown error';
+            console.error('Failed to send student message:', sendResult?.error || sendResult);
+            showToast(`Failed to send message. ${errorDetail}`, 'error');
+            return;
+        }
+
+        document.getElementById('message-target-id').value = resolvedTargetUserId;
+        addLog(currentUser.id, 'Send Student Message', `Sent message to ${targetUser?.name || resolvedTargetUserId}.`);
+        showToast(`Message sent to ${targetUser?.name || resolvedTargetUserId}.`, 'success');
+        closeModal();
+    });
+}
+
+document.getElementById('send-message-btn')?.addEventListener('click', async () => {
+    await openSendMessageModal();
+});
+
 document.getElementById('bulk-import-users-btn')?.addEventListener('click', async () => {
     if (currentUser?.role === 'student') {
         showToast('You do not have permission to manage users.', 'error');
@@ -9774,8 +9849,14 @@ function sanitizeModalHtml(contentHtml) {
 }
 
 function showToast(message, type = 'success') {
+    const normalizedMessage = String(message || '');
+    const toastKey = `${type}::${normalizedMessage}`;
+    const existingToast = Array.from(toastContainer.children).find(toast => toast.dataset.toastKey === toastKey);
+    if (existingToast) return existingToast;
+
     const toast = document.createElement('div');
     toast.className = `toast toast-${type}`;
+    toast.dataset.toastKey = toastKey;
 
     const icon = type === 'success' ? 'ph-check-circle' : type === 'error' ? 'ph-warning-circle' : 'ph-info';
 

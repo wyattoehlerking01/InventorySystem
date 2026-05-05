@@ -4316,6 +4316,102 @@ function loadDashboard() {
             });
         }
 
+        const messagesWidget = document.getElementById('dashboard-messages');
+        const unreadBadge = document.getElementById('dashboard-messages-unread');
+        const markReadBtn = document.getElementById('mark-messages-read-btn');
+
+        const renderStudentMessages = async () => {
+            if (!messagesWidget) return;
+
+            const messages = await loadStudentMessages(currentUser.id);
+            const unreadMessages = messages.filter(message => !message.read_at);
+
+            if (unreadBadge) {
+                if (unreadMessages.length > 0) {
+                    unreadBadge.style.display = '';
+                    unreadBadge.textContent = String(unreadMessages.length);
+                } else {
+                    unreadBadge.style.display = 'none';
+                }
+            }
+
+            messagesWidget.replaceChildren();
+            if (messages.length === 0) {
+                const emptyState = document.createElement('div');
+                emptyState.className = 'empty-state';
+                const icon = document.createElement('i');
+                icon.className = 'ph ph-envelope-open';
+                const title = document.createElement('h4');
+                title.textContent = 'No messages';
+                const text = document.createElement('p');
+                text.textContent = 'Teachers can send messages here.';
+                emptyState.appendChild(icon);
+                emptyState.appendChild(title);
+                emptyState.appendChild(text);
+                messagesWidget.appendChild(emptyState);
+                return;
+            }
+
+            messages.slice(0, 8).forEach(message => {
+                const card = document.createElement('div');
+                card.className = 'glass-panel';
+                card.style.cssText = 'padding:0.85rem;margin-bottom:0.65rem;border-radius:var(--radius-sm);';
+
+                const header = document.createElement('div');
+                header.style.cssText = 'display:flex;justify-content:space-between;gap:0.75rem;align-items:flex-start;';
+
+                const left = document.createElement('div');
+                const subject = document.createElement('div');
+                subject.className = 'font-bold';
+                subject.textContent = message.subject || 'Message';
+                const meta = document.createElement('small');
+                meta.className = 'text-muted';
+                meta.textContent = `From: ${message.sender_id || 'Unknown'} · ${message.created_at ? new Date(message.created_at).toLocaleString() : 'Unknown time'}`;
+                left.appendChild(subject);
+                left.appendChild(meta);
+
+                const status = document.createElement('span');
+                status.className = 'badge';
+                status.style.cssText = message.read_at
+                    ? 'background:rgba(34,197,94,0.15);color:var(--success);'
+                    : 'background:rgba(245,158,11,0.18);color:var(--warning);';
+                status.textContent = message.read_at ? 'Read' : 'Unread';
+
+                header.appendChild(left);
+                header.appendChild(status);
+
+                const body = document.createElement('div');
+                body.style.cssText = 'margin-top:0.6rem;white-space:pre-wrap;';
+                body.textContent = message.body || '';
+
+                card.appendChild(header);
+                card.appendChild(body);
+                messagesWidget.appendChild(card);
+            });
+        };
+
+        markReadBtn.onclick = async () => {
+            const messages = await loadStudentMessages(currentUser.id);
+            const unreadIds = messages.filter(message => !message.read_at).map(message => message.id).filter(Boolean);
+            if (unreadIds.length === 0) {
+                showToast('No unread messages to mark as read.', 'warning');
+                return;
+            }
+
+            const updated = await markStudentMessagesRead(currentUser.id, unreadIds);
+            if (!updated) {
+                showToast('Failed to update message read state.', 'error');
+                return;
+            }
+
+            await renderStudentMessages();
+            showToast('Messages marked as read.', 'success');
+        };
+
+        renderStudentMessages().catch(error => {
+            console.warn('Failed to render student messages:', error);
+        });
+
         wireDashboardProjectSummaryActions(document);
 
     } else {
@@ -6252,7 +6348,7 @@ async function openSignOutModal(itemId) {
     }
 
     if (currentUser.role !== 'student') {
-        const staffProjects = projects.filter(p => (p.ownerId === currentUser.id || p.collaborators.includes(currentUser.id)) && !String(p.id || '').startsWith('PERS-'));
+        const staffProjects = projects.filter(p => (p.ownerId === currentUser.id || (Array.isArray(p.collaborators) && p.collaborators.includes(currentUser.id))) && !String(p.id || '').startsWith('PERS-'));
         const staffClasses = getManagedClassesForCheckout();
         const defaultDestinationMode = staffProjects.length > 0
             ? 'project'
@@ -6745,7 +6841,7 @@ async function openSignOutModal(itemId) {
     }
 
     // Only show active projects where current user is owner or collaborator
-    const myProjects = projects.filter(p => (p.ownerId === currentUser.id || p.collaborators.includes(currentUser.id)) && !String(p.id || '').startsWith('PERS-'));
+    const myProjects = projects.filter(p => (p.ownerId === currentUser.id || (Array.isArray(p.collaborators) && p.collaborators.includes(currentUser.id))) && !String(p.id || '').startsWith('PERS-'));
 
     const personalOption = `<option value="personal">My Items (Personal)</option>`;
     const projectsOptions = personalOption + myProjects.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join('');
@@ -8782,8 +8878,14 @@ function sanitizeModalHtml(contentHtml) {
 }
 
 function showToast(message, type = 'success') {
+    const normalizedMessage = String(message || '');
+    const toastKey = `${type}::${normalizedMessage}`;
+    const existingToast = Array.from(toastContainer.children).find(toast => toast.dataset.toastKey === toastKey);
+    if (existingToast) return existingToast;
+
     const toast = document.createElement('div');
     toast.className = `toast toast-${type}`;
+    toast.dataset.toastKey = toastKey;
 
     const icon = type === 'success' ? 'ph-check-circle' : type === 'error' ? 'ph-warning-circle' : 'ph-info';
 
