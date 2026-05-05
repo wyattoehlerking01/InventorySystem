@@ -2486,12 +2486,27 @@ function getLedAttentionEndpointUrl() {
     }
 }
 
-async function triggerDoorAttentionLed() {
+async function triggerDoorAttentionLed(options = {}) {
     const endpoint = getLedAttentionEndpointUrl();
     if (!endpoint) return false;
 
     try {
-        await fetch(endpoint, {
+        let url = endpoint;
+
+        // Append unlock job and actor id when provided
+        if (options && (options.unlockJobId || options.actorUserId)) {
+            try {
+                const urlObj = new URL(endpoint);
+                if (options.unlockJobId) urlObj.searchParams.append('unlockJobId', String(options.unlockJobId));
+                if (options.actorUserId) urlObj.searchParams.append('actorUserId', String(options.actorUserId));
+                url = urlObj.toString();
+            } catch (__) {
+                // if URL parsing fails, continue with original endpoint
+                url = endpoint;
+            }
+        }
+
+        await fetch(url, {
             method: 'GET',
             mode: 'no-cors',
             cache: 'no-store',
@@ -2536,7 +2551,24 @@ async function triggerSignInAttentionIfEnabled(user) {
 
     const actorId = user?.id || 'SYSTEM';
     const actorRole = user?.role || 'system';
-    const blinked = await triggerDoorAttentionLed();
+    let unlockJobId = null;
+
+    // Try to enqueue a sign-in door unlock job to provide context to the Pi
+    try {
+        const jobRow = await enqueueDoorUnlockJob({
+            actionType: 'sign-in',
+            item: null,
+            quantity: 1,
+            projectName: null,
+            actorId: actorId
+        });
+        unlockJobId = jobRow?.id || null;
+    } catch (enqueueError) {
+        console.warn('Failed to enqueue sign-in door unlock job:', enqueueError);
+        addLog(actorId, 'Door Unlock Queue Failed', `Failed to enqueue sign-in job: ${String(enqueueError?.message || enqueueError)}`);
+    }
+
+    const blinked = await triggerDoorAttentionLed({ unlockJobId, actorUserId: actorId });
 
     if (blinked) {
         addLog(actorId, 'Door Attention', `Auto attention triggered on sign-in for ${actorId} [role=${actorRole}].`);
@@ -2557,7 +2589,22 @@ async function requestDoorUnlockAndLogAccess({ actionType, item, quantity = 1, p
         return true;
     }
 
-    const blinked = await triggerDoorAttentionLed();
+    let unlockJobId = null;
+    try {
+        const jobRow = await enqueueDoorUnlockJob({
+            actionType: actionType,
+            item: item,
+            quantity: quantity,
+            projectName: projectName,
+            actorId: actorId
+        });
+        unlockJobId = jobRow?.id || null;
+    } catch (enqueueError) {
+        console.warn('Failed to enqueue door unlock job:', enqueueError);
+        addLog(actorId, 'Door Unlock Queue Failed', `Failed to enqueue ${actionType} job: ${String(enqueueError?.message || enqueueError)}`);
+    }
+
+    const blinked = await triggerDoorAttentionLed({ unlockJobId, actorUserId: actorId });
     if (blinked) {
         addLog(actorId, 'Door Attention', `LED attention triggered for ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName} [role=${actorRole}].`);
         return true;
@@ -2577,7 +2624,22 @@ async function requestManualDoorUnlockAndLogAccess(reason = 'manual door control
     const actorId = currentUser?.id || 'SYSTEM';
     const actorRole = currentUser?.role || 'system';
 
-    const blinked = await triggerDoorAttentionLed();
+    let unlockJobId = null;
+    try {
+        const jobRow = await enqueueDoorUnlockJob({
+            actionType: 'manual-unlock',
+            item: null,
+            quantity: 1,
+            projectName: null,
+            actorId: actorId
+        });
+        unlockJobId = jobRow?.id || null;
+    } catch (enqueueError) {
+        console.warn('Failed to enqueue manual unlock door job:', enqueueError);
+        addLog(actorId, 'Door Unlock Queue Failed', `Failed to enqueue manual-unlock job: ${String(enqueueError?.message || enqueueError)}`);
+    }
+
+    const blinked = await triggerDoorAttentionLed({ unlockJobId, actorUserId: actorId });
     if (blinked) {
         addLog(actorId, 'Door Attention', `Manual attention trigger by ${actorId} [role=${actorRole}] (${reason}).`);
     } else {
@@ -2591,7 +2653,22 @@ async function requestDoorHoldOpenAndLogAccess(reason = 'manual door hold-open')
     const actorId = currentUser?.id || 'SYSTEM';
     const actorRole = currentUser?.role || 'system';
 
-    const blinked = await triggerDoorAttentionLed();
+    let unlockJobId = null;
+    try {
+        const jobRow = await enqueueDoorUnlockJob({
+            actionType: 'hold-open',
+            item: null,
+            quantity: 1,
+            projectName: null,
+            actorId: actorId
+        });
+        unlockJobId = jobRow?.id || null;
+    } catch (enqueueError) {
+        console.warn('Failed to enqueue hold-open door job:', enqueueError);
+        addLog(actorId, 'Door Unlock Queue Failed', `Failed to enqueue hold-open job: ${String(enqueueError?.message || enqueueError)}`);
+    }
+
+    const blinked = await triggerDoorAttentionLed({ unlockJobId, actorUserId: actorId });
     addLog(actorId, 'Door Hold Open', `LED-only attention mode used for hold-open request by ${actorId} [role=${actorRole}] (${reason}).`);
     showToast('LED-only mode active. Door trigger sent.', blinked ? 'success' : 'warning');
     return true;
@@ -2601,7 +2678,22 @@ async function requestDoorReleaseAndLogAccess(reason = 'manual door release') {
     const actorId = currentUser?.id || 'SYSTEM';
     const actorRole = currentUser?.role || 'system';
 
-    const blinked = await triggerDoorAttentionLed();
+    let unlockJobId = null;
+    try {
+        const jobRow = await enqueueDoorUnlockJob({
+            actionType: 'release',
+            item: null,
+            quantity: 1,
+            projectName: null,
+            actorId: actorId
+        });
+        unlockJobId = jobRow?.id || null;
+    } catch (enqueueError) {
+        console.warn('Failed to enqueue release door job:', enqueueError);
+        addLog(actorId, 'Door Unlock Queue Failed', `Failed to enqueue release job: ${String(enqueueError?.message || enqueueError)}`);
+    }
+
+    const blinked = await triggerDoorAttentionLed({ unlockJobId, actorUserId: actorId });
     addLog(actorId, 'Door Release', `LED-only attention mode used for door release request by ${actorId} [role=${actorRole}] (${reason}).`);
     showToast('LED-only mode active. Door trigger sent.', blinked ? 'success' : 'warning');
     return true;
@@ -3176,6 +3268,54 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
     }
 
+    // Attempt to restore a reload-only session from sessionStorage
+    async function tryRestoreSessionFromSessionStorage() {
+        try {
+            const stored = sessionStorage.getItem('manageSignedInUserIdV1');
+            if (!stored) return false;
+            if (currentUser) return false;
+
+            // Ensure core data (users) is loaded so we can resolve the identity
+            if (typeof loadAllData === 'function') {
+                try { await loadAllData(); } catch (e) { console.warn('loadAllData failed during session restore', e); }
+            }
+
+            let user = (mockUsers || []).find(u => String(u.id) === String(stored));
+            if (!user && typeof fetchUserByIdFromSupabase === 'function') {
+                try { user = await fetchUserByIdFromSupabase(stored); } catch (e) { console.warn('fetchUserByIdFromSupabase failed during restore', e); }
+            }
+
+            if (!user) {
+                try { sessionStorage.removeItem('manageSignedInUserIdV1'); } catch (e) {}
+                return false;
+            }
+
+            if (user.status === 'Suspended' && !isSuspensionBypassedUser(user)) {
+                try { sessionStorage.removeItem('manageSignedInUserIdV1'); } catch (e) {}
+                return false;
+            }
+
+            try {
+                // Restore without generating login analytics/log entries
+                login(user, { suppressTracking: true });
+
+                // Refresh key UI data after restore
+                if (typeof refreshProjectsFromSupabase === 'function') await refreshProjectsFromSupabase();
+                if (typeof refreshInventoryFromSupabase === 'function') await refreshInventoryFromSupabase();
+            } catch (e) {
+                console.warn('Session restore failed', e);
+                try { sessionStorage.removeItem('manageSignedInUserIdV1'); } catch (err) {}
+                return false;
+            }
+
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    await tryRestoreSessionFromSessionStorage();
+
     // Load all data from Supabase tables before initializing the app
     try {
         await loadAllData();
@@ -3734,17 +3874,19 @@ function setProfilePrivilegedActionState(isEnabled) {
     }
 }
 
-function login(user) {
+function login(user, options = {}) {
     currentUser = user;
     privilegedSessionAuthenticated = false;
     privilegedStartupAuditShown = false;
     getOrCreatePersonalProject(user.id);
-    _trackLogin();
+    if (!options?.suppressTracking) _trackLogin();
     startCountdown();
     
-    // Log the login event
-    addLog(user.id, 'User Login', `${user.name} (${user.role}) logged in`);
-    void triggerSignInAttentionIfEnabled(user);
+    // Log the login event (skip when restoring session)
+    if (!options?.suppressTracking) {
+        addLog(user.id, 'User Login', `${user.name} (${user.role}) logged in`);
+        void triggerSignInAttentionIfEnabled(user);
+    }
 
     // Update Profile UI
     const profileAvatar = document.getElementById('user-avatar');
@@ -3831,6 +3973,13 @@ function login(user) {
 
     showToast(`Welcome, ${user.name}`);
 
+    // Persist minimal session marker for reload-only restore
+    try {
+        sessionStorage.setItem('manageSignedInUserIdV1', String(user.id));
+    } catch (e) {
+        // Ignore storage failures
+    }
+
     // Switch Views
     loginView.classList.remove('active');
     setTimeout(() => {
@@ -3884,6 +4033,11 @@ function logout(message = 'Logged out successfully') {
         }, 50);
     }, 300);
     showToast(message);
+    try {
+        sessionStorage.removeItem('manageSignedInUserIdV1');
+    } catch (e) {
+        // ignore
+    }
 }
 
 function returnToLoginView(options = {}) {
@@ -3922,6 +4076,11 @@ function returnToLoginView(options = {}) {
             else barcodeInput?.focus();
         }, 50);
     }, 300);
+    try {
+        sessionStorage.removeItem('manageSignedInUserIdV1');
+    } catch (e) {
+        // ignore
+    }
 
     if (showMessage) showToast(message);
 }
