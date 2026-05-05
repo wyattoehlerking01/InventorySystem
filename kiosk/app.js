@@ -240,6 +240,7 @@ const navLogs = document.getElementById('nav-logs');
 const navUsers = document.getElementById('nav-users');
 const navClasses = document.getElementById('nav-classes');
 const navOrders = document.getElementById('nav-orders');
+const navKioskSettings = document.getElementById('nav-kiosk-settings');
 const navDoor = document.getElementById('nav-door');
 
 // DOM Elements - Pages
@@ -3384,18 +3385,10 @@ function login(user) {
     userNameEl.textContent = user.name;
     userRoleEl.textContent = user.role;
 
-    // Student Class Visibility
+    // Student Class Visibility — hide class names for students
     const userClassEl = document.getElementById('user-class');
-    if (user.role === 'student') {
-        const userClasses = getStudentClassesForUser(user.id);
-        if (userClassEl) {
-            userClassEl.textContent = userClasses.length > 0
-                ? userClasses.map(c => c.name).join(', ')
-                : 'No Class Assigned';
-            userClassEl.classList.remove('hidden');
-        }
-    } else {
-        if (userClassEl) userClassEl.classList.add('hidden');
+    if (userClassEl) {
+        userClassEl.classList.add('hidden');
     }
 
     // Set role badge color
@@ -3406,10 +3399,10 @@ function login(user) {
     // Access Control & Permission Enforcement
     const navRequests = document.getElementById('nav-requests');
     if (user.role === 'student') {
-        // Keep activity log visible in kiosk mode for students
-        navLogs?.classList.remove('hidden');
+        navLogs?.classList.add('hidden');
         navUsers?.classList.add('hidden');
         navClasses?.classList.add('hidden');
+        navKioskSettings?.classList.add('hidden');
         navDoor?.classList.add('hidden');
         navRequests?.classList.add('hidden');
         applyOrdersNavVisibility();
@@ -3423,6 +3416,7 @@ function login(user) {
         navLogs?.classList.remove('hidden');
         navUsers?.classList.remove('hidden');
         navClasses?.classList.remove('hidden');
+        navKioskSettings?.classList.remove('hidden');
         navDoor?.classList.remove('hidden');
         navRequests?.classList.add('hidden');
         applyOrdersNavVisibility();
@@ -3987,6 +3981,11 @@ async function refreshPageDataFromSupabase(targetId) {
 async function switchPage(targetId, title) {
     if (targetId === 'orders' || targetId === 'logs') {
         showToast('This page is not available in kiosk mode.', 'error');
+        return;
+    }
+
+    if (targetId === 'kiosk-settings' && currentUser?.role === 'student') {
+        showToast('You do not have access to that page.', 'error');
         return;
     }
 
@@ -11515,6 +11514,8 @@ async function runNetworkPing(url = 'https://www.gstatic.com/generate_204') {
 
 // ── Main debug modal ──────────────────────────────────────────────────
 function openDebugMenu(initialTab = 'system') {
+    const canViewDebugSettings = !currentUser || currentUser.role !== 'student';
+    const safeInitialTab = initialTab === 'settings' && !canViewDebugSettings ? 'system' : initialTab;
     const html = `
         <div class="modal-header debug-modal-header">
             <div style="display:flex;align-items:center;gap:0.6rem">
@@ -11529,7 +11530,7 @@ function openDebugMenu(initialTab = 'system') {
             <button class="debug-tab" data-dtab="console"><i class="ph ph-terminal"></i> Console</button>
             <button class="debug-tab" data-dtab="session"><i class="ph ph-user-gear"></i> Session</button>
             <button class="debug-tab" data-dtab="stats"><i class="ph ph-chart-bar"></i> Stats</button>
-            <button class="debug-tab" data-dtab="settings"><i class="ph ph-sliders"></i> Settings</button>
+            ${canViewDebugSettings ? '<button class="debug-tab" data-dtab="settings"><i class="ph ph-sliders"></i> Settings</button>' : ''}
         </div>
         <div class="debug-modal-body" id="debug-tab-content"></div>
     `;
@@ -11542,12 +11543,16 @@ function openDebugMenu(initialTab = 'system') {
             renderDebugTab(tab.dataset.dtab);
         });
     });
-    renderDebugTab(initialTab);
+    renderDebugTab(safeInitialTab);
 }
 
 function renderDebugTab(tab) {
     const el = document.getElementById('debug-tab-content');
     if (!el) return;
+    if (tab === 'settings' && currentUser?.role === 'student') {
+        renderDebugSystem(el);
+        return;
+    }
     switch (tab) {
         case 'system':   renderDebugSystem(el);   break;
         case 'console':  renderDebugConsole(el);  break;
