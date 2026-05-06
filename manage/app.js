@@ -993,6 +993,12 @@ function getDoorEndpointUrl(path) {
     return `${baseUrl}${normalizedPath}`;
 }
 
+function getDoorHoldOpenEndpointUrl() {
+    const explicitUrl = String(window.APP_ENV?.DOOR_HOLD_OPEN_URL ?? envConfig.DOOR_HOLD_OPEN_URL ?? '').trim();
+    if (explicitUrl) return explicitUrl;
+    return 'http://0.0.0.0:8090/holdopen';
+}
+
 function getSupabaseDoorPingUrl() {
     const url = String(window.APP_ENV?.SUPABASE_URL ?? envConfig.SUPABASE_URL ?? '').trim();
     if (!isSafeHttpUrl(url)) return null;
@@ -2675,7 +2681,7 @@ async function requestDoorHoldOpenAndLogAccess(reason = 'manual door hold-open')
     let sent = false;
     let httpErr = null;
     try {
-        const endpoint = getDoorEndpointUrl('/holdopen') || `${location.protocol}//${location.hostname}:8080/holdopen`;
+        const endpoint = getDoorHoldOpenEndpointUrl();
         await fetch(endpoint, {
             method: 'POST',
             mode: 'no-cors',
