@@ -567,7 +567,21 @@ async function loadActivityLogs() {
             const doorActivities = doorSessions.map(s => {
                 const openedAt = s.opened_at ? new Date(s.opened_at) : null;
                 const closedAt = s.closed_at ? new Date(s.closed_at) : null;
-                const durMs = Number(s.duration_ms || 0);
+                let durMs = Number(s.duration_ms || 0) || 0;
+
+                // If duration not provided, calculate from timestamps. If closedAt missing, use now.
+                try {
+                    if (!durMs && openedAt) {
+                        if (closedAt) {
+                            durMs = Math.max(0, closedAt.getTime() - openedAt.getTime());
+                        } else {
+                            durMs = Math.max(0, Date.now() - openedAt.getTime());
+                        }
+                    }
+                } catch (e) {
+                    durMs = Number(s.duration_ms || 0) || 0;
+                }
+
                 const durSec = Math.max(0, Math.floor(durMs / 1000));
                 const durText = (() => {
                     if (durSec < 60) return `${durSec}s`;

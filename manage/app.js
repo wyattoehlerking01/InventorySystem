@@ -1796,7 +1796,7 @@ async function handleRemoteKioskSettingsChange(nextSettings = {}) {
         kioskLiveStatus.lastKnownLockState = remoteLocked;
         kioskLiveStatus.lastKnownLockScreen = remoteLockScreen;
         kioskLiveStatus.lastSyncAt = new Date().toISOString();
-        await applyKioskLock(remoteLocked, remoteLockScreen);
+        await applyKioskLock(remoteLocked, remoteLockScreen, { applyOverlay: false });
     }
 
     const nextRuntimeSettings = resolveKioskRuntimeSettings(nextSettings, kioskRuntimeSettings);
@@ -3253,7 +3253,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const organizationId = String(kioskSettings.organization_id || runtimeOrganizationId || '').trim();
     const verification = await verifyOrganizationLicense(organizationId);
     setRuntimeAppVersion(kioskSettings.app_version);
-    await applyKioskLock(!!kioskSettings.is_locked, kioskSettings.lock_screen || 'systemLocked');
+    await applyKioskLock(!!kioskSettings.is_locked, kioskSettings.lock_screen || 'systemLocked', { applyOverlay: false });
     startKioskVersionRealtimeListener(kioskId);
     await bootstrapDoorSensorState(kioskId);
     startDoorSensorRealtimeListener(kioskId);
@@ -11081,13 +11081,13 @@ function renderOrdersKioskMode(tbody) {
     });
 
     document.getElementById('hub-kiosk-lock')?.addEventListener('click', async () => {
-        await applyKioskLock(true, debugConfig.kioskLockScreen || 'systemLocked', { syncRemote: true });
+        await applyKioskLock(true, debugConfig.kioskLockScreen || 'systemLocked', { syncRemote: true, applyOverlay: false });
         addLog(currentUser.id, 'Kiosk Lock Change', 'Remote kiosk locked from Operations Hub.');
         renderOrders();
     });
 
     document.getElementById('hub-kiosk-unlock')?.addEventListener('click', async () => {
-        await applyKioskLock(false, debugConfig.kioskLockScreen || 'systemLocked', { syncRemote: true });
+        await applyKioskLock(false, debugConfig.kioskLockScreen || 'systemLocked', { syncRemote: true, applyOverlay: false });
         addLog(currentUser.id, 'Kiosk Lock Change', 'Remote kiosk unlocked from Operations Hub.');
         renderOrders();
     });
@@ -11097,10 +11097,10 @@ function renderOrdersKioskMode(tbody) {
             showToast('Unlock pulse is disabled by feature flags.', 'error');
             return;
         }
-        await applyKioskLock(false, debugConfig.kioskLockScreen || 'systemLocked', { syncRemote: true });
+        await applyKioskLock(false, debugConfig.kioskLockScreen || 'systemLocked', { syncRemote: true, applyOverlay: false });
         addLog(currentUser.id, 'Remote Unlock Pulse', 'Triggered kiosk unlock pulse for 20 seconds.');
         setTimeout(() => {
-            applyKioskLock(true, debugConfig.kioskLockScreen || 'systemLocked', { syncRemote: true });
+            applyKioskLock(true, debugConfig.kioskLockScreen || 'systemLocked', { syncRemote: true, applyOverlay: false });
         }, 20000);
         showToast('Unlock pulse triggered for 20 seconds.', 'success');
     });
@@ -11110,7 +11110,7 @@ function renderOrdersKioskMode(tbody) {
             showToast('Emergency lockout is disabled by feature flags.', 'error');
             return;
         }
-        await applyKioskLock(true, 'outOfOrder', { syncRemote: true });
+        await applyKioskLock(true, 'outOfOrder', { syncRemote: true, applyOverlay: false });
         await addSystemFlagToSupabase({
             id: generateId('FLAG'),
             flag_type: 'Emergency Lockout',
@@ -13074,7 +13074,7 @@ function openKioskLockPreview(startScreenKey = debugConfig.kioskLockScreen || 's
         const chosen = KIOSK_LOCK_SCREEN_ORDER[kioskPreviewState.activeIndex] || 'systemLocked';
         debugConfig.kioskLockScreen = chosen;
         closeKioskLockPreview();
-        await applyKioskLock(true, chosen, { syncRemote: true });
+        await applyKioskLock(true, chosen, { syncRemote: true, applyOverlay: false });
         showToast(`Kiosk locked: ${KIOSK_LOCK_SCREENS[chosen].label}.`, 'error');
         closeModal();
     });
@@ -13107,6 +13107,7 @@ function closeKioskLockPreview() {
 
 async function applyKioskLock(lock, screenKey = debugConfig.kioskLockScreen || 'systemLocked', options = {}) {
     const syncRemote = options.syncRemote === true;
+    const applyOverlay = options.applyOverlay !== false;
     const customDescription = String(options.customDescription || '').trim();
     debugConfig.kioskLocked = lock;
     debugConfig.kioskLockScreen = Object.keys(KIOSK_LOCK_SCREENS).includes(screenKey)
@@ -13129,23 +13130,27 @@ async function applyKioskLock(lock, screenKey = debugConfig.kioskLockScreen || '
         overlay.style.display = 'flex';
     };
 
-    if (lock) {
-        if (!overlay) {
-            overlay = document.createElement('div');
-            overlay.id = 'kiosk-lock-overlay';
-            document.body.appendChild(overlay);
-        }
+    if (applyOverlay) {
+        if (lock) {
+            if (!overlay) {
+                overlay = document.createElement('div');
+                overlay.id = 'kiosk-lock-overlay';
+                document.body.appendChild(overlay);
+            }
 
-        if (currentUser) {
-            returnToLoginView({ showMessage: false });
-            setTimeout(renderOverlay, 360);
-        } else {
-            loginHelpView.classList.remove('active');
-            loginHelpView.classList.add('hidden');
-            loginView.classList.remove('hidden');
-            loginView.classList.add('active');
-            barcodeInput.focus();
-            renderOverlay();
+            if (currentUser) {
+                returnToLoginView({ showMessage: false });
+                setTimeout(renderOverlay, 360);
+            } else {
+                loginHelpView.classList.remove('active');
+                loginHelpView.classList.add('hidden');
+                loginView.classList.remove('hidden');
+                loginView.classList.add('active');
+                barcodeInput.focus();
+                renderOverlay();
+            }
+        } else if (overlay) {
+            overlay.style.display = 'none';
         }
     } else if (overlay) {
         overlay.style.display = 'none';
@@ -13408,7 +13413,7 @@ function renderDebugSession(el) {
     document.getElementById('dbg-kiosk')?.addEventListener('click', async () => {
         const locking = !debugConfig.kioskLocked;
         const chosen = debugConfig.kioskLockScreen || 'systemLocked';
-        await applyKioskLock(locking, chosen, { syncRemote: true });
+        await applyKioskLock(locking, chosen, { syncRemote: true, applyOverlay: false });
         const screenName = getKioskLockScreen(chosen).label;
         showToast(locking ? `Kiosk locked: ${screenName}.` : 'Kiosk unlocked.', locking ? 'error' : 'success');
         if (locking) { closeModal(); } else { renderDebugTab('session'); }

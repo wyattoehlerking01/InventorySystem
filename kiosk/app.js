@@ -4319,6 +4319,7 @@ function loadDashboard() {
         }
 
         const messagesWidget = document.getElementById('dashboard-messages');
+        const messagesWidgetWrap = document.getElementById('dashboard-messages-widget');
         const unreadBadge = document.getElementById('dashboard-messages-unread');
         const markReadBtn = document.getElementById('mark-messages-read-btn');
 
@@ -4339,6 +4340,7 @@ function loadDashboard() {
 
             messagesWidget.replaceChildren();
             if (messages.length === 0) {
+                if (messagesWidgetWrap) messagesWidgetWrap.style.display = 'none';
                 const emptyState = document.createElement('div');
                 emptyState.className = 'empty-state';
                 const icon = document.createElement('i');
@@ -4353,6 +4355,8 @@ function loadDashboard() {
                 messagesWidget.appendChild(emptyState);
                 return;
             }
+
+            if (messagesWidgetWrap) messagesWidgetWrap.style.display = '';
 
             messages.slice(0, 8).forEach(message => {
                 const card = document.createElement('div');
@@ -7598,7 +7602,11 @@ function renderLogs() {
     const actionFilter = document.getElementById('logs-action-filter');
     const actorFilter = document.getElementById('logs-actor-filter');
     if (!tbody) return;
-    // Allow kiosk users (including students) to view activity logs in kiosk mode
+    // Restrict activity log in kiosk mode: only teachers and developers may view
+    if (currentUser?.role === 'student') {
+        tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">Access restricted to teachers and developers.</td></tr>';
+        return;
+    }
 
     if (actionFilter) {
         const previousValue = actionFilter.value || 'all';
@@ -11253,7 +11261,7 @@ let _dbgTapCount = 0, _dbgTapTimer = null;
 (function _createDebugTapZone() {
     const zone = document.createElement('div');
     zone.id = 'debug-tap-zone';
-    zone.style.cssText = 'position:fixed;bottom:0;left:0;width:64px;height:64px;z-index:950;-webkit-tap-highlight-color:transparent;user-select:none;pointer-events:all;';
+    zone.style.cssText = 'position:fixed;bottom:0;left:0;width:64px;height:64px;z-index:10110;-webkit-tap-highlight-color:transparent;user-select:none;pointer-events:all;';
     zone.addEventListener('click', () => {
         _dbgTapCount++;
         if (_dbgTapTimer) clearTimeout(_dbgTapTimer);
