@@ -994,7 +994,14 @@ function getDoorEndpointUrl(path) {
 }
 
 function getDoorHoldOpenEndpointUrl() {
-    return 'http://127.0.0.1:8090/holdopen';
+    const explicitUrl = String(window.APP_ENV?.DOOR_HOLD_OPEN_URL ?? envConfig.DOOR_HOLD_OPEN_URL ?? '').trim();
+    const finalUrl = explicitUrl || 'http://127.0.0.1:8090/holdopen';
+    console.log('[DOOR HOLD-OPEN] URL being used:', finalUrl, {
+        'window.APP_ENV.DOOR_HOLD_OPEN_URL': window.APP_ENV?.DOOR_HOLD_OPEN_URL,
+        'envConfig.DOOR_HOLD_OPEN_URL': envConfig.DOOR_HOLD_OPEN_URL,
+        'finalUrl': finalUrl
+    });
+    return finalUrl;
 }
 
 function getSupabaseDoorPingUrl() {
