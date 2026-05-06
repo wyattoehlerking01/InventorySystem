@@ -2359,10 +2359,12 @@ function itemRequiresDoorUnlock(item) {
 }
 
 async function requestDoorHoldOpenAndLogAccess(reason = 'manual door hold-open') {
+    if (window.__doorRequestRecentlyFired) { console.warn('Door request recently fired; ignoring duplicate.'); return false; }
+    window.__doorRequestRecentlyFired = true;
+    setTimeout(() => { window.__doorRequestRecentlyFired = false; }, 2000);
     const actorId = currentUser?.id || 'SYSTEM';
     const actorRole = currentUser?.role || 'system';
 
-    const blinked = await triggerDoorAttentionLed();
     addLog(actorId, 'Door Hold Open', `Hold-open requested by ${actorId} [role=${actorRole}] (${reason}).`);
 
     let sent = false;
@@ -2387,8 +2389,6 @@ async function requestDoorHoldOpenAndLogAccess(reason = 'manual door hold-open')
 
     if (sent) {
         showToast('Hold-open request sent to Pi.', 'success');
-    } else if (blinked) {
-        showToast('LED-only mode active. Door trigger sent.', 'warning');
     } else {
         showToast('Hold-open request failed.', 'error');
     }
@@ -2409,10 +2409,12 @@ function setDoorMode(mode) {
 }
 
 async function requestDoorReleaseAndLogAccess(reason = 'manual door release') {
+    if (window.__doorRequestRecentlyFired) { console.warn('Door request recently fired; ignoring duplicate.'); return false; }
+    window.__doorRequestRecentlyFired = true;
+    setTimeout(() => { window.__doorRequestRecentlyFired = false; }, 2000);
     const actorId = currentUser?.id || 'SYSTEM';
     const actorRole = currentUser?.role || 'system';
 
-    const blinked = await triggerDoorAttentionLed();
     addLog(actorId, 'Door Release', `Release requested by ${actorId} [role=${actorRole}] (${reason}).`);
 
     let sent = false;
@@ -2421,7 +2423,7 @@ async function requestDoorReleaseAndLogAccess(reason = 'manual door release') {
         const endpoint = getDoorEndpointUrl('/release') || `${location.protocol}//${location.hostname}:8080/release`;
         await fetch(endpoint, {
             method: 'POST',
-            mode: 'no-cors',
+            mode: 'cors',
             cache: 'no-store',
             keepalive: true,
             headers: { 'Content-Type': 'application/json' },
@@ -2437,8 +2439,6 @@ async function requestDoorReleaseAndLogAccess(reason = 'manual door release') {
 
     if (sent) {
         showToast('Release request sent to Pi.', 'success');
-    } else if (blinked) {
-        showToast('LED-only mode active. Door trigger sent.', 'warning');
     } else {
         showToast('Release request failed.', 'error');
     }
@@ -2477,6 +2477,9 @@ function formatDoorDuration(totalSeconds) {
 }
 
 async function requestManualDoorUnlockAndLogAccess(reason = 'manual debug control') {
+    if (window.__doorRequestRecentlyFired) { console.warn('Door request recently fired; ignoring duplicate.'); return false; }
+    window.__doorRequestRecentlyFired = true;
+    setTimeout(() => { window.__doorRequestRecentlyFired = false; }, 2000);
     const actorId = currentUser?.id || 'SYSTEM';
     const actorRole = currentUser?.role || 'system';
 
