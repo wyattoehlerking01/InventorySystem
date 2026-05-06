@@ -970,7 +970,7 @@ function getConfiguredGpioServerBaseUrl() {
         if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
 
         let normalizedPath = parsed.pathname.replace(/\/+$/, '');
-        const endpointSuffixes = ['/unlock', '/hold-open', '/release', '/status'];
+        const endpointSuffixes = ['/unlock', '/holdopen', '/release', '/status'];
 
         for (const suffix of endpointSuffixes) {
             if (normalizedPath.toLowerCase().endsWith(suffix)) {
@@ -995,8 +995,13 @@ function getDoorEndpointUrl(path) {
 
 function getDoorHoldOpenEndpointUrl() {
     const explicitUrl = String(window.APP_ENV?.DOOR_HOLD_OPEN_URL ?? envConfig.DOOR_HOLD_OPEN_URL ?? '').trim();
-    if (explicitUrl) return explicitUrl;
-    return 'http://0.0.0.0:8090/holdopen';
+    const finalUrl = explicitUrl || 'http://127.0.0.1:8090/holdopen';
+    console.log('[DOOR HOLD-OPEN] URL being used:', finalUrl, {
+        'window.APP_ENV.DOOR_HOLD_OPEN_URL': window.APP_ENV?.DOOR_HOLD_OPEN_URL,
+        'envConfig.DOOR_HOLD_OPEN_URL': envConfig.DOOR_HOLD_OPEN_URL,
+        'finalUrl': finalUrl
+    });
+    return finalUrl;
 }
 
 function getSupabaseDoorPingUrl() {
