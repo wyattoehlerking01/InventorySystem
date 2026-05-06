@@ -2682,7 +2682,7 @@ async function requestDoorHoldOpenAndLogAccess(reason = 'manual door hold-open')
         const endpoint = getDoorHoldOpenEndpointUrl();
         await fetch(endpoint, {
             method: 'POST',
-            mode: 'no-cors',
+            mode: 'cors',
             cache: 'no-store',
             keepalive: true,
             headers: { 'Content-Type': 'application/json' },

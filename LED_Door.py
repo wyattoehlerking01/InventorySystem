@@ -458,6 +458,39 @@ class RequestHandler(BaseHTTPRequestHandler):
         self.send_response(404)
         self.end_headers()
 
+    def do_POST(self):
+        parsed = urlparse(self.path)
+
+        if parsed.path == "/holdopen":
+            content_length = int(self.headers.get("Content-Length", 0))
+            try:
+                body = self.rfile.read(content_length).decode("utf-8")
+                payload = json.loads(body) if body else {}
+            except (ValueError, UnicodeDecodeError) as e:
+                self._json(400, {"status": "error", "message": f"Invalid JSON: {e}"})
+                return
+
+            actor = payload.get("actor", "SYSTEM")
+            reason = payload.get("reason", "api-holdopen")
+            unlock_job_id = payload.get("unlockJobId")
+
+            telemetry.record_context(actor_user_id=actor, unlock_job_id=unlock_job_id)
+
+            threading.Thread(target=pulse_led, args=(LED_TRIGGER_SECONDS,), daemon=True).start()
+            self._json(
+                200,
+                {
+                    "status": "success",
+                    "message": f"Hold-open triggered for {LED_TRIGGER_SECONDS}s (reason: {reason})",
+                    "door_position": telemetry.door_position,
+                    "queue_depth": telemetry.queue.size(),
+                },
+            )
+            return
+
+        self.send_response(404)
+        self.end_headers()
+
 
 def configure_gpio():
     GPIO.setmode(GPIO.BCM)
