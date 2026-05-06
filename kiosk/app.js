@@ -2352,9 +2352,49 @@ async function requestDoorHoldOpenAndLogAccess(reason = 'manual door hold-open')
     const actorRole = currentUser?.role || 'system';
 
     const blinked = await triggerDoorAttentionLed();
-    addLog(actorId, 'Door Hold Open', `LED-only attention mode used for hold-open request by ${actorId} [role=${actorRole}] (${reason}).`);
-    showToast('LED-only mode active. Door trigger sent.', blinked ? 'success' : 'warning');
-    return true;
+    addLog(actorId, 'Door Hold Open', `Hold-open requested by ${actorId} [role=${actorRole}] (${reason}).`);
+
+    let sent = false;
+    let httpErr = null;
+    try {
+        const endpoint = getDoorEndpointUrl('/holdopen') || `${location.protocol}//${location.hostname}:8080/holdopen`;
+        await fetch(endpoint, {
+            method: 'POST',
+            mode: 'no-cors',
+            cache: 'no-store',
+            keepalive: true,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'holdopen', actor: actorId, reason })
+        });
+        sent = true;
+    } catch (e) {
+        httpErr = e;
+        console.warn('Hold-open POST failed:', e);
+    }
+
+    addLog(actorId, 'Door Hold Open HTTP', `Hold-open POST ${sent ? 'sent' : 'failed'}${httpErr ? `: ${String(httpErr.message || httpErr)}` : ''}`);
+
+    if (sent) {
+        showToast('Hold-open request sent to Pi.', 'success');
+    } else if (blinked) {
+        showToast('LED-only mode active. Door trigger sent.', 'warning');
+    } else {
+        showToast('Hold-open request failed.', 'error');
+    }
+
+    return sent || !!blinked;
+}
+
+// UI door mode state: 'normal' or 'hold'
+let doorMode = 'normal';
+
+function setDoorMode(mode) {
+    const normalBtn = document.getElementById('door-normal-btn');
+    const holdBtn = document.getElementById('door-hold-btn');
+    if (!normalBtn || !holdBtn) return;
+    doorMode = mode === 'hold' ? 'hold' : 'normal';
+    normalBtn.classList.toggle('selected', doorMode === 'normal');
+    holdBtn.classList.toggle('selected', doorMode === 'hold');
 }
 
 async function requestDoorReleaseAndLogAccess(reason = 'manual door release') {
@@ -2362,8 +2402,35 @@ async function requestDoorReleaseAndLogAccess(reason = 'manual door release') {
     const actorRole = currentUser?.role || 'system';
 
     const blinked = await triggerDoorAttentionLed();
-    addLog(actorId, 'Door Release', `LED-only attention mode used for door release request by ${actorId} [role=${actorRole}] (${reason}).`);
-    showToast('LED-only mode active. Door trigger sent.', blinked ? 'success' : 'warning');
+    addLog(actorId, 'Door Release', `Release requested by ${actorId} [role=${actorRole}] (${reason}).`);
+
+    let sent = false;
+    let httpErr = null;
+    try {
+        const endpoint = getDoorEndpointUrl('/release') || `${location.protocol}//${location.hostname}:8080/release`;
+        await fetch(endpoint, {
+            method: 'POST',
+            mode: 'no-cors',
+            cache: 'no-store',
+            keepalive: true,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'release', actor: actorId, reason })
+        });
+        sent = true;
+    } catch (e) {
+        httpErr = e;
+        console.warn('Release POST failed:', e);
+    }
+
+    addLog(actorId, 'Door Release HTTP', `Release POST ${sent ? 'sent' : 'failed'}${httpErr ? `: ${String(httpErr.message || httpErr)}` : ''}`);
+
+    if (sent) {
+        showToast('Release request sent to Pi.', 'success');
+    } else if (blinked) {
+        showToast('LED-only mode active. Door trigger sent.', 'warning');
+    } else {
+        showToast('Release request failed.', 'error');
+    }
     return true;
 }
 
@@ -2464,6 +2531,8 @@ function renderDoorPage() {
             }
 
             setStatus(message);
+            // reflect hold-open mode in UI
+            try { setDoorMode(status.held_open ? 'hold' : 'normal'); } catch (_) {}
             return;
         }
 
@@ -2471,12 +2540,21 @@ function renderDoorPage() {
     };
 
     holdBtn.onclick = async () => {
-        await requestDoorHoldOpenAndLogAccess('kiosk door page hold-open');
+        if (doorMode === 'hold') {
+            await requestDoorReleaseAndLogAccess('kiosk door page release from hold');
+            setDoorMode('normal');
+        } else {
+            await requestDoorHoldOpenAndLogAccess('kiosk door page hold-open');
+            setDoorMode('hold');
+        }
         await refreshStatus();
     };
 
     normalBtn.onclick = async () => {
-        await requestDoorReleaseAndLogAccess('kiosk door page normal operation mode');
+        if (doorMode !== 'normal') {
+            await requestDoorReleaseAndLogAccess('kiosk door page normal operation mode');
+            setDoorMode('normal');
+        }
         await refreshStatus();
     };
 
@@ -2514,6 +2592,7 @@ function renderDoorPage() {
 
     // Default to control tab when opening door page
     setDoorPageTab('control');
+    try { setDoorMode('normal'); } catch (_) {}
 
     if (window.__doorStatusPollTimer) {
         clearInterval(window.__doorStatusPollTimer);

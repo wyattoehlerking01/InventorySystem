@@ -750,6 +750,30 @@ h6 {
     overflow-x: auto;
 }
 
+/* Door control button styles */
+#door-normal-btn,
+#door-hold-btn,
+#door-test-unlock-btn {
+    background: #374151; /* neutral grey */
+    color: #ffffff;
+    border: 1px solid rgba(255,255,255,0.06);
+}
+
+#door-normal-btn.selected {
+    background: var(--success);
+    color: #061414;
+    border-color: transparent;
+}
+
+#door-hold-btn.selected {
+    background: var(--danger);
+    color: #fff;
+    border-color: transparent;
+}
+
+/* Test unlock stays neutral (grey) always */
+#door-test-unlock-btn { opacity: 0.95; }
+
 .page {
     animation: fadeIn var(--transition-normal);
 }
