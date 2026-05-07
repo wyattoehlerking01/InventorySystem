@@ -286,7 +286,7 @@ class UnlockRequestHandler(http.server.SimpleHTTPRequestHandler):
         _enforce_hold_safety_timeout()
         _update_door_sensor_state()
 
-        if self.path in ['/unlock', '/hold-open', '/release']:
+        if self.path in ['/unlock', '/hold-open']:
             if not _request_has_valid_token(self):
                 _json_response(self, 401, {'status': 'error', 'message': 'Unauthorized'})
                 return
@@ -337,38 +337,40 @@ class UnlockRequestHandler(http.server.SimpleHTTPRequestHandler):
                     return
 
                 if self.path == '/hold-open':
-                    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Hold-open request received. Reason: {reason}")
-                    if GPIO_AVAILABLE:
-                        _set_door_pin_high()
-                    else:
-                        print('SIMULATION: Door hold-open enabled.')
+                    request_action = str(data.get('action') or 'hold-open').strip().lower()
 
-                    door_held_open = True
-                    door_hold_started_at = time.time()
-                    response = {
-                        'status': 'success',
-                        'message': 'Door hold-open enabled',
-                        'held_open': True,
-                        'held_open_seconds': 0.0,
-                        'hold_open_max_seconds': HOLD_OPEN_MAX_SECONDS
-                    }
-                    _update_door_sensor_state()
-                    _json_response(self, 200, response)
-                    return
+                    if request_action in ['hold-open', 'holdopen', 'hold']:
+                        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Hold-open request received. Reason: {reason}")
+                        if GPIO_AVAILABLE:
+                            _set_door_pin_high()
+                        else:
+                            print('SIMULATION: Door hold-open enabled.')
 
-                if self.path == '/release':
-                    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Release request received. Reason: {reason}")
+                        door_held_open = True
+                        door_hold_started_at = time.time()
+                        response = {
+                            'status': 'success',
+                            'message': 'Door hold-open enabled',
+                            'held_open': True,
+                            'held_open_seconds': 0.0,
+                            'hold_open_max_seconds': HOLD_OPEN_MAX_SECONDS
+                        }
+                        _update_door_sensor_state()
+                        _json_response(self, 200, response)
+                        return
+
+                    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Normal-operation request received. Reason: {reason}")
                     elapsed = _get_hold_elapsed_seconds()
                     if GPIO_AVAILABLE:
                         _set_door_pin_low()
                     else:
-                        print('SIMULATION: Door release triggered.')
+                        print('SIMULATION: Door normal operation restored.')
 
                     door_held_open = False
                     door_hold_started_at = None
                     response = {
                         'status': 'success',
-                        'message': 'Door released',
+                        'message': 'Door returned to normal operation',
                         'held_open': False,
                         'held_open_seconds': round(elapsed, 3)
                     }

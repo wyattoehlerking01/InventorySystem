@@ -2372,27 +2372,27 @@ async function requestDoorReleaseAndLogAccess(reason = 'manual door release') {
     let sent = false;
     let httpErr = null;
     try {
-        const endpoint = getDoorEndpointUrl('/release') || `${location.protocol}//${location.hostname}:8080/release`;
+        const endpoint = getDoorEndpointUrl('/hold-open') || `${location.protocol}//${location.hostname}:8080/hold-open`;
         await fetch(endpoint, {
             method: 'POST',
             mode: 'cors',
             cache: 'no-store',
             keepalive: true,
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action: 'release', actor: actorId, reason })
+            body: JSON.stringify({ action: 'normal', actor: actorId, reason })
         });
         sent = true;
     } catch (e) {
         httpErr = e;
-        console.warn('Release POST failed:', e);
+        console.warn('Normal-operation POST failed:', e);
     }
 
-    addLog(actorId, 'Door Release HTTP', `Release POST ${sent ? 'sent' : 'failed'}${httpErr ? `: ${String(httpErr.message || httpErr)}` : ''}`);
+    addLog(actorId, 'Door Normal Operation HTTP', `Normal-operation POST ${sent ? 'sent' : 'failed'}${httpErr ? `: ${String(httpErr.message || httpErr)}` : ''}`);
 
     if (sent) {
-        showToast('Release request sent to Pi.', 'success');
+        showToast('Normal-operation request sent to Pi.', 'success');
     } else {
-        showToast('Release request failed.', 'error');
+        showToast('Normal-operation request failed.', 'error');
     }
     return true;
 }
@@ -2506,13 +2506,8 @@ function renderDoorPage() {
     };
 
     holdBtn.onclick = async () => {
-        if (doorMode === 'hold') {
-            await requestDoorReleaseAndLogAccess('kiosk door page release from hold');
-            setDoorMode('normal');
-        } else {
-            await requestDoorHoldOpenAndLogAccess('kiosk door page hold-open');
-            setDoorMode('hold');
-        }
+        await requestDoorHoldOpenAndLogAccess('kiosk door page hold-open');
+        setDoorMode('hold');
         await refreshStatus();
     };
 

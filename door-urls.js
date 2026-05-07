@@ -8,7 +8,7 @@ function getConfiguredGpioServerBaseUrl() {
         if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
 
         let normalizedPath = parsed.pathname.replace(/\/+$/, '');
-        const endpointSuffixes = ['/unlock', '/hold-open', '/release', '/status'];
+        const endpointSuffixes = ['/unlock', '/hold-open', '/status'];
 
         for (const suffix of endpointSuffixes) {
             if (normalizedPath.toLowerCase().endsWith(suffix)) {

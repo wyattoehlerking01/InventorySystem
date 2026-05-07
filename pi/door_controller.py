@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Door controller server for Raspberry Pi.
 
-Handles door hold-open and release operations via Flask.
+Handles door hold-open state changes via Flask.
 Integrates with Supabase for unlock job tracking.
 """
 
@@ -67,7 +67,7 @@ def trigger():
 
 @app.route('/holdopen', methods=['POST'])
 def holdopen():
-    """Hold door open indefinitely until /release is called."""
+    """Hold the door open or return it to normal operation."""
     if door_lock is None:
         return jsonify({"status": "error", "message": "GPIO not initialized"}), 500
     
@@ -75,49 +75,34 @@ def holdopen():
         data = request.get_json() or {}
         actor = data.get('actor', 'SYSTEM')
         reason = data.get('reason', 'api-holdopen')
+        action = str(data.get('action', 'hold-open')).strip().lower()
         unlock_job_id = data.get('unlockJobId')
         
-        logger.info(f"Hold-open: actor={actor}, reason={reason}, jobId={unlock_job_id}")
+        logger.info(f"Hold-open: actor={actor}, reason={reason}, action={action}, jobId={unlock_job_id}")
         
         global door_held_open
-        door_held_open = True
-        door_lock.on()
-        logger.info("Door held open")
-        
-        return jsonify({
-            "status": "success",
-            "message": f"Door held open (reason: {reason})",
-            "door_held": True
-        }), 200
-    except Exception as e:
-        logger.error(f"Hold-open error: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 500
+        if action in ("hold-open", "holdopen", "hold"):
+            door_held_open = True
+            door_lock.on()
+            logger.info("Door held open")
 
+            return jsonify({
+                "status": "success",
+                "message": f"Door held open (reason: {reason})",
+                "door_held": True
+            }), 200
 
-@app.route('/release', methods=['POST'])
-def release():
-    """Release held-open door."""
-    if door_lock is None:
-        return jsonify({"status": "error", "message": "GPIO not initialized"}), 500
-    
-    try:
-        data = request.get_json() or {}
-        actor = data.get('actor', 'SYSTEM')
-        
-        logger.info(f"Release: actor={actor}")
-        
-        global door_held_open
         door_held_open = False
         door_lock.off()
-        logger.info("Door released")
-        
+        logger.info("Door returned to normal operation")
+
         return jsonify({
             "status": "success",
-            "message": "Door released",
+            "message": "Door returned to normal operation",
             "door_held": False
         }), 200
     except Exception as e:
-        logger.error(f"Release error: {e}")
+        logger.error(f"Hold-open error: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
