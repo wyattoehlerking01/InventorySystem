@@ -2534,21 +2534,23 @@ async function requestDoorHoldOpenAndLogAccess(reason = 'manual door hold-open')
     let httpErr = null;
     try {
         const endpoint = String(window.APP_ENV?.DOOR_HOLD_OPEN_URL ?? envConfig.DOOR_HOLD_OPEN_URL ?? '').trim();
-        await fetch(endpoint, {
-            method: 'POST',
+        const url = new URL(endpoint, window.location.origin);
+        url.searchParams.set('action', 'holdopen');
+        url.searchParams.set('actor', actorId);
+        url.searchParams.set('reason', reason);
+        await fetch(url.toString(), {
+            method: 'GET',
             mode: 'cors',
             cache: 'no-store',
-            keepalive: true,
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action: 'holdopen', actor: actorId, reason })
+            keepalive: true
         });
         sent = true;
     } catch (e) {
         httpErr = e;
-        console.warn('Hold-open POST failed:', e);
+        console.warn('Hold-open GET failed:', e);
     }
 
-    addLog(actorId, 'Door Hold Open HTTP', `Hold-open POST ${sent ? 'sent' : 'failed'}${httpErr ? `: ${String(httpErr.message || httpErr)}` : ''}`);
+    addLog(actorId, 'Door Hold Open HTTP', `Hold-open GET ${sent ? 'sent' : 'failed'}${httpErr ? `: ${String(httpErr.message || httpErr)}` : ''}`);
 
     if (sent) {
         showToast('Hold-open request sent to Pi.', 'success');
