@@ -37,14 +37,11 @@ function getDoorHoldOpenEndpointUrl() {
     if (explicitUrl) {
         try {
             const parsed = new URL(explicitUrl, window.location.origin);
-            if (parsed.pathname.toLowerCase().endsWith('/holdopen')) {
-                parsed.pathname = parsed.pathname.replace(/\/holdopen$/i, '/hold-open');
-            }
             return parsed.toString();
         } catch {
-            return explicitUrl.replace(/\/holdopen(?:\b|$)/i, '/hold-open');
+            return explicitUrl;
         }
     }
 
-    return getDoorEndpointUrl('/hold-open') || 'http://127.0.0.1:8090/hold-open';
+    return getDoorEndpointUrl('/holdopen') || 'http://localhost:8090/holdopen';
 }

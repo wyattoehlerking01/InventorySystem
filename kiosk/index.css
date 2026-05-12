@@ -401,6 +401,7 @@ h6 {
 /* Door control button styles */
 #door-normal-btn,
 #door-hold-btn,
+#door-hold-standby-btn,
 #door-test-unlock-btn {
     background: #374151; /* neutral grey */
     color: #ffffff;
@@ -414,6 +415,12 @@ h6 {
 }
 
 #door-hold-btn.selected {
+    background: var(--danger);
+    color: #fff;
+    border-color: transparent;
+}
+
+#door-hold-standby-btn.selected {
     background: var(--danger);
     color: #fff;
     border-color: transparent;

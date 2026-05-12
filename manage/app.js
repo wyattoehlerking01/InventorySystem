@@ -2533,7 +2533,7 @@ async function requestDoorHoldOpenAndLogAccess(reason = 'manual door hold-open')
     let sent = false;
     let httpErr = null;
     try {
-        const endpoint = getDoorHoldOpenEndpointUrl();
+        const endpoint = String(window.APP_ENV?.DOOR_HOLD_OPEN_URL ?? envConfig.DOOR_HOLD_OPEN_URL ?? '').trim();
         await fetch(endpoint, {
             method: 'POST',
             mode: 'cors',
@@ -2565,10 +2565,12 @@ let doorMode = 'normal';
 function setDoorMode(mode) {
     const normalBtn = document.getElementById('door-normal-btn');
     const holdBtn = document.getElementById('door-hold-btn');
-    if (!normalBtn || !holdBtn) return;
+    const holdStandbyBtn = document.getElementById('door-hold-standby-btn');
+    if (!normalBtn || !holdBtn || !holdStandbyBtn) return;
     doorMode = mode === 'hold' ? 'hold' : 'normal';
     normalBtn.classList.toggle('selected', doorMode === 'normal');
     holdBtn.classList.toggle('selected', doorMode === 'hold');
+    holdStandbyBtn.classList.toggle('selected', doorMode === 'hold');
 }
 
 async function requestDoorReleaseAndLogAccess(reason = 'manual door release') {
@@ -2742,9 +2744,10 @@ function setDoorPageTab(nextTab = 'control') {
 function renderDoorPage() {
     const normalBtn = document.getElementById('door-normal-btn');
     const holdBtn = document.getElementById('door-hold-btn');
+    const holdStandbyBtn = document.getElementById('door-hold-standby-btn');
     const testUnlockBtn = document.getElementById('door-test-unlock-btn');
     const statusEl = document.getElementById('door-status-text');
-    if (!normalBtn || !holdBtn || !testUnlockBtn || !statusEl) return;
+    if (!normalBtn || !holdBtn || !holdStandbyBtn || !testUnlockBtn || !statusEl) return;
 
     if (doorControlTabBtn && !doorControlTabBtn.dataset.bound) {
         doorControlTabBtn.addEventListener('click', () => setDoorPageTab('control'));
@@ -2812,6 +2815,12 @@ function renderDoorPage() {
 
     holdBtn.onclick = async () => {
         await requestDoorHoldOpenAndLogAccess('manage door page hold-open');
+        setDoorMode('hold');
+        await refreshStatus();
+    };
+
+    holdStandbyBtn.onclick = async () => {
+        await requestDoorHoldOpenAndLogAccess('manage door page attention light hold/standby');
         setDoorMode('hold');
         await refreshStatus();
     };

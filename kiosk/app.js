@@ -2322,7 +2322,7 @@ async function requestDoorHoldOpenAndLogAccess(reason = 'manual door hold-open')
     let sent = false;
     let httpErr = null;
     try {
-        const endpoint = getDoorHoldOpenEndpointUrl();
+        const endpoint = String(window.APP_ENV?.DOOR_HOLD_OPEN_URL ?? envConfig.DOOR_HOLD_OPEN_URL ?? '').trim();
         await fetch(endpoint, {
             method: 'POST',
             mode: 'cors',
@@ -2354,10 +2354,12 @@ let doorMode = 'normal';
 function setDoorMode(mode) {
     const normalBtn = document.getElementById('door-normal-btn');
     const holdBtn = document.getElementById('door-hold-btn');
-    if (!normalBtn || !holdBtn) return;
+    const holdStandbyBtn = document.getElementById('door-hold-standby-btn');
+    if (!normalBtn || !holdBtn || !holdStandbyBtn) return;
     doorMode = mode === 'hold' ? 'hold' : 'normal';
     normalBtn.classList.toggle('selected', doorMode === 'normal');
     holdBtn.classList.toggle('selected', doorMode === 'hold');
+    holdStandbyBtn.classList.toggle('selected', doorMode === 'hold');
 }
 
 async function requestDoorReleaseAndLogAccess(reason = 'manual door release') {
@@ -2448,11 +2450,12 @@ async function requestManualDoorUnlockAndLogAccess(reason = 'manual debug contro
 function renderDoorPage() {
     const normalBtn = document.getElementById('door-normal-btn');
     const holdBtn = document.getElementById('door-hold-btn');
+    const holdStandbyBtn = document.getElementById('door-hold-standby-btn');
     const testUnlockBtn = document.getElementById('door-test-unlock-btn');
     const doorCallingToggle = document.getElementById('door-calling-enabled-toggle');
     const doorCallingSaveBtn = document.getElementById('door-calling-save-btn');
     const statusEl = document.getElementById('door-status-text');
-    if (!normalBtn || !holdBtn || !testUnlockBtn || !statusEl || !doorCallingToggle || !doorCallingSaveBtn) return;
+    if (!normalBtn || !holdBtn || !holdStandbyBtn || !testUnlockBtn || !statusEl || !doorCallingToggle || !doorCallingSaveBtn) return;
 
     doorCallingToggle.checked = isDoorCallingEnabled();
 
@@ -2507,6 +2510,12 @@ function renderDoorPage() {
 
     holdBtn.onclick = async () => {
         await requestDoorHoldOpenAndLogAccess('kiosk door page hold-open');
+        setDoorMode('hold');
+        await refreshStatus();
+    };
+
+    holdStandbyBtn.onclick = async () => {
+        await requestDoorHoldOpenAndLogAccess('kiosk door page attention light hold/standby');
         setDoorMode('hold');
         await refreshStatus();
     };
