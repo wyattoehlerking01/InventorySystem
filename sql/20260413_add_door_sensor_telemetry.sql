@@ -192,9 +192,14 @@ begin
             v.sensor_id,
             coalesce(nullif(v.session->>'open_local_seq', '')::bigint, null),
             coalesce(nullif(v.session->>'close_local_seq', '')::bigint, v.local_seq),
-            (v.session->>'opened_at')::timestamptz,
-            (v.session->>'closed_at')::timestamptz,
-            greatest(coalesce((v.session->>'duration_ms')::integer, 0), 0),
+            (v.session->>'opened_at')::timestamptz as opened_at,
+            (v.session->>'closed_at')::timestamptz as closed_at,
+            -- Use provided duration_ms if > 0, otherwise calculate from timestamps
+            case
+                when coalesce((v.session->>'duration_ms')::integer, 0) > 0
+                    then (v.session->>'duration_ms')::integer
+                else greatest(0, extract(epoch from ((v.session->>'closed_at')::timestamptz - (v.session->>'opened_at')::timestamptz))::integer * 1000)
+            end as duration_ms,
             coalesce(nullif(v.session->>'unlock_job_id', '')::uuid, v.unlock_job_id),
             coalesce(nullif(v.session->>'actor_user_id', ''), v.actor_user_id),
             coalesce(v.session->'metadata', '{}'::jsonb)

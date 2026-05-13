@@ -3855,8 +3855,44 @@ function setProfilePrivilegedActionState(isEnabled) {
     }
 }
 
+function syncKioskSessionOnLogin(user) {
+    if (!user?.id || typeof startKioskUserSessionInSupabase !== 'function') return;
+
+    void startKioskUserSessionInSupabase(user.id, {
+        kioskId,
+        source: 'manage-app',
+        metadata: {
+            role: String(user.role || '').trim().toLowerCase() || null,
+            mode: 'login'
+        }
+    }).then(result => {
+        if (!result?.ok) {
+            console.warn('Failed to start kiosk user session:', result?.error || 'unknown error');
+        }
+    }).catch(error => {
+        console.warn('Failed to start kiosk user session:', error);
+    });
+}
+
+function syncKioskSessionOnLogout(userId, reason = 'logout') {
+    if (!userId || typeof endKioskUserSessionInSupabase !== 'function') return;
+
+    void endKioskUserSessionInSupabase(userId, {
+        kioskId,
+        source: 'manage-app',
+        reason
+    }).then(result => {
+        if (!result?.ok) {
+            console.warn('Failed to end kiosk user session:', result?.error || 'unknown error');
+        }
+    }).catch(error => {
+        console.warn('Failed to end kiosk user session:', error);
+    });
+}
+
 function login(user, options = {}) {
     currentUser = user;
+    syncKioskSessionOnLogin(user);
     privilegedSessionAuthenticated = false;
     privilegedStartupAuditShown = false;
     getOrCreatePersonalProject(user.id);
@@ -3992,7 +4028,9 @@ function logout(message = 'Logged out successfully') {
 
     closeModal();
 
+    const previousUserId = currentUser?.id;
     _trackLogout();
+    syncKioskSessionOnLogout(previousUserId, 'logout');
     currentUser = null;
     privilegedSessionAuthenticated = false;
     privilegedStartupAuditShown = false;
@@ -4033,7 +4071,9 @@ function returnToLoginView(options = {}) {
 
     closeModal();
 
+    const previousUserId = currentUser?.id;
     if (currentUser) _trackLogout();
+    syncKioskSessionOnLogout(previousUserId, 'return-to-login');
     currentUser = null;
     privilegedSessionAuthenticated = false;
     privilegedStartupAuditShown = false;

@@ -174,6 +174,64 @@ async function loginWithBarcode(barcode) {
     }
 }
 
+async function startKioskUserSessionInSupabase(userId, options = {}) {
+    try {
+        const client = requireSupabaseClient('startKioskUserSessionInSupabase');
+        const resolvedUserId = String(userId || '').trim();
+        const resolvedKioskId = String(options.kioskId || activeKioskId).trim();
+        const source = String(options.source || 'manage-app').trim() || 'manage-app';
+        const metadata = options.metadata && typeof options.metadata === 'object' ? options.metadata : {};
+
+        if (!resolvedUserId || !resolvedKioskId) {
+            return { ok: false, error: 'kiosk_id and user_id are required' };
+        }
+
+        const { data, error } = await client.rpc('start_kiosk_user_session', {
+            p_kiosk_id: resolvedKioskId,
+            p_user_id: resolvedUserId,
+            p_source: source,
+            p_metadata: metadata
+        });
+
+        if (error) {
+            return { ok: false, error: String(error.message || error) };
+        }
+
+        return { ok: true, session: Array.isArray(data) ? data[0] : data };
+    } catch (error) {
+        return { ok: false, error: String(error?.message || error) };
+    }
+}
+
+async function endKioskUserSessionInSupabase(userId, options = {}) {
+    try {
+        const client = requireSupabaseClient('endKioskUserSessionInSupabase');
+        const resolvedUserId = String(userId || '').trim();
+        const resolvedKioskId = String(options.kioskId || activeKioskId).trim();
+        const source = String(options.source || 'manage-app').trim() || 'manage-app';
+        const reason = String(options.reason || 'logout').trim() || 'logout';
+
+        if (!resolvedKioskId) {
+            return { ok: false, error: 'kiosk_id is required' };
+        }
+
+        const { data, error } = await client.rpc('end_kiosk_user_session', {
+            p_kiosk_id: resolvedKioskId,
+            p_user_id: resolvedUserId || null,
+            p_source: source,
+            p_reason: reason
+        });
+
+        if (error) {
+            return { ok: false, error: String(error.message || error) };
+        }
+
+        return { ok: true, endedCount: Number(data || 0) };
+    } catch (error) {
+        return { ok: false, error: String(error?.message || error) };
+    }
+}
+
 async function fetchUserByBarcodeFromSupabase(barcodeValue) {
     const client = requireSupabaseClient('fetchUserByBarcodeFromSupabase');
     const normalizedBarcode = String(barcodeValue || '').trim();
