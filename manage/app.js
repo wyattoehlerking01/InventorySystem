@@ -1833,6 +1833,14 @@ function toggleBasket(forceOpen = null) {
     if (isBasketOpen) {
         panel.classList.remove('hidden');
         renderBasket();
+        
+        // Log scanning mode start and trigger door
+        const actorId = currentUser?.id || 'SYSTEM';
+        const timestamp = new Date().toLocaleString();
+        addLog(actorId, 'Scanning Mode', `User started scanning mode at ${timestamp}`);
+        
+        // Trigger door when opening basket
+        requestManualDoorUnlockAndLogAccess('basket opened - scanning mode');
         // Pause timer is handled in the countdown logic check
     } else {
         panel.classList.add('hidden');
@@ -2133,12 +2141,18 @@ function applyDoorSensorEvent(eventRow) {
     doorRuntimeState.lastEventType = eventType;
     doorRuntimeState.lastEventMs = eventTsMs;
 
+    const timestamp = new Date(eventTsMs).toLocaleString();
+    const userId = actorUserId || currentUser?.id || 'SYSTEM';
+
     if (eventType === 'open') {
         doorRuntimeState.isOpen = true;
         doorRuntimeState.openedAtMs = eventTsMs;
         doorRuntimeState.openedByUserId = actorUserId;
         doorRuntimeState.lastVisitDurationSeconds = 0;
         doorRuntimeState.lastVisitUserId = null;
+        
+        // Log door open event
+        addLog(userId, 'Door Sensor', `User opened door at ${timestamp}`);
     } else if (eventType === 'close') {
         if (doorRuntimeState.isOpen && doorRuntimeState.openedAtMs) {
             doorRuntimeState.lastVisitDurationSeconds = Math.max(0, Math.floor((eventTsMs - doorRuntimeState.openedAtMs) / 1000));
@@ -2147,6 +2161,9 @@ function applyDoorSensorEvent(eventRow) {
         doorRuntimeState.isOpen = false;
         doorRuntimeState.openedAtMs = 0;
         doorRuntimeState.openedByUserId = null;
+        
+        // Log door close event
+        addLog(userId, 'Door Sensor', `User closed door at ${timestamp}`);
     }
 
     syncDoorBlockingWarningState();
