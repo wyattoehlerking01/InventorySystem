@@ -2003,6 +2003,29 @@ function syncDoorBlockingWarningState() {
     refreshDoorBlockingWarningModalText();
 }
 
+function resolveDoorEventActorId(eventRow = {}, { preferOpenedByUser = false } = {}) {
+    const metadata = eventRow && typeof eventRow.metadata === 'object' ? eventRow.metadata : {};
+    const candidates = [
+        eventRow.actor_user_id,
+        eventRow.actorUserId,
+        eventRow.user_id,
+        eventRow.userId,
+        metadata.actor_user_id,
+        metadata.actorUserId,
+        metadata.user_id,
+        metadata.userId,
+        preferOpenedByUser ? doorRuntimeState.openedByUserId : null,
+        currentUser?.id
+    ];
+
+    for (const candidate of candidates) {
+        const value = String(candidate || '').trim();
+        if (value) return value;
+    }
+
+    return 'SYSTEM';
+}
+
 function applyDoorSensorEvent(eventRow) {
     if (!eventRow || typeof eventRow !== 'object') return;
 
@@ -2010,7 +2033,7 @@ function applyDoorSensorEvent(eventRow) {
     if (!eventType) return;
 
     const eventTsMs = Date.parse(String(eventRow.event_ts || '')) || Date.now();
-    const actorUserId = String(eventRow.actor_user_id || '').trim() || null;
+    const actorId = resolveDoorEventActorId(eventRow, { preferOpenedByUser: eventType === 'close' });
 
     doorRuntimeState.known = true;
     doorRuntimeState.lastEventType = eventType;
@@ -2019,9 +2042,10 @@ function applyDoorSensorEvent(eventRow) {
     if (eventType === 'open') {
         doorRuntimeState.isOpen = true;
         doorRuntimeState.openedAtMs = eventTsMs;
-        doorRuntimeState.openedByUserId = actorUserId;
+        doorRuntimeState.openedByUserId = actorId;
         doorRuntimeState.lastVisitDurationSeconds = 0;
         doorRuntimeState.lastVisitUserId = null;
+        addLog(actorId, 'Door Sensor', `User opened door at ${new Date(eventTsMs).toLocaleString()}`);
     } else if (eventType === 'close') {
         if (doorRuntimeState.isOpen && doorRuntimeState.openedAtMs) {
             doorRuntimeState.lastVisitDurationSeconds = Math.max(0, Math.floor((eventTsMs - doorRuntimeState.openedAtMs) / 1000));
@@ -2030,6 +2054,7 @@ function applyDoorSensorEvent(eventRow) {
         doorRuntimeState.isOpen = false;
         doorRuntimeState.openedAtMs = 0;
         doorRuntimeState.openedByUserId = null;
+        addLog(actorId, 'Door Sensor', `User closed door at ${new Date(eventTsMs).toLocaleString()}`);
     }
 
     syncDoorBlockingWarningState();
@@ -2091,7 +2116,7 @@ function startDoorSensorRealtimeListener(targetKioskId = kioskId) {
             try {
                 // also push a human-readable activity log entry for realtime UI
                 const ts = row.event_ts || row.created_at || new Date().toISOString();
-                const actor = row.actor_user_id || row.actorUserId || 'SYSTEM';
+                const actor = resolveDoorEventActorId(row, { preferOpenedByUser: String(row?.event_type || '').toLowerCase() === 'close' });
                 const sensor = row.sensor_id || 'door-1';
                 const verb = String(row.event_type || '').toLowerCase();
                 pushActivityLogRealtime({
@@ -2615,7 +2640,7 @@ async function renderDoorSensorEvents() {
             const eventType = String(eventRow.event_type || '').toLowerCase();
             const eventLabel = eventType === 'open' ? 'Door Open' : 'Door Close';
             const sensorLabel = escapeHtml(String(eventRow.sensor_id || 'door-1'));
-            const actorLabel = escapeHtml(String(eventRow.actor_user_id || 'SYSTEM'));
+            const actorLabel = escapeHtml(resolveDoorEventActorId(eventRow, { preferOpenedByUser: eventType === 'close' }));
             const sourceLabel = escapeHtml(String(eventRow.source || 'pi-agent'));
             const ts = eventRow.event_ts || eventRow.created_at || null;
             const timeText = ts ? new Date(ts).toLocaleString() : 'Unknown';
@@ -4031,7 +4056,7 @@ async function refreshPageDataFromSupabase(targetId) {
 }
 
 async function switchPage(targetId, title) {
-    if (targetId === 'orders' || targetId === 'logs') {
+    if (targetId === 'orders') {
         showToast('This page is not available in kiosk mode.', 'error');
         return;
     }
@@ -4056,8 +4081,14 @@ async function switchPage(targetId, title) {
             showToast('You do not have access to that page.', 'error');
             return;
         }
-        const authOk = await ensurePrivilegedActionAuth(`${title || targetId} page`);
-        if (!authOk) return;
+
+        // Allow teachers and developers to view the activity log in kiosk mode
+        if (targetId === 'logs' && (currentUser?.role === 'teacher' || currentUser?.role === 'developer')) {
+            // no privileged auth required for logs for these roles
+        } else {
+            const authOk = await ensurePrivilegedActionAuth(`${title || targetId} page`);
+            if (!authOk) return;
+        }
     }
 
     if (isBasketOpen && targetId !== 'inventory') {
@@ -7748,7 +7779,7 @@ function pushActivityLogRealtime(row) {
     const normalized = {
         id: String(row.id || row.log_id || `log-${Date.now()}-${Math.random().toString(36).slice(2,8)}`),
         timestamp: row.timestamp || row.created_at || new Date().toISOString(),
-        userId: row.user_id || row.userId || row.userId || null,
+        userId: String(row.user_id || row.userId || row.userId || '').trim() || 'SYSTEM',
         action: row.action || row.name || row.event_type || '',
         details: row.details || row.payload || ''
     };

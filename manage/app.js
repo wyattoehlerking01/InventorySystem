@@ -133,6 +133,7 @@ const barcodeInput = document.getElementById('barcode-input');
 const usernameInput = document.getElementById('username-input');
 const passwordInput = document.getElementById('password-input');
 const loginSubmitBtn = document.getElementById('login-submit-btn');
+const loginForm = document.getElementById('login-form');
 const showHelpBtn = document.getElementById('show-help-btn');
 const backToLoginBtn = document.getElementById('back-to-login-btn');
 const submitHelpBtn = document.getElementById('submit-help-btn');
@@ -975,6 +976,9 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 4500) {
         clearTimeout(timeout);
     }
 }
+
+function openAppInfoMenu() {
+    const popupHeading = String(envConfig.INFO_POPUP_HEADING || `${appName} Inventory System`).trim() || `${appName} Inventory System`;
 
     const licenseStatusLabel = !appLicenseState.checked
         ? 'Not checked'
@@ -3624,11 +3628,29 @@ if (barcodeInput) {
 
 const canUseCredentialLogin = !!(usernameInput && passwordInput && loginSubmitBtn);
 if (isManageMode || canUseCredentialLogin) {
-    loginSubmitBtn?.addEventListener('click', async () => {
+    loginSubmitBtn?.addEventListener('click', async (e) => {
+        e.preventDefault();
         const username = String(usernameInput?.value || '').trim();
         const password = String(passwordInput?.value || '').trim();
         if (isManageMode && username && !password) {
             // Only allow barcode-style login when an actual barcode input exists.
+            const scanned = String(barcodeInput?.value || '').trim();
+            if (scanned) {
+                await handleBarcodeLogin(scanned);
+                return;
+            }
+            showToast('Password is required for manual sign-in to the management console.', 'error');
+            passwordInput?.focus();
+            return;
+        }
+        await handleManageCredentialLogin(username, password);
+    });
+
+    loginForm?.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const username = String(usernameInput?.value || '').trim();
+        const password = String(passwordInput?.value || '').trim();
+        if (isManageMode && username && !password) {
             const scanned = String(barcodeInput?.value || '').trim();
             if (scanned) {
                 await handleBarcodeLogin(scanned);
