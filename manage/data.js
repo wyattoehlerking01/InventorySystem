@@ -134,6 +134,40 @@ function createUuid() {
         return v.toString(16);
     });
 }
+
+const STAFF_MANAGE_ROLES = new Set(['teacher', 'developer']);
+const PROJECT_OVERSIGHT_ROLES = new Set(['student', 'mentor', 'captain']);
+const PROJECT_COLLABORATOR_ROLES = new Set(['student', 'teacher', 'developer', 'mentor', 'captain']);
+
+function normalizeRoleName(role) {
+    return String(role || '').trim().toLowerCase();
+}
+
+function isStaffManagementRole(role) {
+    return STAFF_MANAGE_ROLES.has(normalizeRoleName(role));
+}
+
+function isProjectOversightRole(role) {
+    return PROJECT_OVERSIGHT_ROLES.has(normalizeRoleName(role));
+}
+
+function canCollaborateOnProjects(role) {
+    return PROJECT_COLLABORATOR_ROLES.has(normalizeRoleName(role));
+}
+
+function parseProjectLogContext(details) {
+    const text = String(details || '');
+    const markerMatch = text.match(/\s*\[\[project:([^\]]+)\]\]\s*$/i);
+    if (!markerMatch) {
+        return { details: text, projectId: '' };
+    }
+
+    return {
+        details: text.slice(0, markerMatch.index).trim(),
+        projectId: String(markerMatch[1] || '').trim()
+    };
+}
+
 async function loginWithBarcode(barcode) {
     try {
         const rawBarcode = String(barcode || '').trim();
@@ -525,6 +559,14 @@ async function loadUsers() {
     };
 
     const normalizePerms = (value, role = 'student') => {
+        if (role === 'mentor' || role === 'captain') {
+            return {
+                canCreateProjects: false,
+                canJoinProjects: true,
+                canSignOut: true
+            };
+        }
+
         if (role !== 'student') {
             return {
                 canCreateProjects: true,
@@ -620,6 +662,31 @@ async function fetchUserByIdFromSupabase(userId) {
 }
 
 /**
+ * Fetch a user by id or username (case-insensitive) from Supabase.
+ * Accepts either a user id or a username string and returns the user row or null.
+ */
+async function fetchUserByIdentityFromSupabase(identity) {
+    const client = requireSupabaseClient('fetchUserByIdentityFromSupabase');
+    if (!identity) return null;
+
+    // Try exact id first
+    let { data, error } = await client.from('users').select('*').eq('id', identity).maybeSingle();
+    if (error) {
+        console.warn('fetchUserByIdentityFromSupabase id lookup error', error);
+    }
+    if (data) return data;
+
+    // Fallback: search by username (case-insensitive)
+    const normalized = String(identity).trim();
+    ({ data, error } = await client.from('users').select('*').ilike('username', normalized));
+    if (error) {
+        console.warn('fetchUserByIdentityFromSupabase username lookup error', error);
+        return null;
+    }
+    return (data && data.length > 0) ? data[0] : null;
+}
+
+/**
  * Load inventory items from public.inventory_items table
  */
 async function loadInventoryItems() {
@@ -703,7 +770,14 @@ async function loadActivityLogs() {
         console.error('Error loading activity logs:', error);
         return;
     }
-    activityLogs = data || [];
+    activityLogs = (data || []).map(row => {
+        const parsed = parseProjectLogContext(row.details);
+        return {
+            ...row,
+            details: parsed.details,
+            projectId: parsed.projectId || row.projectId || row.project_id || ''
+        };
+    });
 
     // Fold door sensor telemetry into the activity log so operators can review
     // door state changes alongside the rest of the system history.
@@ -1685,7 +1759,20 @@ async function addUserToSupabase(user) {
         console.error('Error adding user:', error);
         return null;
     }
-    return data?.[0] || user;
+
+    const created = data?.[0] || user;
+
+    // Persist explicit perms if provided (safe no-op when perms unsupported)
+    try {
+        if (created && user && user.perms) {
+            // Attempt best-effort persistence of user permissions
+            await saveUserPermissionsToSupabase(created.id, user.perms);
+        }
+    } catch (e) {
+        console.warn('Failed to persist initial user permissions (non-fatal):', e);
+    }
+
+    return created;
 }
 
 /**
@@ -1763,7 +1850,8 @@ async function saveUserPermissionsToSupabase(userId, perms) {
     const normalizedPerms = {
         canCreateProjects: !!perms?.canCreateProjects,
         canJoinProjects: !!perms?.canJoinProjects,
-        canSignOut: !!perms?.canSignOut
+        canSignOut: !!perms?.canSignOut,
+        canUsePersonal: !!perms?.canUsePersonal
     };
 
     // Preferred: JSON permissions payload directly on users row.
@@ -1792,7 +1880,8 @@ async function saveUserPermissionsToSupabase(userId, perms) {
             .update({
                 can_create_projects: normalizedPerms.canCreateProjects,
                 can_join_projects: normalizedPerms.canJoinProjects,
-                can_sign_out: normalizedPerms.canSignOut
+                can_sign_out: normalizedPerms.canSignOut,
+                can_use_personal: normalizedPerms.canUsePersonal
             })
             .eq('id', userId)
             .select('id')
@@ -1817,7 +1906,8 @@ async function saveUserPermissionsToSupabase(userId, perms) {
                     user_id: userId,
                     can_create_projects: normalizedPerms.canCreateProjects,
                     can_join_projects: normalizedPerms.canJoinProjects,
-                    can_sign_out: normalizedPerms.canSignOut
+                    can_sign_out: normalizedPerms.canSignOut,
+                    can_use_personal: normalizedPerms.canUsePersonal
                 }
             ], { onConflict: 'user_id' });
 
@@ -2433,7 +2523,7 @@ async function addActivityLogToSupabase(log) {
         timestamp: log.timestamp,
         user_id: log.userId,
         action: log.action,
-        details: log.details
+        details: log.detailsForStorage || log.details
     }]).select();
     
     if (error) {
@@ -2831,14 +2921,20 @@ async function removeProjectCollaboratorFromSupabase(projectId, userId) {
 /**
  * Add activity log (local + Supabase)
  */
-function addLog(userId, action, details) {
+function addLog(userId, action, details, projectContext = null) {
+    const projectId = typeof projectContext === 'object'
+        ? String(projectContext?.projectId || projectContext?.id || '').trim()
+        : String(projectContext || '').trim();
+    const normalizedDetails = String(details || '');
     const log = {
         id: `LOG-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
         timestamp: new Date().toISOString(),
         userId: userId,
         action: action,
-        details: details
+        details: normalizedDetails,
+        projectId: projectId || ''
     };
+    log.detailsForStorage = projectId ? `${normalizedDetails} [[project:${projectId}]]` : normalizedDetails;
     
     // Add to local array
     activityLogs.unshift(log);

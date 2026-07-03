@@ -76,6 +76,235 @@ const defaultPolicyConfig = {
         unlockFailureThreshold: 3,
         staleKioskMinutes: 45
     }
+
+/**
+ * Open modal to transfer a signed-out item from one project to another.
+ */
+function openTransferModal(sourceProjectId, signoutId) {
+    const sourceProject = projects.find(p => p.id === sourceProjectId);
+    if (!sourceProject) {
+        showToast('Source project not found for transfer.', 'error');
+        return;
+    }
+
+    const ioIndex = findSignoutIndex(sourceProject, signoutId);
+    if (ioIndex < 0) {
+        showToast('Sign-out record not found for transfer.', 'error');
+        return;
+    }
+
+    const io = sourceProject.itemsOut[ioIndex];
+    const item = inventoryItems.find(i => i.id === io.itemId);
+
+    const projectOptions = projects
+        .filter(p => p.id !== sourceProjectId)
+        .map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join('');
+
+    const html = `
+        <div class="modal-header">
+            <h3>Transfer Item</h3>
+            <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
+        </div>
+        <div class="modal-body">
+            <p class="text-secondary mb-4">Transfer <strong>${escapeHtml(item ? item.name : io.itemId)}</strong> from <strong>${escapeHtml(sourceProject.name)}</strong> to another project.</p>
+            <div class="form-group">
+                <label>Destination Project</label>
+                <select id="transfer-target-project" class="form-control">
+                    <option value="">Select target project</option>
+                    ${projectOptions}
+                </select>
+            </div>
+            <div class="form-group" id="transfer-approver-wrap">
+                <label>Approver (scan or enter user ID)</label>
+                <input type="text" id="transfer-approver-input" class="form-control" placeholder="e.g. STU-123" autofocus>
+                <small class="text-muted">A member of the destination project must approve the transfer unless you are a member of both projects.</small>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            <button class="btn btn-primary" id="confirm-transfer-btn">Transfer</button>
+        </div>
+    `;
+
+    openModal(html);
+
+    document.getElementById('confirm-transfer-btn')?.addEventListener('click', async () => {
+        const targetProjectId = document.getElementById('transfer-target-project').value;
+        const approverInput = document.getElementById('transfer-approver-input').value.trim().toUpperCase();
+
+        if (!targetProjectId) {
+            showToast('Please select a destination project.', 'error');
+            return;
+        }
+
+        const targetProject = projects.find(p => p.id === targetProjectId);
+        if (!targetProject) {
+            showToast('Selected project not found.', 'error');
+            return;
+        }
+
+        // If current user belongs to both projects, authorization is implied
+        if (doesUserBelongToProject(currentUser.id, sourceProject) && doesUserBelongToProject(currentUser.id, targetProject)) {
+            closeModal();
+            await transferProjectItem(sourceProjectId, signoutId, targetProjectId, currentUser.id);
+            return;
+        }
+
+        if (!approverInput) {
+            showToast('Approver ID is required for this transfer.', 'error');
+            return;
+        }
+
+        // Resolve approver: prefer Supabase-backed lookup, fall back to in-memory users
+        let approver = null;
+        if (typeof fetchUserByIdentityFromSupabase === 'function') {
+            try {
+                approver = await fetchUserByIdentityFromSupabase(approverInput);
+            } catch (err) {
+                console.warn('Supabase approver lookup failed', err);
+            }
+        }
+        if (!approver) {
+            approver = mockUsers.find(u => String(u.id || '').toUpperCase() === approverInput || String(u.username || '').toUpperCase() === approverInput);
+        }
+
+        if (!approver) {
+            showToast('Approver not found. Ensure user ID or username is correct and try again.', 'error');
+            return;
+        }
+
+        if (!doesUserBelongToProject(approver.id, targetProject)) {
+            showToast('Approver is not a member of the destination project.', 'error');
+            return;
+        }
+
+        closeModal();
+        await transferProjectItem(sourceProjectId, signoutId, targetProjectId, approver.id);
+    });
+}
+
+/**
+ * Transfer an item from one project to another.
+ * Returns true on success, false otherwise.
+ */
+async function transferProjectItem(sourceProjectId, signoutId, targetProjectId, approverUserId) {
+    const sourceProject = projects.find(p => p.id === sourceProjectId);
+    const targetProject = projects.find(p => p.id === targetProjectId);
+    if (!sourceProject || !targetProject) {
+        showToast('Project not found.', 'error');
+        return false;
+    }
+
+    const ioIndex = findSignoutIndex(sourceProject, signoutId);
+    if (ioIndex < 0) {
+        showToast('Sign-out record not found.', 'error');
+        return false;
+    }
+
+    const io = sourceProject.itemsOut[ioIndex];
+    const item = inventoryItems.find(i => i.id === io.itemId);
+    const qty = Math.max(1, parseInt(io.quantity, 10) || 1);
+
+    // If current user is a student and not the assigned user, require confirmation as with returns
+    if (currentUser?.role === 'student' && currentUser.id !== (io.assignedToUserId || sourceProject.ownerId)) {
+        const assignedName = (mockUsers.find(u => u.id === (io.assignedToUserId || sourceProject.ownerId)) || {}).name || (io.assignedToUserId || sourceProject.ownerId);
+        if (!confirm(`This item is assigned to ${assignedName}. Transfer on their behalf?`)) return false;
+    }
+
+    // Attempt to perform return first (increase stock, remove row)
+    const returned = await returnProjectItem(sourceProjectId, signoutId, { skipConfirmPrompt: true, suppressToast: true, suppressFlag: true });
+    if (!returned) {
+        showToast('Failed to remove original sign-out. Transfer canceled.', 'error');
+        return false;
+    }
+
+    // Now sign out to target project
+    const signoutData = {
+        id: generateId('OUT'),
+        projectId: targetProject.id,
+        itemId: io.itemId,
+        quantity: qty,
+        signoutDate: new Date().toISOString(),
+        dueDate: calculateDueDate(new Date(), currentUser, targetProject),
+        assignedToUserId: approverUserId || targetProject.ownerId,
+        signedOutByUserId: currentUser.id,
+        requiresDoorUnlock: item?.requiresDoorUnlock ?? item?.requires_door_unlock ?? false
+    };
+
+    const savedSignout = await addProjectItemOutToSupabase(signoutData);
+    if (!savedSignout) {
+        // Rollback: try to recreate original signout
+        const recreated = await addProjectItemOutToSupabase({
+            id: io.id || generateId('OUT'),
+            projectId: sourceProject.id,
+            itemId: io.itemId,
+            quantity: io.quantity,
+            signoutDate: io.signoutDate,
+            dueDate: io.dueDate,
+            assignedToUserId: io.assignedToUserId || sourceProject.ownerId,
+            signedOutByUserId: io.signedOutByUserId
+        });
+        if (recreated) {
+            showToast('Transfer failed; original sign-out restored.', 'error');
+        } else {
+            showToast('Transfer failed and original sign-out could not be restored. Manual reconciliation required.', 'error');
+        }
+        await refreshProjectsFromSupabase();
+        await refreshInventoryFromSupabase();
+        renderProjects();
+        renderInventory();
+        return false;
+    }
+
+    // Adjust stock: decrement for the new sign-out
+    if (item) {
+        const currentStock = Math.max(0, parseInt(item.stock, 10) || 0);
+        const nextStock = currentStock - qty;
+        const stockUpdated = await updateItemInSupabase(item.id, { stock: nextStock });
+        if (!stockUpdated) {
+            // Rollback new signout
+            if (savedSignout?.id) await returnItemToSupabase(savedSignout.id);
+            // Try to recreate original signout
+            const recreated = await addProjectItemOutToSupabase({
+                id: io.id || generateId('OUT'),
+                projectId: sourceProject.id,
+                itemId: io.itemId,
+                quantity: io.quantity,
+                signoutDate: io.signoutDate,
+                dueDate: io.dueDate,
+                assignedToUserId: io.assignedToUserId || sourceProject.ownerId,
+                signedOutByUserId: io.signedOutByUserId
+            });
+            if (recreated) {
+                showToast('Transfer failed while updating stock; original sign-out restored.', 'error');
+            } else {
+                showToast('Transfer failed and original sign-out could not be restored. Manual reconciliation required.', 'error');
+            }
+            await refreshProjectsFromSupabase();
+            await refreshInventoryFromSupabase();
+            renderProjects();
+            renderInventory();
+            return false;
+        }
+
+        // Update local stock
+        item.stock = nextStock;
+    }
+
+    // Update local project arrays
+    await refreshProjectsFromSupabase();
+    await refreshInventoryFromSupabase();
+    renderProjects();
+    renderInventory();
+
+    const fromAssigned = io.assignedToUserId || sourceProject.ownerId;
+    const toAssigned = signoutData.assignedToUserId;
+    addLog(currentUser.id, 'Transfer Item', `Transferred ${qty}x ${item ? item.name : io.itemId} from ${sourceProject.name} to ${targetProject.name}. From:${fromAssigned} To:${toAssigned}`,
+        { id: targetProject.id });
+
+    showToast('Transfer completed successfully.', 'success');
+    return true;
+}
 };
 
 const defaultKioskManageConfig = {
@@ -168,6 +397,30 @@ const defaultOrdersStudentView = String(envConfig.ALLOW_STUDENT_ORDER_VIEW || 'f
 let ordersStudentViewEnabled = localStorage.getItem(ordersStudentViewStorageKey) === null
     ? defaultOrdersStudentView
     : localStorage.getItem(ordersStudentViewStorageKey) === 'true';
+
+// Inventory layout preference: 'grid' or 'row'
+const inventoryLayoutStorageKey = 'inventoryLayout';
+let inventoryLayout = localStorage.getItem(inventoryLayoutStorageKey) || 'grid';
+
+function setInventoryLayout(mode) {
+    inventoryLayout = String(mode || 'grid').toLowerCase() === 'row' ? 'row' : 'grid';
+    localStorage.setItem(inventoryLayoutStorageKey, inventoryLayout);
+    document.getElementById('inventory-layout-grid-btn')?.classList.toggle('active', inventoryLayout === 'grid');
+    document.getElementById('inventory-layout-row-btn')?.classList.toggle('active', inventoryLayout === 'row');
+    // Toggle views
+    document.getElementById('inventory-grid-container').style.display = inventoryLayout === 'grid' ? 'block' : 'none';
+    document.getElementById('inventory-row-view').style.display = inventoryLayout === 'row' ? 'block' : 'none';
+    renderInventory();
+}
+
+// Wire toggle buttons if present
+document.addEventListener('click', (e) => {
+    if (e.target && e.target.id === 'inventory-layout-row-btn') setInventoryLayout('row');
+    if (e.target && e.target.id === 'inventory-layout-grid-btn') setInventoryLayout('grid');
+});
+
+// Initialize layout on load
+setInventoryLayout(inventoryLayout);
 
 let inventorySmartSearchTerm = '';
 let inventorySearchDebounceTimer = null;
@@ -976,6 +1229,7 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 4500) {
     }
 }
 
+async function openAppInfoMenu() {
     const licenseStatusLabel = !appLicenseState.checked
         ? 'Not checked'
         : appLicenseState.valid
@@ -1005,10 +1259,10 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 4500) {
     ].filter(section => section.subheading || section.description);
 
     const popupSectionsHtml = sectionValues.length > 0
-        ? sectionValues.map(section => `
+            ? sectionValues.map(section => `
             <div class="glass-panel" style="padding:0.9rem;border-radius:var(--radius-sm);margin-bottom:0.7rem;">
-                ${section.subheading ? `<h4 style="margin-bottom:0.4rem;color:var(--text-primary);">${escapeHtml(section.subheading)}</h4>` : ''}
-                ${section.description ? `<p class="text-muted" style="font-size:0.88rem;line-height:1.45;white-space:pre-wrap;">${escapeHtml(section.description)}</p>` : ''}
+                    ${section.subheading ? `<h4 style="margin-bottom:0.4rem;color:var(--text-primary);">${escapeHtml(section.subheading)}</h4>` : ''} 
+                    ${section.description ? `<p class="text-muted" style="font-size:0.88rem;line-height:1.45;white-space:pre-wrap;">${escapeHtml(section.description)}</p>` : ''} 
             </div>
         `).join('')
         : `<p class="text-muted">No popup content configured in env.js.</p>`;
@@ -1982,8 +2236,12 @@ function renderBasket() {
     }
 
     // Populate projects
-    const myProjects = projects.filter(p => (p.ownerId === currentUser.id || p.collaborators.includes(currentUser.id)) && !String(p.id || '').startsWith('PERS-'));
-    projSelect.innerHTML = '<option value="">My Items (Personal)</option>' +
+    const myProjects = projects.filter(p => (p.ownerId === currentUser.id || (Array.isArray(p.collaborators) && p.collaborators.includes(currentUser.id))) && !String(p.id || '').startsWith('PERS-'));
+
+    const hasPersonalProject = projects.some(p => p.id === `PERS-${currentUser.id}`);
+    const allowPersonal = (currentUser?.perms?.canUsePersonal === true) || hasPersonalProject;
+
+    projSelect.innerHTML = (allowPersonal ? '<option value="">My Items (Personal)</option>' : '') +
         myProjects.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
 }
 
@@ -3138,9 +3396,9 @@ async function checkoutBasket() {
             _trackItemSignout(item, basketItem.qty);
 
             if (project.id.startsWith('PERS-')) {
-                addLog(currentUser.id, 'Personal Sign-out', `Bulk signed out ${basketItem.qty}x ${item.name} to self`);
+                addLog(currentUser.id, 'Personal Sign-out', `Bulk signed out ${basketItem.qty}x ${item.name} to self`, { id: project.id });
             } else {
-                addLog(currentUser.id, 'Project Sign-out', `Bulk signed out ${basketItem.qty}x ${item.name} for project ${project.name}`);
+                addLog(currentUser.id, 'Project Sign-out', `Bulk signed out ${basketItem.qty}x ${item.name} for project ${project.name}`, { id: project.id });
             }
         }
     }
@@ -3784,7 +4042,60 @@ function getRoleIcon(role) {
     if (role === 'student') return '<i class="ph-fill ph-graduation-cap"></i>';
     if (role === 'teacher') return '<i class="ph-fill ph-pencil"></i>';
     if (role === 'developer') return '<i class="ph-fill ph-code"></i>';
+    if (role === 'mentor') return '<i class="ph-fill ph-shield-star"></i>';
+    if (role === 'captain') return '<i class="ph-fill ph-flag"></i>';
     return '<i class="ph-fill ph-user"></i>';
+}
+
+function canCurrentUserManageAdminFeatures() {
+    return !!currentUser && isStaffManagementRole(currentUser.role);
+}
+
+function canCurrentUserAccessProjectOversight() {
+    return !!currentUser && (isStaffManagementRole(currentUser.role) || isProjectOversightRole(currentUser.role));
+}
+
+function getProjectCollaboratorCandidates() {
+    return mockUsers.filter(u => canCollaborateOnProjects(u.role) && u.status !== 'Suspended');
+}
+
+function getVisibleProjectsForCurrentUser() {
+    if (!currentUser) return [];
+    if (isStaffManagementRole(currentUser.role)) {
+        return projects.filter(project => !String(project.id || '').startsWith('PERS-') || project.ownerId === currentUser.id);
+    }
+
+    return projects.filter(project => canCurrentUserViewProject(project));
+}
+
+function getProjectLogProjectId(log) {
+    const directProjectId = String(log?.projectId || log?.project_id || '').trim();
+    if (directProjectId) return directProjectId;
+
+    const details = String(log?.details || '');
+    const markerMatch = details.match(/\[\[project:([^\]]+)\]\]$/i);
+    if (markerMatch) return String(markerMatch[1] || '').trim();
+
+    return '';
+}
+
+function canCurrentUserViewProjectLog(log) {
+    if (!currentUser) return false;
+    if (isStaffManagementRole(currentUser.role)) return true;
+
+    const projectId = getProjectLogProjectId(log);
+    const visibleProjects = getVisibleProjectsForCurrentUser();
+    if (projectId) {
+        const visibleProjectIds = new Set(visibleProjects.map(project => String(project.id || '').trim()));
+        if (visibleProjectIds.has(projectId)) return true;
+    }
+
+    const details = String(log?.details || '').toLowerCase();
+    return visibleProjects.some(project => {
+        const projectName = String(project.name || '').toLowerCase();
+        const projectIdLabel = String(project.id || '').toLowerCase();
+        return (projectName && details.includes(projectName)) || (projectIdLabel && details.includes(projectIdLabel));
+    });
 }
 
 function canCurrentUserViewOrders() {
@@ -3871,6 +4182,8 @@ function login(user, options = {}) {
     // Set role badge color
     if (user.role === 'developer') userRoleEl.style.color = '#8b5cf6';
     else if (user.role === 'teacher') userRoleEl.style.color = '#f59e0b';
+    else if (user.role === 'mentor') userRoleEl.style.color = '#14b8a6';
+    else if (user.role === 'captain') userRoleEl.style.color = '#38bdf8';
     else userRoleEl.style.color = '#94a3b8';
 
     // Access Control & Permission Enforcement
@@ -3889,6 +4202,24 @@ function login(user, options = {}) {
         document.getElementById('bulk-manage-items-btn')?.classList.add('hidden');
         document.getElementById('bulk-delete-items-btn')?.classList.add('hidden');
         document.getElementById('bulk-import-items-btn')?.classList.add('hidden');
+        setProfilePrivilegedActionState(false);
+    } else if (canCurrentUserAccessProjectOversight() && !canCurrentUserManageAdminFeatures()) {
+        navLogs.classList.remove('hidden');
+        navUsers.classList.add('hidden');
+        navClasses.classList.add('hidden');
+        navClassDisplay?.classList.add('hidden');
+        navKioskSettings?.classList.add('hidden');
+        navDoor?.classList.add('hidden');
+        navRequests?.classList.add('hidden');
+        applyOrdersNavVisibility();
+        document.getElementById('manage-categories-btn')?.classList.add('hidden');
+        document.getElementById('manage-visibility-tags-btn')?.classList.add('hidden');
+        document.getElementById('bulk-manage-items-btn')?.classList.add('hidden');
+        document.getElementById('bulk-delete-items-btn')?.classList.add('hidden');
+        document.getElementById('bulk-import-items-btn')?.classList.add('hidden');
+        document.getElementById('add-item-btn')?.classList.add('hidden');
+        document.getElementById('create-project-btn')?.classList.add('hidden');
+        document.getElementById('create-class-btn')?.classList.add('hidden');
         setProfilePrivilegedActionState(false);
     } else {
         navLogs.classList.remove('hidden');
@@ -3919,12 +4250,15 @@ function login(user, options = {}) {
         } else {
             createProjectBtn?.classList.remove('hidden');
         }
-    } else {
+    } else if (canCurrentUserManageAdminFeatures()) {
         addItemBtn?.classList.remove('hidden');
         createProjectBtn?.classList.remove('hidden');
+    } else {
+        addItemBtn?.classList.add('hidden');
+        createProjectBtn?.classList.add('hidden');
     }
 
-    if (user.role === 'teacher' || user.role === 'developer') createClassBtn?.classList.remove('hidden');
+    if (canCurrentUserManageAdminFeatures()) createClassBtn?.classList.remove('hidden');
     else createClassBtn?.classList.add('hidden');
 
     // Hide OehlerOS version badge after login
@@ -4560,12 +4894,12 @@ function loadDashboard() {
     const list2 = document.getElementById('recent-activity-mini');
     const now = new Date();
 
-    if (currentUser.role === 'student') {
+        if (canCurrentUserManageAdminFeatures()) {
         // Student Dashboard view
         if (tabbedWidget) tabbedWidget.parentElement.style.display = 'none';
         if (studentWidgets) studentWidgets.style.display = '';
 
-        const myProjects = projects.filter(p => p.ownerId === currentUser.id || p.collaborators.includes(currentUser.id));
+        const myProjects = projects.filter(p => p.ownerId === currentUser.id || (Array.isArray(p.collaborators) && p.collaborators.includes(currentUser.id)));
         let itemsOutCount = 0;
         let dueBackCount = 0;
         let myItemsOut = [];
@@ -4670,9 +5004,22 @@ function loadDashboard() {
                 returnBtn.appendChild(returnIcon);
                 returnBtn.appendChild(document.createTextNode(' Return'));
 
+                const transferBtn = document.createElement('button');
+                transferBtn.className = 'btn btn-secondary text-sm transfer-item-btn';
+                transferBtn.style.cssText = 'padding:0.3rem 0.6rem;font-size:0.75rem;margin-left:0.5rem';
+                transferBtn.setAttribute('data-project-item-out-id', safeSignoutId);
+                transferBtn.setAttribute('data-project-id', safeProjectId);
+                transferBtn.setAttribute('data-item-id', safeItemId);
+                transferBtn.setAttribute('data-project', safeProjectName);
+                const transferIcon = document.createElement('i');
+                transferIcon.className = 'ph ph-arrows-horizontal';
+                transferBtn.appendChild(transferIcon);
+                transferBtn.appendChild(document.createTextNode(' Transfer'));
+
                 right.appendChild(spanDue);
                 right.appendChild(extendBtn);
                 right.appendChild(returnBtn);
+                right.appendChild(transferBtn);
                 li.appendChild(left);
                 li.appendChild(right);
                 list1.appendChild(li);
@@ -4744,6 +5091,18 @@ function loadDashboard() {
                     return;
                 }
                 renderDashboard();
+            });
+        });
+
+        // Bind transfer item buttons
+        document.querySelectorAll('.transfer-item-btn').forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                const projectItemOutId = e.currentTarget.getAttribute('data-project-item-out-id');
+                const projectId = e.currentTarget.getAttribute('data-project-id');
+                const itemId = e.currentTarget.getAttribute('data-item-id');
+                const projectName = e.currentTarget.getAttribute('data-project');
+
+                openTransferModal(projectId, projectItemOutId);
             });
         });
 
@@ -5299,6 +5658,7 @@ function openItemPreviewModal(itemId) {
 
 function renderInventory() {
     const tbody = document.getElementById('inventory-table-body');
+    const gridContainer = document.getElementById('inventory-grid-container');
     const searchInput = document.getElementById('inventory-smart-search');
     const resultsMeta = document.getElementById('inventory-results-meta');
 
@@ -5330,12 +5690,16 @@ function renderInventory() {
     }
 
     if (filtered.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No items match your current search.</td></tr>';
-        updateInventoryBulkSelectionState();
+        if (inventoryLayout === 'row') {
+            tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No items match your current search.</td></tr>';
+            updateInventoryBulkSelectionState();
+        } else {
+            gridContainer.innerHTML = '<div class="text-center text-muted">No items match your current search.</div>';
+        }
         return;
     }
-
-    tbody.innerHTML = filtered.map(item => {
+    if (inventoryLayout === 'row') {
+        tbody.innerHTML = filtered.map(item => {
         const currentStatus = determineStatus(item.stock, item.threshold, item.item_type);
         const statusClass = currentStatus === 'In Stock' ? 'status-instock' : (currentStatus === 'Low Stock' || currentStatus === 'Out of Stock') ? 'status-lowstock' : 'status-na';
         const categoryLabel = escapeHtml(String(item.category || 'Uncategorized'));
@@ -5370,7 +5734,7 @@ function renderInventory() {
                 </td>
                 <td>
                     <div class="flex inventory-item-actions" style="gap:0.65rem;flex-wrap:nowrap;">
-                        ${currentUser.role !== 'student' ? `
+                        ${canCurrentUserManageAdminFeatures() ? `
                             <button class="btn btn-secondary btn-sm inventory-item-action-btn edit-item-btn" data-id="${safeItemId}" title="Edit Item">
                                 <i class="ph ph-pencil-simple"></i>
                             </button>` : ''}
@@ -5385,7 +5749,37 @@ function renderInventory() {
                 </td>
             </tr>
         `;
-    }).join('');
+        }).join('');
+
+        // (row view) attach listeners as before after building table
+    } else {
+        // grid view
+        const placeholder = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300"><rect width="100%" height="100%" fill="%23e5e7eb"/><text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" fill="%239ca3af" font-size="18">No image</text></svg>';
+        gridContainer.innerHTML = '<div class="inventory-grid">' + filtered.map(item => {
+            const currentStatus = determineStatus(item.stock, item.threshold, item.item_type);
+            const statusClass = currentStatus === 'In Stock' ? 'status-instock' : (currentStatus === 'Low Stock' || currentStatus === 'Out of Stock') ? 'status-lowstock' : 'status-na';
+            const safeItemId = escapeHtml(String(item.id || ''));
+            const safeItemName = escapeHtml(String(item.name || 'Unnamed Item'));
+            const stockVal = Math.max(0, parseInt(item?.stock, 10) || 0);
+            const totalQty = getItemTotalQuantity(item);
+            const imgSrc = escapeHtml(String(item.image || item.image_url || item.imageUrl || '')) || placeholder;
+
+            return `
+                <div class="inventory-card" data-id="${safeItemId}">
+                    <div class="card-image"><img src="${imgSrc}" onerror="this.src='${placeholder}'" alt="${safeItemName}"></div>
+                    <div class="card-body">
+                        <div class="card-title">${safeItemName} ${renderMissingMetadataIcon(item) || ''}</div>
+                        <div class="card-meta"><span class="status-badge ${statusClass}">${currentStatus}</span><span class="inventory-qty">${stockVal} of ${totalQty}</span></div>
+                        <div class="card-actions">
+                            ${canCurrentUserManageAdminFeatures() ? `<button class="btn btn-secondary btn-sm edit-item-btn" data-id="${safeItemId}" title="Edit Item"><i class="ph ph-pencil-simple"></i></button>` : ''}
+                            <button class="btn btn-secondary btn-sm add-basket-btn" data-id="${safeItemId}" title="Add to Basket"><i class="ph ph-shopping-cart-simple"></i></button>
+                            <button class="btn btn-primary btn-sm signout-btn" data-id="${safeItemId}" title="Sign out to Project"><i class="ph ph-export"></i> Sign Out</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }).join('') + '</div>';
+    }
 
     // Select all items checkbox
     document.getElementById('select-all-items')?.addEventListener('change', (e) => {
@@ -5440,7 +5834,7 @@ function renderInventory() {
 
             if (confirm(`Return ${item.name} to inventory?`)) {
                 // Find the project and remove the item
-                const myProjects = projects.filter(p => p.ownerId === currentUser.id || p.collaborators.includes(currentUser.id));
+                const myProjects = projects.filter(p => p.ownerId === currentUser.id || (Array.isArray(p.collaborators) && p.collaborators.includes(currentUser.id)));
                 myProjects.forEach(p => {
                     const outIdx = p.itemsOut.findIndex(io => io.itemId === itemId);
                     if (outIdx > -1) {
@@ -5722,20 +6116,20 @@ document.getElementById('bulk-delete-items-btn')?.addEventListener('click', asyn
    ======================================= */
 function canCurrentUserReturnProjectItem(project) {
     if (!currentUser) return false;
-    if (currentUser.role !== 'student') return true;
-    return project.ownerId === currentUser.id || project.collaborators.includes(currentUser.id);
+    if (canCurrentUserManageAdminFeatures()) return true;
+    return project.ownerId === currentUser.id || (Array.isArray(project.collaborators) && project.collaborators.includes(currentUser.id));
 }
 
 function canCurrentUserViewProject(project) {
     if (!currentUser || !project) return false;
-    if (currentUser.role !== 'student') return true;
-    return project.ownerId === currentUser.id || project.collaborators.includes(currentUser.id);
+    if (canCurrentUserManageAdminFeatures()) return true;
+    return project.ownerId === currentUser.id || (Array.isArray(project.collaborators) && project.collaborators.includes(currentUser.id));
 }
 
 function canCurrentUserManageProject(project) {
     if (!currentUser || !project) return false;
-    if (currentUser.role !== 'student') return true;
-    return project.ownerId === currentUser.id;
+    if (canCurrentUserManageAdminFeatures()) return true;
+    return currentUser.role === 'student' && project.ownerId === currentUser.id;
 }
 
 function canCurrentUserDeleteProject(project) {
@@ -5751,7 +6145,7 @@ function getProjectOwnerCandidates() {
 
 function buildProjectCollaboratorOptions({ selectedOwnerId = '', selectedCollaborators = [] } = {}) {
     const selectedSet = new Set(selectedCollaborators || []);
-    return getProjectOwnerCandidates()
+    return getProjectCollaboratorCandidates()
         .filter(user => user.id !== selectedOwnerId)
         .map(user => `
             <div style="margin-bottom:0.5rem">
@@ -6690,7 +7084,7 @@ async function returnProjectItem(projectId, signoutId, options = {}) {
 
     if (currentUser.id !== assignedToUserId) {
         const assignedName = assignedToUser ? assignedToUser.name : assignedToUserId;
-        addLog(currentUser.id, 'Return On Behalf', `Returned ${returnQty}x ${item ? item.name : io.itemId} for ${assignedName} in ${project.name}`);
+        addLog(currentUser.id, 'Return On Behalf', `Returned ${returnQty}x ${item ? item.name : io.itemId} for ${assignedName} in ${project.name}`, { id: project.id });
         if (!options.suppressToast) {
             showToast(`Returned on behalf of ${assignedName}.`, 'warning');
         }
@@ -6719,7 +7113,7 @@ async function returnProjectItem(projectId, signoutId, options = {}) {
             await refreshRequestsFromSupabase();
         }
     } else {
-        addLog(currentUser.id, 'Return Item', `Returned ${returnQty}x ${item ? item.name : io.itemId} in ${project.name}`);
+        addLog(currentUser.id, 'Return Item', `Returned ${returnQty}x ${item ? item.name : io.itemId} in ${project.name}`, { id: project.id });
         if (!options.suppressToast) {
             showToast('Item signed back in.', 'success');
         }
@@ -6737,17 +7131,11 @@ function renderProjects() {
     if (!container) return; // Only render if on Projects page
 
     // Filter projects based on role
-    // Students see only projects they own or collaborate on (active or past)
-    // Teachers/Devs see ALL projects (past and active)
-    let visibleProjects = projects;
-    if (currentUser.role === 'student') {
-        visibleProjects = projects.filter(p => p.ownerId === currentUser.id || p.collaborators.includes(currentUser.id));
-    } else {
-        visibleProjects = projects.filter(p => {
-            if (!String(p.id || '').startsWith('PERS-')) return true;
-            return p.ownerId === currentUser.id;
-        });
-    }
+    // Students and project-oversight roles see only projects they own or are assigned to.
+    // Teachers/Devs see all projects (past and active).
+    let visibleProjects = canCurrentUserManageAdminFeatures()
+        ? projects.filter(p => !String(p.id || '').startsWith('PERS-') || p.ownerId === currentUser.id)
+        : getVisibleProjectsForCurrentUser();
 
     const ensuredPersonalProject = getOrCreatePersonalProject(currentUser.id);
     if (!visibleProjects.some(p => p.id === ensuredPersonalProject.id)) {
@@ -6775,6 +7163,7 @@ function renderProjects() {
                     <div style="display:flex;align-items:center;gap:0.5rem;">
                         <span class="text-muted font-mono" style="font-size:0.75rem">${escapeHtml(item ? item.sku : 'N/A')}</span>
                         <button class="btn btn-secondary text-sm return-project-item-btn" data-project-id="${escapeHtml(personalProject.id)}" data-signout-id="${escapeHtml(signoutId)}" style="padding:0.2rem 0.5rem;font-size:0.75rem;"><i class="ph ph-arrow-counter-clockwise"></i> Sign In</button>
+                        <button class="btn btn-secondary text-sm transfer-project-item-btn" data-project-id="${escapeHtml(personalProject.id)}" data-signout-id="${escapeHtml(signoutId)}" style="padding:0.2rem 0.5rem;font-size:0.75rem;margin-left:0.4rem;"><i class="ph ph-arrows-horizontal"></i> Transfer</button>
                     </div>
                 </div>
             `;
@@ -6825,7 +7214,7 @@ function renderProjects() {
                                 </div>
                                 <div style="display:flex;align-items:center;gap:0.5rem;">
                                     <span class="text-muted font-mono" style="font-size:0.75rem">${escapeHtml(item ? item.sku : 'N/A')}</span>
-                                    ${canCurrentUserReturnProjectItem(proj) ? `<button class="btn btn-secondary text-sm return-project-item-btn" data-project-id="${escapeHtml(proj.id)}" data-signout-id="${escapeHtml(signoutId)}" style="padding:0.2rem 0.5rem;font-size:0.75rem;"><i class="ph ph-arrow-counter-clockwise"></i> Sign In</button>` : ''}
+                                    ${canCurrentUserReturnProjectItem(proj) ? `<button class="btn btn-secondary text-sm return-project-item-btn" data-project-id="${escapeHtml(proj.id)}" data-signout-id="${escapeHtml(signoutId)}" style="padding:0.2rem 0.5rem;font-size:0.75rem;"><i class="ph ph-arrow-counter-clockwise"></i> Sign In</button><button class="btn btn-secondary text-sm transfer-project-item-btn" data-project-id="${escapeHtml(proj.id)}" data-signout-id="${escapeHtml(signoutId)}" style="padding:0.2rem 0.5rem;font-size:0.75rem;margin-left:0.4rem;"><i class="ph ph-arrows-horizontal"></i> Transfer</button>` : ''}
                                 </div>
                             </div>
                         `;
@@ -6882,6 +7271,15 @@ function renderProjects() {
         });
     });
 
+    // Bind transfer buttons in project lists
+    document.querySelectorAll('.transfer-project-item-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const projectId = e.currentTarget.getAttribute('data-project-id');
+            const signoutId = e.currentTarget.getAttribute('data-signout-id');
+            openTransferModal(projectId, signoutId);
+        });
+    });
+
 }
 
 async function openSignOutModal(itemId) {
@@ -6907,7 +7305,7 @@ async function openSignOutModal(itemId) {
         return;
     }
 
-    if (currentUser.role !== 'student') {
+    if (canCurrentUserManageAdminFeatures()) {
         const staffProjects = projects.filter(p => (p.ownerId === currentUser.id || (Array.isArray(p.collaborators) && p.collaborators.includes(currentUser.id))) && !String(p.id || '').startsWith('PERS-'));
         const staffClasses = getManagedClassesForCheckout();
         const defaultDestinationMode = staffProjects.length > 0
@@ -7053,7 +7451,7 @@ async function openSignOutModal(itemId) {
             if (!proj) return `<option value="${escapeHtml(currentUser.id)}">${escapeHtml(currentUser.name)}</option>`;
 
             let options = '';
-            if (currentUser.role !== 'student') {
+            if (canCurrentUserManageAdminFeatures()) {
                 options += `<option value="${escapeHtml(currentUser.id)}">Myself (${escapeHtml(currentUser.name)})</option>`;
             }
             if (currentUser.role === 'student' || proj.ownerId !== currentUser.id) {
@@ -7412,9 +7810,9 @@ async function openSignOutModal(itemId) {
 
                 _trackItemSignout(item, qty);
                 if (destinationMode === 'personal') {
-                    addLog(currentUser.id, 'Personal Sign-out', `Signed out ${qty}x ${item.name} (SKU: ${item.sku}) to self`);
+                    addLog(currentUser.id, 'Personal Sign-out', `Signed out ${qty}x ${item.name} (SKU: ${item.sku}) to self`, { id: project.id });
                 } else {
-                    addLog(currentUser.id, 'Project Sign-out', `Signed out ${qty}x ${item.name} (SKU: ${item.sku}) for ${assignedToUserName} in project ${project.name}`);
+                    addLog(currentUser.id, 'Project Sign-out', `Signed out ${qty}x ${item.name} (SKU: ${item.sku}) for ${assignedToUserName} in project ${project.name}`, { id: project.id });
                 }
 
                 await Promise.all([refreshProjectsFromSupabase(), refreshInventoryFromSupabase()]);
@@ -7454,7 +7852,7 @@ async function openSignOutModal(itemId) {
         
         let options = '';
         // Add myself option for teachers
-        if (currentUser.role !== 'student') {
+        if (canCurrentUserManageAdminFeatures()) {
             options += `<option value="${escapeHtml(currentUser.id)}">Myself (${escapeHtml(currentUser.name)})</option>`;
         }
         // Add project owner if not already added
@@ -7475,10 +7873,12 @@ async function openSignOutModal(itemId) {
     };
 
     // Determine default assignee based on role
-    const defaultAssigneeId = currentUser.role === 'student' ? projects.find(p => p.id === (myProjects[0]?.id || 'personal'))?.ownerId || currentUser.id : currentUser.id;
+    const defaultAssigneeId = currentUser.role === 'student'
+        ? projects.find(p => p.id === (myProjects[0]?.id || 'personal'))?.ownerId || currentUser.id
+        : currentUser.id;
 
-    // Only show "Assign To" field for teachers
-    const assignToFieldHtml = currentUser.role !== 'student' ? `
+    // Only show "Assign To" for teacher/developer sign-outs.
+    const assignToFieldHtml = canCurrentUserManageAdminFeatures() ? `
         <div class="form-group">
             <label>Assign To</label>
             <select id="so-assignee" class="form-control">
@@ -7546,7 +7946,7 @@ async function openSignOutModal(itemId) {
     refreshQtyPreview();
 
     // Update assignee options when project changes (for teachers)
-    if (currentUser.role !== 'student') {
+    if (canCurrentUserManageAdminFeatures()) {
         document.getElementById('so-project')?.addEventListener('change', (e) => {
             const projId = e.target.value;
             const assigneeSelect = document.getElementById('so-assignee');
@@ -7576,7 +7976,7 @@ async function openSignOutModal(itemId) {
         let assignedToUserId = null;
         
         // Get assignee from form if teacher, otherwise use project owner
-        if (currentUser.role !== 'student') {
+        if (canCurrentUserManageAdminFeatures()) {
             assignedToUserId = document.getElementById('so-assignee')?.value;
         }
 
@@ -7624,8 +8024,8 @@ async function openSignOutModal(itemId) {
                 }
             }
 
-            // For students, assign to project owner; for teachers, use selected assignee
-            const finalAssignedToUserId = assignedToUserId || project.ownerId;
+            // Teachers/developers can assign to another user; project-oversight roles default to themselves.
+            const finalAssignedToUserId = assignedToUserId || (canCurrentUserManageAdminFeatures() ? project.ownerId : currentUser.id);
 
             const signoutData = {
                 id: generateId('OUT'),
@@ -7680,7 +8080,7 @@ async function openSignOutModal(itemId) {
 
             _trackItemSignout(item, qty);
             // Log activity
-            addLog(currentUser.id, 'Sign Out', `Signed out ${qty}x ${item.name} (SKU: ${item.sku}) for Project: ${String(project.id || '').startsWith('PERS-') ? 'My Items (Personal)' : project.name}`);
+            addLog(currentUser.id, 'Sign Out', `Signed out ${qty}x ${item.name} (SKU: ${item.sku}) for Project: ${String(project.id || '').startsWith('PERS-') ? 'My Items (Personal)' : project.name}`, { id: project.id });
 
             await Promise.all([refreshProjectsFromSupabase(), refreshInventoryFromSupabase()]);
 
@@ -8424,6 +8824,10 @@ function renderLogs() {
         });
     }
 
+    if (canCurrentUserAccessProjectOversight() && !canCurrentUserManageAdminFeatures()) {
+        filteredLogs = filteredLogs.filter(log => canCurrentUserViewProjectLog(log));
+    }
+
     tbody.innerHTML = filteredLogs.map(log => {
         const idToMatch = log.userId || log.user_id;
         const trUser = mockUsers.find(u => u.id === idToMatch);
@@ -8432,7 +8836,7 @@ function renderLogs() {
             ? rawTimestamp.toLocaleString()
             : 'Unknown date';
         const actionLabel = escapeHtml(log.action || 'Unknown Action');
-        const detailsLabel = escapeHtml(log.details || '');
+        const detailsLabel = escapeHtml(String(log.details || '').replace(/\s*\[\[project:[^\]]+\]\]\s*$/i, ''));
         const userLabel = escapeHtml(trUser?.name || idToMatch || 'Unknown User');
         return `
             <tr>
@@ -8456,12 +8860,15 @@ function renderLogs() {
 function pushActivityLogRealtime(row) {
     if (!row || typeof row !== 'object') return;
 
+    const parsed = parseProjectLogContext(row.details);
+
     const normalized = {
         id: String(row.id || row.log_id || row.id === 0 ? row.id : `log-${Date.now()}`),
         timestamp: row.timestamp || row.created_at || new Date().toISOString(),
         userId: row.user_id || row.userId || row.userId || row.userId || row.userId,
         action: row.action || row.name || row.type || row.event || '',
-        details: row.details || row.payload || ''
+        details: parsed.details || row.payload || '',
+        projectId: parsed.projectId || row.projectId || row.project_id || ''
     };
 
     const existingId = String(normalized.id || '').trim();
@@ -8631,7 +9038,7 @@ function renderUsers() {
                 </td>
                 <td>
                     <div class="flex flex-col items-start gap-1">
-                        <span class="badge" style="color:${user.role === 'developer' ? '#8b5cf6' : user.role === 'teacher' ? '#f59e0b' : '#94a3b8'}">
+                        <span class="badge" style="color:${user.role === 'developer' ? '#8b5cf6' : user.role === 'teacher' ? '#f59e0b' : user.role === 'mentor' ? '#14b8a6' : user.role === 'captain' ? '#38bdf8' : '#94a3b8'}">
                             ${safeUserRole}
                         </span>
                         ${isSuspended ? `<span class="badge" style="background: rgba(239, 68, 68, 0.15); color: var(--danger); font-size: 0.7rem; border: 1px solid rgba(239,68,68,0.2)">SUSPENDED</span>` : ''}
@@ -8800,12 +9207,13 @@ async function openUserModal(editId = null) {
 
     const isEdit = !!editId;
     const userToEdit = isEdit ? mockUsers.find(u => u.id === editId) : null;
-    const canEditBarcode = isEdit && (currentUser.role === 'teacher' || currentUser.role === 'developer');
+    const canEditBarcode = isEdit && canCurrentUserManageAdminFeatures();
 
     // Default student permissions
     const cProjects = isEdit ? (userToEdit.perms?.canCreateProjects ?? false) : false;
     const cJoin = isEdit ? (userToEdit.perms?.canJoinProjects ?? true) : true;
     const cSignOut = isEdit ? (userToEdit.perms?.canSignOut ?? false) : false;
+    const cPersonal = isEdit ? (userToEdit.perms?.canUsePersonal ?? false) : false;
     const signInAttentionAutotrigger = isEdit ? shouldAutoTriggerAttentionOnSignIn(userToEdit) : false;
     const initialGrade = isEdit ? String(userToEdit.grade || '') : '';
 
@@ -8832,6 +9240,8 @@ async function openUserModal(editId = null) {
                 <select id="user-role-input" class="form-control">
                     <option value="student" ${isEdit && userToEdit.role === 'student' ? 'selected' : ''}>Student</option>
                     <option value="teacher" ${isEdit && userToEdit.role === 'teacher' ? 'selected' : ''}>Teacher</option>
+                    <option value="mentor" ${isEdit && userToEdit.role === 'mentor' ? 'selected' : ''}>Mentor</option>
+                    <option value="captain" ${isEdit && userToEdit.role === 'captain' ? 'selected' : ''}>Captain</option>
                     <option value="developer" ${isEdit && userToEdit.role === 'developer' ? 'selected' : ''}>Developer</option>
                 </select>
             </div>
@@ -8863,6 +9273,9 @@ async function openUserModal(editId = null) {
                     </label>
                     <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer; margin: 0;">
                         <input type="checkbox" id="perm-signout" ${cSignOut ? 'checked' : ''}> Can Sign Out Items
+                    </label>
+                    <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer; margin: 0;">
+                        <input type="checkbox" id="perm-personal" ${cPersonal ? 'checked' : ''}> Enable "My Items (Personal)"
                     </label>
                 </div>
             </div>
@@ -8953,11 +9366,24 @@ async function openUserModal(editId = null) {
         const perms = role === 'student' ? {
             canCreateProjects: document.getElementById('perm-create-proj').checked,
             canJoinProjects: document.getElementById('perm-join-proj').checked,
-            canSignOut: document.getElementById('perm-signout').checked
+            canSignOut: document.getElementById('perm-signout').checked,
+            canUsePersonal: document.getElementById('perm-personal')?.checked === true
+        } : (role === 'mentor' || role === 'captain') ? {
+            canCreateProjects: false,
+            canJoinProjects: true,
+            canSignOut: true
         } : {
             canCreateProjects: true,
             canJoinProjects: true,
             canSignOut: true
+        };
+
+        // Ensure non-student roles have an explicit personal flag
+        if (role === 'mentor' || role === 'captain') {
+            perms.canUsePersonal = false;
+        }
+        if (role === 'teacher' || role === 'developer') {
+            perms.canUsePersonal = true;
         };
 
         const assignedClassId = document.getElementById('user-class-assign').value;
@@ -9037,6 +9463,13 @@ async function openUserModal(editId = null) {
                 showToast(errorMsg, 'error');
                 return;
             }
+            // Persist granular permissions (best-effort)
+            try {
+                await saveUserPermissionsToSupabase(id, perms);
+            } catch (e) {
+                console.warn('Failed to persist user permissions after update:', e);
+            }
+
             await refreshUsersFromSupabase();
 
             showToast('User updated successfully.', 'success');
@@ -9496,7 +9929,7 @@ document.getElementById('bulk-users-btn')?.addEventListener('click', () => {
             <div class="form-group">
                 <textarea id="bulk-users-data" class="form-control" rows="6" placeholder="STU-001,Alice Smith,student,Biology,10\nTCH-002,Bob Jones,teacher,,"></textarea>
             </div>
-            <p class="text-sm text-muted">Roles must be 'student' or 'teacher'. Existing IDs are skipped. Course/Grade applies to students only.</p>
+            <p class="text-sm text-muted">Roles must be student, teacher, mentor, captain, or developer. Existing IDs are skipped. Course/Grade applies to students only.</p>
         </div>
         <div class="modal-footer">
             <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
@@ -9557,7 +9990,7 @@ document.getElementById('bulk-users-btn')?.addEventListener('click', () => {
             const course = normalizeImportCell(parts[3] || '') || defaultCourse;
             const grade = normalizeImportCell(parts[4] || '') || defaultGrade;
 
-            if (!id || !name || !['student', 'teacher', 'developer'].includes(role)) {
+            if (!id || !name || !['student', 'teacher', 'mentor', 'captain', 'developer'].includes(role)) {
                 invalidCount++;
                 continue;
             }
@@ -10239,7 +10672,7 @@ function openEditProjectModal(projectId) {
         return;
     }
 
-    const canAssignOwner = currentUser.role !== 'student';
+    const canAssignOwner = canCurrentUserManageAdminFeatures();
     const ownerCandidates = getProjectOwnerCandidates();
     const ownerOptions = ownerCandidates.map(student =>
         `<option value="${escapeHtml(student.id)}" ${student.id === project.ownerId ? 'selected' : ''}>${escapeHtml(student.name)} (${escapeHtml(student.id)})</option>`
@@ -10366,7 +10799,7 @@ function openEditProjectModal(projectId) {
 
 // Create Project Flow
 document.getElementById('create-project-btn')?.addEventListener('click', () => {
-    const canAssignOwner = currentUser.role !== 'student';
+    const canAssignOwner = canCurrentUserManageAdminFeatures();
     const ownerCandidates = getProjectOwnerCandidates();
     const defaultOwnerId = canAssignOwner
         ? (ownerCandidates[0]?.id || '')
@@ -11596,7 +12029,7 @@ function renderOrders() {
                     ? 'background:rgba(239,68,68,0.2);color:var(--danger)'
                     : 'background:rgba(245,158,11,0.2);color:var(--warning)';
 
-            const canModerate = currentUser.role !== 'student' && r.status === 'Pending';
+            const canModerate = canCurrentUserManageAdminFeatures() && r.status === 'Pending';
             const parsed = parseOrderJustification(r.justification);
             const formData = parsed.formData || {};
             const priorityLevel = formData.priorityLevel || 'Medium';
@@ -12599,8 +13032,8 @@ async function processBulkUserImport() {
             continue;
         }
 
-        if (!['student', 'teacher', 'developer'].includes(role)) {
-            errors.push(`Row ${i + 1}: Invalid role '${role}'. Use student, teacher, or developer.`);
+        if (!['student', 'teacher', 'mentor', 'captain', 'developer'].includes(role)) {
+            errors.push(`Row ${i + 1}: Invalid role '${role}'. Use student, teacher, mentor, captain, or developer.`);
             continue;
         }
 
@@ -12622,6 +13055,10 @@ async function processBulkUserImport() {
                 canCreateProjects: false,
                 canJoinProjects: true,
                 canSignOut: false
+            } : (role === 'mentor' || role === 'captain') ? {
+                canCreateProjects: false,
+                canJoinProjects: true,
+                canSignOut: true
             } : {
                 canCreateProjects: true,
                 canJoinProjects: true,
@@ -13695,7 +14132,7 @@ function generateAndPrintBarcodeLabels(items, quantities) {
 
 
 function buildSearchableProjectCollaborators({ selectedOwnerId = '', selectedCollaborators = [], containerId = 'proj-collab-search-wrap' } = {}) {
-    const candidates = getProjectOwnerCandidates().filter(user => user.id !== selectedOwnerId);
+    const candidates = getProjectCollaboratorCandidates().filter(user => user.id !== selectedOwnerId);
     const selectedSet = new Set(selectedCollaborators || []);
     
     const listHtml = candidates.map(user => `
