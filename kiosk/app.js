@@ -157,20 +157,31 @@ function resolveKioskRuntimeSettings(source = {}, fallbackOverrides = null) {
             merged.showOrderForm,
             merged.show_order_form
         ], fallback.showOrderForm),
-        showCredentialRequest: readKioskBooleanSetting([
-            merged.showCredentialRequest,
-            merged.show_credential_request
-        ], fallback.showCredentialRequest),
-        requireDoorUnlockForSignout: readKioskBooleanSetting([
-            merged.requireDoorUnlockForSignout,
-            merged.require_door_unlock_for_signout
-        ], fallback.requireDoorUnlockForSignout),
-        doorCallingEnabled: readKioskBooleanSetting([
-            merged.doorCallingEnabled,
-            merged.door_calling_enabled,
-            merged.door_unlock_enabled
-        ], fallback.doorCallingEnabled),
-        doorOpenWarningSeconds: Math.round(readKioskNumberSetting([
+        // Resolve approver: prefer Supabase-backed lookup, fall back to in-memory users
+        let approver = null;
+        if (typeof fetchUserByIdentityFromSupabase === 'function') {
+            try {
+                approver = await fetchUserByIdentityFromSupabase(approverInput);
+            } catch (err) {
+                console.warn('Supabase approver lookup failed', err);
+            }
+        }
+        if (!approver) {
+            approver = mockUsers.find(u => String(u.id || '').toUpperCase() === approverInput || String(u.username || '').toUpperCase() === approverInput);
+        }
+
+        if (!approver) {
+            showToast('Approver not found. Ensure user ID or username is correct and try again.', 'error');
+            return;
+        }
+
+        if (!doesUserBelongToProject(approver.id, targetProject)) {
+            showToast('Approver is not a member of the destination project.', 'error');
+            return;
+        }
+
+        closeModal();
+        await transferProjectItem(sourceProjectId, signoutId, targetProjectId, approver.id);
             merged.doorOpenWarningSeconds,
             merged.door_open_warning_seconds,
             merged.door_warning_seconds
@@ -252,6 +263,28 @@ const defaultOrdersStudentView = String(envConfig.ALLOW_STUDENT_ORDER_VIEW || 'f
 let ordersStudentViewEnabled = localStorage.getItem(ordersStudentViewStorageKey) === null
     ? defaultOrdersStudentView
     : localStorage.getItem(ordersStudentViewStorageKey) === 'true';
+
+// Inventory layout preference: 'grid' or 'row'
+const inventoryLayoutStorageKey = 'inventoryLayout';
+let inventoryLayout = localStorage.getItem(inventoryLayoutStorageKey) || 'grid';
+
+function setInventoryLayout(mode) {
+    inventoryLayout = String(mode || 'grid').toLowerCase() === 'row' ? 'row' : 'grid';
+    localStorage.setItem(inventoryLayoutStorageKey, inventoryLayout);
+    document.getElementById('inventory-layout-grid-btn')?.classList.toggle('active', inventoryLayout === 'grid');
+    document.getElementById('inventory-layout-row-btn')?.classList.toggle('active', inventoryLayout === 'row');
+    document.getElementById('inventory-grid-container') && (document.getElementById('inventory-grid-container').style.display = inventoryLayout === 'grid' ? 'block' : 'none');
+    document.getElementById('inventory-row-view') && (document.getElementById('inventory-row-view').style.display = inventoryLayout === 'row' ? 'block' : 'none');
+    renderInventory();
+}
+
+document.addEventListener('click', (e) => {
+    if (e.target && e.target.id === 'inventory-layout-row-btn') setInventoryLayout('row');
+    if (e.target && e.target.id === 'inventory-layout-grid-btn') setInventoryLayout('grid');
+});
+
+// Initialize layout on load
+setInventoryLayout(inventoryLayout);
 
 let inventorySmartSearchTerm = '';
 let inventorySearchDebounceTimer = null;
@@ -1857,8 +1890,12 @@ function renderBasket() {
     }
 
     // Populate projects
-    const myProjects = projects.filter(p => (p.ownerId === currentUser.id || p.collaborators.includes(currentUser.id)) && !String(p.id || '').startsWith('PERS-'));
-    projSelect.innerHTML = '<option value="">My Items (Personal)</option>' +
+    const myProjects = projects.filter(p => (p.ownerId === currentUser.id || (Array.isArray(p.collaborators) && p.collaborators.includes(currentUser.id))) && !String(p.id || '').startsWith('PERS-'));
+
+    const hasPersonalProject = projects.some(p => p.id === `PERS-${currentUser.id}`);
+    const allowPersonal = (currentUser?.perms?.canUsePersonal === true) || hasPersonalProject;
+
+    projSelect.innerHTML = (allowPersonal ? '<option value="">My Items (Personal)</option>' : '') +
         myProjects.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
 }
 
@@ -3339,7 +3376,28 @@ function getRoleIcon(role) {
     if (role === 'student') return '<i class="ph-fill ph-graduation-cap"></i>';
     if (role === 'teacher') return '<i class="ph-fill ph-pencil"></i>';
     if (role === 'developer') return '<i class="ph-fill ph-code"></i>';
+    if (role === 'mentor') return '<i class="ph-fill ph-shield-star"></i>';
+    if (role === 'captain') return '<i class="ph-fill ph-flag"></i>';
     return '<i class="ph-fill ph-user"></i>';
+}
+
+function normalizeRoleName(role) {
+    return String(role || '').trim().toLowerCase();
+}
+
+function isAdminRole(role) {
+    return ['teacher', 'developer'].includes(normalizeRoleName(role));
+}
+
+function isProjectScopedRole(role) {
+    return ['student', 'mentor', 'captain'].includes(normalizeRoleName(role));
+}
+
+function canViewProjectForCurrentUser(project) {
+    if (!currentUser || !project) return false;
+    if (isAdminRole(currentUser.role)) return true;
+    if (!isProjectScopedRole(currentUser.role)) return false;
+    return project.ownerId === currentUser.id || (Array.isArray(project.collaborators) && project.collaborators.includes(currentUser.id));
 }
 
 function canCurrentUserViewOrders() {
@@ -3444,6 +3502,8 @@ function login(user) {
     // Set role badge color
     if (user.role === 'developer') userRoleEl.style.color = '#8b5cf6';
     else if (user.role === 'teacher') userRoleEl.style.color = '#f59e0b';
+    else if (user.role === 'mentor') userRoleEl.style.color = '#14b8a6';
+    else if (user.role === 'captain') userRoleEl.style.color = '#38bdf8';
     else userRoleEl.style.color = '#94a3b8';
 
     // Access Control & Permission Enforcement
@@ -4120,7 +4180,7 @@ function loadDashboard() {
         if (tabbedWidget) tabbedWidget.parentElement.style.display = 'none';
         if (studentWidgets) studentWidgets.style.display = '';
 
-        const myProjects = projects.filter(p => p.ownerId === currentUser.id || p.collaborators.includes(currentUser.id));
+        const myProjects = projects.filter(p => p.ownerId === currentUser.id || (Array.isArray(p.collaborators) && p.collaborators.includes(currentUser.id)));
         let itemsOutCount = 0;
         let dueBackCount = 0;
         let myItemsOut = [];
@@ -4225,9 +4285,22 @@ function loadDashboard() {
                 returnBtn.appendChild(returnIcon);
                 returnBtn.appendChild(document.createTextNode(' Return'));
 
+                const transferBtn = document.createElement('button');
+                transferBtn.className = 'btn btn-secondary text-sm transfer-item-btn';
+                transferBtn.style.cssText = 'padding:0.3rem 0.6rem;font-size:0.75rem;margin-left:0.5rem';
+                transferBtn.setAttribute('data-project-item-out-id', safeSignoutId);
+                transferBtn.setAttribute('data-project-id', safeProjectId);
+                transferBtn.setAttribute('data-item-id', safeItemId);
+                transferBtn.setAttribute('data-project', safeProjectName);
+                const transferIcon = document.createElement('i');
+                transferIcon.className = 'ph ph-arrows-horizontal';
+                transferBtn.appendChild(transferIcon);
+                transferBtn.appendChild(document.createTextNode(' Transfer'));
+
                 right.appendChild(spanDue);
                 right.appendChild(extendBtn);
                 right.appendChild(returnBtn);
+                right.appendChild(transferBtn);
                 li.appendChild(left);
                 li.appendChild(right);
                 list1.appendChild(li);
@@ -4302,6 +4375,15 @@ function loadDashboard() {
             });
         });
 
+        // Bind transfer item buttons
+        document.querySelectorAll('.transfer-item-btn').forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                const projectItemOutId = e.currentTarget.getAttribute('data-project-item-out-id');
+                const projectId = e.currentTarget.getAttribute('data-project-id');
+                openTransferModal(projectId, projectItemOutId);
+            });
+        });
+
         const widget2Title = document.getElementById('widget-2-title');
         if (widget2Title) widget2Title.textContent = 'My Items';
 
@@ -4366,6 +4448,15 @@ function loadDashboard() {
                 list2.appendChild(li);
             });
         }
+
+        // Bind transfer buttons in personal widget
+        document.querySelectorAll('.transfer-item-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const projectItemOutId = e.currentTarget.getAttribute('data-project-item-out-id');
+                const projectId = e.currentTarget.getAttribute('data-project-id');
+                openTransferModal(projectId, projectItemOutId);
+            });
+        });
 
         const messagesWidget = document.getElementById('dashboard-messages');
         const messagesWidgetWrap = document.getElementById('dashboard-messages-widget');
@@ -4804,6 +4895,206 @@ function renderDashboard() {
      loadDashboard();
 }
 
+/**
+ * Open modal to transfer a signed-out item from one project to another (kiosk).
+ */
+function openTransferModal(sourceProjectId, signoutId) {
+    const sourceProject = projects.find(p => p.id === sourceProjectId);
+    if (!sourceProject) {
+        showToast('Source project not found for transfer.', 'error');
+        return;
+    }
+
+    const ioIndex = findSignoutIndex(sourceProject, signoutId);
+    if (ioIndex < 0) {
+        showToast('Sign-out record not found for transfer.', 'error');
+        return;
+    }
+
+    const io = sourceProject.itemsOut[ioIndex];
+    const item = inventoryItems.find(i => i.id === io.itemId);
+
+    const projectOptions = projects
+        .filter(p => p.id !== sourceProjectId)
+        .map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join('');
+
+    const html = `
+        <div class="modal-header">
+            <h3>Transfer Item</h3>
+            <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
+        </div>
+        <div class="modal-body">
+            <p class="text-secondary mb-4">Transfer <strong>${escapeHtml(item ? item.name : io.itemId)}</strong> from <strong>${escapeHtml(sourceProject.name)}</strong> to another project.</p>
+            <div class="form-group">
+                <label>Destination Project</label>
+                <select id="transfer-target-project" class="form-control">
+                    <option value="">Select target project</option>
+                    ${projectOptions}
+                </select>
+            </div>
+            <div class="form-group" id="transfer-approver-wrap">
+                <label>Approver (scan or enter user ID)</label>
+                <input type="text" id="transfer-approver-input" class="form-control" placeholder="e.g. STU-123" autofocus>
+                <small class="text-muted">A member of the destination project must approve the transfer unless you are a member of both projects.</small>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+            <button class="btn btn-primary" id="confirm-transfer-btn">Transfer</button>
+        </div>
+    `;
+
+    openModal(html);
+
+    document.getElementById('confirm-transfer-btn')?.addEventListener('click', async () => {
+        const targetProjectId = document.getElementById('transfer-target-project').value;
+        const approverInput = document.getElementById('transfer-approver-input').value.trim().toUpperCase();
+
+        if (!targetProjectId) {
+            showToast('Please select a destination project.', 'error');
+            return;
+        }
+
+        const targetProject = projects.find(p => p.id === targetProjectId);
+        if (!targetProject) {
+            showToast('Selected project not found.', 'error');
+            return;
+        }
+
+        // If current user belongs to both projects, authorization is implied
+        if (doesUserBelongToProject(currentUser.id, sourceProject) && doesUserBelongToProject(currentUser.id, targetProject)) {
+            closeModal();
+            await transferProjectItem(sourceProjectId, signoutId, targetProjectId, currentUser.id);
+            return;
+        }
+
+        if (!approverInput) {
+            showToast('Approver ID is required for this transfer.', 'error');
+            return;
+        }
+
+        const approver = mockUsers.find(u => String(u.id || '').toUpperCase() === approverInput || String(u.username || '').toUpperCase() === approverInput);
+        if (!approver) {
+            showToast('Approver not found. Ensure user ID is correct and try again.', 'error');
+            return;
+        }
+
+        if (!doesUserBelongToProject(approver.id, targetProject)) {
+            showToast('Approver is not a member of the destination project.', 'error');
+            return;
+        }
+
+        closeModal();
+        await transferProjectItem(sourceProjectId, signoutId, targetProjectId, approver.id);
+    });
+}
+
+async function transferProjectItem(sourceProjectId, signoutId, targetProjectId, approverUserId) {
+    const sourceProject = projects.find(p => p.id === sourceProjectId);
+    const targetProject = projects.find(p => p.id === targetProjectId);
+    if (!sourceProject || !targetProject) {
+        showToast('Project not found.', 'error');
+        return false;
+    }
+
+    const ioIndex = findSignoutIndex(sourceProject, signoutId);
+    if (ioIndex < 0) {
+        showToast('Sign-out record not found.', 'error');
+        return false;
+    }
+
+    const io = sourceProject.itemsOut[ioIndex];
+    const item = inventoryItems.find(i => i.id === io.itemId);
+    const qty = Math.max(1, parseInt(io.quantity, 10) || 1);
+
+    if (currentUser?.role === 'student' && currentUser.id !== (io.assignedToUserId || sourceProject.ownerId)) {
+        const assignedName = (mockUsers.find(u => u.id === (io.assignedToUserId || sourceProject.ownerId)) || {}).name || (io.assignedToUserId || sourceProject.ownerId);
+        if (!confirm(`This item is assigned to ${assignedName}. Transfer on their behalf?`)) return false;
+    }
+
+    const returned = await returnProjectItem(sourceProjectId, signoutId, { skipConfirmPrompt: true, suppressToast: true, suppressFlag: true });
+    if (!returned) {
+        showToast('Failed to remove original sign-out. Transfer canceled.', 'error');
+        return false;
+    }
+
+    const signoutData = {
+        id: generateId('OUT'),
+        projectId: targetProject.id,
+        itemId: io.itemId,
+        quantity: qty,
+        signoutDate: new Date().toISOString(),
+        dueDate: calculateDueDate(new Date(), currentUser, targetProject),
+        assignedToUserId: approverUserId || targetProject.ownerId,
+        signedOutByUserId: currentUser.id,
+        requiresDoorUnlock: item?.requiresDoorUnlock ?? item?.requires_door_unlock ?? false
+    };
+
+    const savedSignout = await addProjectItemOutToSupabase(signoutData);
+    if (!savedSignout) {
+        const recreated = await addProjectItemOutToSupabase({
+            id: io.id || generateId('OUT'),
+            projectId: sourceProject.id,
+            itemId: io.itemId,
+            quantity: io.quantity,
+            signoutDate: io.signoutDate,
+            dueDate: io.dueDate,
+            assignedToUserId: io.assignedToUserId || sourceProject.ownerId,
+            signedOutByUserId: io.signedOutByUserId
+        });
+        if (recreated) {
+            showToast('Transfer failed; original sign-out restored.', 'error');
+        } else {
+            showToast('Transfer failed and original sign-out could not be restored. Manual reconciliation required.', 'error');
+        }
+        await refreshProjectsFromSupabase();
+        await refreshInventoryFromSupabase();
+        renderDashboard();
+        return false;
+    }
+
+    if (item) {
+        const currentStock = Math.max(0, parseInt(item.stock, 10) || 0);
+        const nextStock = currentStock - qty;
+        const stockUpdated = await updateItemInSupabase(item.id, { stock: nextStock });
+        if (!stockUpdated) {
+            if (savedSignout?.id) await returnItemToSupabase(savedSignout.id);
+            const recreated = await addProjectItemOutToSupabase({
+                id: io.id || generateId('OUT'),
+                projectId: sourceProject.id,
+                itemId: io.itemId,
+                quantity: io.quantity,
+                signoutDate: io.signoutDate,
+                dueDate: io.dueDate,
+                assignedToUserId: io.assignedToUserId || sourceProject.ownerId,
+                signedOutByUserId: io.signedOutByUserId
+            });
+            if (recreated) {
+                showToast('Transfer failed while updating stock; original sign-out restored.', 'error');
+            } else {
+                showToast('Transfer failed and original sign-out could not be restored. Manual reconciliation required.', 'error');
+            }
+            await refreshProjectsFromSupabase();
+            await refreshInventoryFromSupabase();
+            renderDashboard();
+            return false;
+        }
+
+        item.stock = nextStock;
+    }
+
+    await refreshProjectsFromSupabase();
+    await refreshInventoryFromSupabase();
+    renderDashboard();
+
+    const fromAssigned = io.assignedToUserId || sourceProject.ownerId;
+    const toAssigned = signoutData.assignedToUserId;
+    addLog(currentUser.id, 'Transfer Item', `Transferred ${qty}x ${item ? item.name : io.itemId} from ${sourceProject.name} to ${targetProject.name}. From:${fromAssigned} To:${toAssigned}`, { id: targetProject.id });
+
+    showToast('Transfer completed successfully.', 'success');
+    return true;
+}
+
 /* =======================================
     INVENTORY LOGIC
     ======================================= */
@@ -4984,13 +5275,20 @@ function renderInventory() {
             : `Showing ${filtered.length} item${filtered.length === 1 ? '' : 's'}.`;
     }
 
+    const gridContainer = document.getElementById('inventory-grid-container');
+
     if (filtered.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No items match your current search.</td></tr>';
-        updateInventoryBulkSelectionState();
+        if (inventoryLayout === 'row') {
+            tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No items match your current search.</td></tr>';
+            updateInventoryBulkSelectionState();
+        } else if (gridContainer) {
+            gridContainer.innerHTML = '<div class="text-center text-muted">No items match your current search.</div>';
+        }
         return;
     }
 
-    tbody.innerHTML = filtered.map(item => {
+    if (inventoryLayout === 'row') {
+        tbody.innerHTML = filtered.map(item => {
         const currentStatus = determineStatus(item.stock, item.threshold, item.item_type);
         const statusClass = currentStatus === 'In Stock' ? 'status-instock' : (currentStatus === 'Low Stock' || currentStatus === 'Out of Stock') ? 'status-lowstock' : 'status-na';
         const categoryLabel = escapeHtml(String(item.category || 'Uncategorized'));
@@ -5042,7 +5340,35 @@ function renderInventory() {
                 </td>
             </tr>
         `;
-    }).join('');
+        }).join('');
+    } else if (gridContainer) {
+        const placeholder = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300"><rect width="100%" height="100%" fill="%23e5e7eb"/><text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" fill="%239ca3af" font-size="18">No image</text></svg>';
+        gridContainer.innerHTML = '<div class="inventory-grid">' + filtered.map(item => {
+            const currentStatus = determineStatus(item.stock, item.threshold, item.item_type);
+            const statusClass = currentStatus === 'In Stock' ? 'status-instock' : (currentStatus === 'Low Stock' || currentStatus === 'Out of Stock') ? 'status-lowstock' : 'status-na';
+            const safeItemId = escapeHtml(String(item.id || ''));
+            const safeItemName = escapeHtml(String(item.name || 'Unnamed Item'));
+            const stockVal = Math.max(0, parseInt(item?.stock, 10) || 0);
+            const totalQty = getItemTotalQuantity(item);
+            const imgSrc = escapeHtml(String(item.image || item.image_url || item.imageUrl || '')) || placeholder;
+
+            return `
+                <div class="inventory-card" data-id="${safeItemId}">
+                    <div class="card-image"><img src="${imgSrc}" onerror="this.src='${placeholder}'" alt="${safeItemName}"></div>
+                    <div class="card-body">
+                        <div class="card-title">${safeItemName} ${renderMissingMetadataIcon(item) || ''}</div>
+                        <div class="card-meta"><span class="status-badge ${statusClass}">${currentStatus}</span><span class="inventory-qty">${stockVal} of ${totalQty}</span></div>
+                        <div class="card-actions">
+                            ${currentUser.role !== 'student' ? `<button class="btn btn-secondary btn-sm edit-item-btn" data-id="${safeItemId}" title="Edit Item"><i class="ph ph-pencil-simple"></i></button>` : ''}
+                            ${currentUser.role !== 'student' ? `<button class="btn btn-danger btn-sm delete-item-btn" data-id="${safeItemId}" title="Delete Item"><i class="ph ph-trash"></i></button>` : ''}
+                            <button class="btn btn-secondary btn-sm add-basket-btn" data-id="${safeItemId}" title="Add to Basket"><i class="ph ph-shopping-cart-simple"></i></button>
+                            <button class="btn btn-primary btn-sm signout-btn" data-id="${safeItemId}" title="Sign out to Project"><i class="ph ph-export"></i> Sign Out</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }).join('') + '</div>';
+    }
 
     // Attach listeners for actions
     // Attach basket listeners
@@ -5108,7 +5434,7 @@ function renderInventory() {
 
             if (confirm(`Return ${item.name} to inventory?`)) {
                 // Find the project and remove the item
-                const myProjects = projects.filter(p => p.ownerId === currentUser.id || p.collaborators.includes(currentUser.id));
+                const myProjects = projects.filter(p => p.ownerId === currentUser.id || (Array.isArray(p.collaborators) && p.collaborators.includes(currentUser.id)));
                 myProjects.forEach(p => {
                     const outIdx = p.itemsOut.findIndex(io => io.itemId === itemId);
                     if (outIdx > -1) {
@@ -5217,19 +5543,19 @@ document.getElementById('request-item-btn')?.addEventListener('click', () => {
    ======================================= */
 function canCurrentUserReturnProjectItem(project) {
     if (!currentUser) return false;
-    if (currentUser.role !== 'student') return true;
-    return project.ownerId === currentUser.id || project.collaborators.includes(currentUser.id);
+    if (isAdminRole(currentUser.role)) return true;
+    return canViewProjectForCurrentUser(project);
 }
 
 function canCurrentUserViewProject(project) {
     if (!currentUser || !project) return false;
-    if (currentUser.role !== 'student') return true;
-    return project.ownerId === currentUser.id || project.collaborators.includes(currentUser.id);
+    if (isAdminRole(currentUser.role)) return true;
+    return canViewProjectForCurrentUser(project);
 }
 
 function canCurrentUserManageProject(project) {
     if (!currentUser || !project) return false;
-    if (currentUser.role !== 'student') return true;
+    if (isAdminRole(currentUser.role)) return true;
     return project.ownerId === currentUser.id;
 }
 
@@ -6234,15 +6560,9 @@ function renderProjects() {
     // Filter projects based on role
     // Students see only projects they own or collaborate on (active or past)
     // Teachers/Devs see ALL projects (past and active)
-    let visibleProjects = projects;
-    if (currentUser.role === 'student') {
-        visibleProjects = projects.filter(p => p.ownerId === currentUser.id || p.collaborators.includes(currentUser.id));
-    } else {
-        visibleProjects = projects.filter(p => {
-            if (!String(p.id || '').startsWith('PERS-')) return true;
-            return p.ownerId === currentUser.id;
-        });
-    }
+    let visibleProjects = isAdminRole(currentUser.role)
+        ? projects.filter(p => !String(p.id || '').startsWith('PERS-') || p.ownerId === currentUser.id)
+        : projects.filter(p => canViewProjectForCurrentUser(p));
 
     const ensuredPersonalProject = getOrCreatePersonalProject(currentUser.id);
     if (!visibleProjects.some(p => p.id === ensuredPersonalProject.id)) {
@@ -6270,6 +6590,7 @@ function renderProjects() {
                     <div style="display:flex;align-items:center;gap:0.5rem;">
                         <span class="text-muted font-mono" style="font-size:0.75rem">${escapeHtml(item ? item.sku : 'N/A')}</span>
                         <button class="btn btn-secondary text-sm return-project-item-btn" data-project-id="${escapeHtml(personalProject.id)}" data-signout-id="${escapeHtml(signoutId)}" style="padding:0.2rem 0.5rem;font-size:0.75rem;"><i class="ph ph-arrow-counter-clockwise"></i> Sign In</button>
+                        <button class="btn btn-secondary text-sm transfer-project-item-btn" data-project-id="${escapeHtml(personalProject.id)}" data-signout-id="${escapeHtml(signoutId)}" style="padding:0.2rem 0.5rem;font-size:0.75rem;margin-left:0.4rem;"><i class="ph ph-arrows-horizontal"></i> Transfer</button>
                     </div>
                 </div>
             `;
@@ -6320,7 +6641,7 @@ function renderProjects() {
                                 </div>
                                 <div style="display:flex;align-items:center;gap:0.5rem;">
                                     <span class="text-muted font-mono" style="font-size:0.75rem">${escapeHtml(item ? item.sku : 'N/A')}</span>
-                                    ${canCurrentUserReturnProjectItem(proj) ? `<button class="btn btn-secondary text-sm return-project-item-btn" data-project-id="${escapeHtml(proj.id)}" data-signout-id="${escapeHtml(signoutId)}" style="padding:0.2rem 0.5rem;font-size:0.75rem;"><i class="ph ph-arrow-counter-clockwise"></i> Sign In</button>` : ''}
+                                    ${canCurrentUserReturnProjectItem(proj) ? `<button class="btn btn-secondary text-sm return-project-item-btn" data-project-id="${escapeHtml(proj.id)}" data-signout-id="${escapeHtml(signoutId)}" style="padding:0.2rem 0.5rem;font-size:0.75rem;"><i class="ph ph-arrow-counter-clockwise"></i> Sign In</button><button class="btn btn-secondary text-sm transfer-project-item-btn" data-project-id="${escapeHtml(proj.id)}" data-signout-id="${escapeHtml(signoutId)}" style="padding:0.2rem 0.5rem;font-size:0.75rem;margin-left:0.4rem;"><i class="ph ph-arrows-horizontal"></i> Transfer</button>` : ''}
                                 </div>
                             </div>
                         `;
@@ -6377,6 +6698,14 @@ function renderProjects() {
         });
     });
 
+    document.querySelectorAll('.transfer-project-item-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const projectId = e.currentTarget.getAttribute('data-project-id');
+            const signoutId = e.currentTarget.getAttribute('data-signout-id');
+            openTransferModal(projectId, signoutId);
+        });
+    });
+
 }
 
 async function openSignOutModal(itemId) {
@@ -6402,7 +6731,7 @@ async function openSignOutModal(itemId) {
         return;
     }
 
-    if (currentUser.role !== 'student') {
+    if (isAdminRole(currentUser.role)) {
         const staffProjects = projects.filter(p => (p.ownerId === currentUser.id || (Array.isArray(p.collaborators) && p.collaborators.includes(currentUser.id))) && !String(p.id || '').startsWith('PERS-'));
         const staffClasses = getManagedClassesForCheckout();
         const defaultDestinationMode = staffProjects.length > 0
@@ -6546,7 +6875,7 @@ async function openSignOutModal(itemId) {
             if (!proj) return `<option value="${escapeHtml(currentUser.id)}">${escapeHtml(currentUser.name)}</option>`;
 
             let options = '';
-            if (currentUser.role !== 'student') {
+            if (isAdminRole(currentUser.role)) {
                 options += `<option value="${escapeHtml(currentUser.id)}">Myself (${escapeHtml(currentUser.name)})</option>`;
             }
             if (currentUser.role === 'student' || proj.ownerId !== currentUser.id) {
@@ -6911,7 +7240,7 @@ async function openSignOutModal(itemId) {
         
         let options = '';
         // Add myself option for teachers
-        if (currentUser.role !== 'student') {
+        if (isAdminRole(currentUser.role)) {
             options += `<option value="${escapeHtml(currentUser.id)}">Myself (${escapeHtml(currentUser.name)})</option>`;
         }
         // Add project owner if not already added
@@ -6935,7 +7264,7 @@ async function openSignOutModal(itemId) {
     const defaultAssigneeId = currentUser.role === 'student' ? projects.find(p => p.id === (myProjects[0]?.id || 'personal'))?.ownerId || currentUser.id : currentUser.id;
 
     // Only show "Assign To" field for teachers
-    const assignToFieldHtml = currentUser.role !== 'student' ? `
+    const assignToFieldHtml = isAdminRole(currentUser.role) ? `
         <div class="form-group">
             <label>Assign To</label>
             <select id="so-assignee" class="form-control">
@@ -7003,7 +7332,7 @@ async function openSignOutModal(itemId) {
     refreshQtyPreview();
 
     // Update assignee options when project changes (for teachers)
-    if (currentUser.role !== 'student') {
+    if (isAdminRole(currentUser.role)) {
         document.getElementById('so-project')?.addEventListener('change', (e) => {
             const projId = e.target.value;
             const assigneeSelect = document.getElementById('so-assignee');
@@ -7033,7 +7362,7 @@ async function openSignOutModal(itemId) {
         let assignedToUserId = null;
         
         // Get assignee from form if teacher, otherwise use project owner
-        if (currentUser.role !== 'student') {
+        if (isAdminRole(currentUser.role)) {
             assignedToUserId = document.getElementById('so-assignee')?.value;
         }
 
@@ -9210,7 +9539,7 @@ function openEditProjectModal(projectId) {
         return;
     }
 
-    const canAssignOwner = currentUser.role !== 'student';
+    const canAssignOwner = isAdminRole(currentUser.role);
     const ownerCandidates = getProjectOwnerCandidates();
     const ownerOptions = ownerCandidates.map(student =>
         `<option value="${escapeHtml(student.id)}" ${student.id === project.ownerId ? 'selected' : ''}>${escapeHtml(student.name)} (${escapeHtml(student.id)})</option>`
@@ -9337,7 +9666,7 @@ function openEditProjectModal(projectId) {
 
 // Create Project Flow
 document.getElementById('create-project-btn')?.addEventListener('click', () => {
-    const canAssignOwner = currentUser.role !== 'student';
+    const canAssignOwner = isAdminRole(currentUser.role);
     const ownerCandidates = getProjectOwnerCandidates();
     const defaultOwnerId = canAssignOwner
         ? (ownerCandidates[0]?.id || '')
