@@ -301,27 +301,45 @@
                                 </button>
                             </div>
                             <div class="inventory-action-group inventory-action-group-admin">
-                                <button class="btn btn-secondary inventory-toolbar-btn" id="manage-categories-btn">
-                                    <i class="ph ph-tag"></i> Manage Categories
-                                </button>
-                                <button class="btn btn-secondary inventory-toolbar-btn" id="manage-visibility-tags-btn">
-                                    <i class="ph ph-eye"></i> Visibility Tags
-                                </button>
-                                <button class="btn btn-secondary inventory-toolbar-btn" id="bulk-manage-items-btn">
-                                    <i class="ph ph-stack"></i> Bulk Tags/Categories
-                                </button>
-                                <button class="btn btn-secondary inventory-toolbar-btn" id="bulk-import-items-btn">
-                                    <i class="ph ph-upload"></i> Bulk Import
-                                </button>
-                                <button class="btn btn-primary inventory-toolbar-btn" id="add-item-btn">
-                                    <i class="ph ph-plus"></i> Add Item
-                                </button>
+                                <div class="inventory-layout-toggle" style="display:inline-flex;align-items:center;gap:0.4rem;margin-right:0.75rem;">
+                                        <button class="btn btn-outline btn-sm" id="inventory-layout-row-btn" title="Row view">Row</button>
+                                        <button class="btn btn-outline btn-sm" id="inventory-layout-grid-btn" title="Grid view">Grid</button>
+                                    </div>
+                                    <button class="btn btn-secondary inventory-toolbar-btn" id="manage-categories-btn">
+                                        <i class="ph ph-tag"></i> Manage Categories
+                                    </button>
+
+                                    <details class="overflow-menu" role="group" aria-label="More inventory actions">
+                                        <summary class="btn btn-outline btn-sm overflow-summary">More ▾</summary>
+                                        <div class="overflow-list">
+                                            <button class="btn btn-secondary inventory-toolbar-btn" id="manage-visibility-tags-btn">
+                                                <i class="ph ph-eye"></i> Visibility Tags
+                                            </button>
+                                            <button class="btn btn-secondary inventory-toolbar-btn" id="bulk-manage-items-btn">
+                                                <i class="ph ph-stack"></i> Bulk Tags/Categories
+                                            </button>
+                                            <button class="btn btn-secondary inventory-toolbar-btn" id="bulk-import-items-btn">
+                                                <i class="ph ph-upload"></i> Bulk Import
+                                            </button>
+                                            <button class="btn btn-secondary inventory-toolbar-btn" id="generate-barcode-labels-btn">
+                                                <i class="ph ph-barcode"></i> Barcode Labels
+                                            </button>
+                                            <button class="btn btn-danger inventory-toolbar-btn" id="bulk-delete-items-btn">
+                                                <i class="ph ph-trash"></i> Bulk Delete
+                                            </button>
+                                        </div>
+                                    </details>
+
+                                    <button class="btn btn-primary inventory-toolbar-btn" id="add-item-btn">
+                                        <i class="ph ph-plus"></i> Add Item
+                                    </button>
                             </div>
                         </div>
                     </div>
 
                     <div class="table-container glass-panel">
-                        <table class="data-table">
+                        <div id="inventory-row-view">
+                            <table class="data-table">
                             <thead>
                                 <tr>
                                     <th>Item Name</th>
@@ -335,6 +353,11 @@
                                 <!-- Injected via JS -->
                             </tbody>
                         </table>
+                        </div>
+
+                        <div id="inventory-grid-container" style="display:none;padding:1rem;">
+                            <!-- Grid cards injected via JS -->
+                        </div>
                     </div>
                 </div>
 
