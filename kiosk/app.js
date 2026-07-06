@@ -3516,8 +3516,8 @@ function login(user) {
         mainView.classList.remove('hidden');
         setTimeout(() => mainView.classList.add('active'), 50);
 
-        // Load initial Dashboard from fresh Supabase state
-        switchPage('dashboard', 'Dashboard').catch(err => console.error(err));
+        // Load initial Projects view from fresh Supabase state
+        switchPage('projects', 'Projects').catch(err => console.error(err));
 
         // Run one-time authentication password setup audit for staff users.
         setTimeout(() => {
@@ -3550,7 +3550,7 @@ function logout(message = 'Logged out successfully') {
         mainView.classList.add('hidden');
         loginView.classList.remove('hidden');
         // Keep nav selection aligned with the default landing page.
-        setActiveNavForTarget('dashboard');
+        setActiveNavForTarget('projects');
         // Show OehlerOS version badge on login screen
         const versionOverlay = document.querySelector('.app-version-overlay');
         if (versionOverlay) versionOverlay.style.display = '';
@@ -3588,7 +3588,7 @@ function returnToLoginView(options = {}) {
         mainView.classList.add('hidden');
         loginHelpView.classList.add('hidden');
         loginView.classList.remove('hidden');
-        setActiveNavForTarget('dashboard');
+        setActiveNavForTarget('projects');
         // Show OehlerOS version badge on login screen
         const versionOverlay = document.querySelector('.app-version-overlay');
         if (versionOverlay) versionOverlay.style.display = '';
@@ -4093,7 +4093,6 @@ async function switchPage(targetId, title) {
     }
 
     // Call data load functions based on page
-    if (targetId === 'dashboard') loadDashboard();
     if (targetId === 'inventory') renderInventory();
     if (targetId === 'projects') renderProjects();
     if (targetId === 'logs') renderLogs();
@@ -4108,6 +4107,9 @@ async function switchPage(targetId, title) {
    DASHBOARD LOGIC
    ======================================= */
 function loadDashboard() {
+    renderProjects();
+    return;
+
     const statsContainer = document.getElementById('dashboard-stats');
     const studentWidgets = document.getElementById('student-dashboard-widgets');
     const tabbedWidget = document.getElementById('dashboard-tabbed-widget');

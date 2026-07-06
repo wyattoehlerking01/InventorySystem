@@ -166,13 +166,10 @@
             </div>
 
             <nav class="sidebar-nav">
-                <button class="nav-btn active" data-target="dashboard">
-                    <i class="ph ph-squares-four"></i> Dashboard
-                </button>
                 <button class="nav-btn" data-target="inventory">
                     <i class="ph ph-package"></i> Inventory
                 </button>
-                <button class="nav-btn" data-target="projects">
+                <button class="nav-btn active" data-target="projects">
                     <i class="ph ph-folder-open"></i> Projects
                 </button>
                 <button class="nav-btn" id="nav-class-display" data-target="class-display">
@@ -212,7 +209,7 @@
         <main class="content-area">
             <!-- Header -->
             <header class="app-header glass-panel">
-                <h2 id="page-title">Dashboard</h2>
+                <h2 id="page-title">Projects</h2>
                 <div class="header-actions">
                     <div id="auto-logout-timer" class="timer-display">
                         <i class="ph ph-clock-countdown"></i>
@@ -223,64 +220,6 @@
 
             <!-- Scrollable Content -->
             <div class="page-content" id="page-content">
-                <!-- Dashboard Page -->
-                <div id="page-dashboard" class="page active">
-                    <div class="stats-grid" id="dashboard-stats">
-                        <!-- Injected via JS -->
-                    </div>
-
-                    <div class="dashboard-widgets">
-                        <div class="widget glass-panel" id="dashboard-tabbed-widget" style="width:100%">
-                            <div class="widget-tabs"
-                                style="display:flex;gap:0;border-bottom:1px solid var(--glass-border);margin-bottom:1rem;">
-                                <button class="widget-tab active" data-tab="lowstock"
-                                    style="padding:0.75rem 1.25rem;background:none;border:none;color:var(--text-secondary);cursor:pointer;border-bottom:2px solid transparent;font-weight:500;">Low
-                                    Stock Alerts</button>
-                                <button class="widget-tab" data-tab="activity"
-                                    style="padding:0.75rem 1.25rem;background:none;border:none;color:var(--text-secondary);cursor:pointer;border-bottom:2px solid transparent;font-weight:500;">Recent
-                                    Activity</button>
-                                <button class="widget-tab" data-tab="itemsout"
-                                    style="padding:0.75rem 1.25rem;background:none;border:none;color:var(--text-secondary);cursor:pointer;border-bottom:2px solid transparent;font-weight:500;">Items
-                                    Out</button>
-                                <button class="widget-tab" data-tab="projectsummary"
-                                    style="padding:0.75rem 1.25rem;background:none;border:none;color:var(--text-secondary);cursor:pointer;border-bottom:2px solid transparent;font-weight:500;">Project
-                                    Summary</button>
-                            </div>
-                            <div id="widget-tab-content">
-                                <!-- Injected via JS -->
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Student widgets (hidden for admin) -->
-                    <div class="dashboard-widgets grid-2-col" id="student-dashboard-widgets" style="display:none;">
-                        <div class="widget glass-panel" id="dashboard-widget-1">
-                            <h3 id="widget-1-title">Items Due Back</h3>
-                            <ul class="stock-list" id="low-stock-list"></ul>
-                        </div>
-                        <div class="widget glass-panel" id="dashboard-widget-2">
-                            <h3 id="widget-2-title">Your Projects</h3>
-                            <ul class="activity-list mini" id="recent-activity-mini"></ul>
-                        </div>
-                        <div class="widget glass-panel" id="dashboard-messages-widget">
-                            <div class="flex items-center justify-between" style="gap:0.75rem;">
-                                <h3 style="margin:0;">Messages</h3>
-                                <div class="flex items-center" style="gap:0.5rem;">
-                                    <span id="dashboard-messages-unread" class="badge" style="display:none; background: rgba(251,191,36,0.18); color: var(--accent-secondary);">0</span>
-                                    <button class="btn btn-secondary btn-sm" id="mark-messages-read-btn" type="button">Mark Read</button>
-                                </div>
-                            </div>
-                            <div id="dashboard-messages" class="message-list" style="margin-top:0.75rem;">
-                                <div class="empty-state">
-                                    <i class="ph ph-envelope-open"></i>
-                                    <h4>No messages</h4>
-                                    <p>Teachers can send messages here.</p>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
                 <!-- Inventory Page -->
                 <div id="page-inventory" class="page hidden">
                     <div class="action-bar inventory-action-bar inventory-smart-toolbar">

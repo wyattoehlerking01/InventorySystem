@@ -6768,6 +6768,8 @@ async function returnProjectItem(projectId, signoutId, options = {}) {
     const assignedToUserId = io.assignedToUserId || project.ownerId;
     const assignedToUser = mockUsers.find(u => u.id === assignedToUserId);
     const returnQty = Math.max(0, parseInt(io.quantity, 10) || 0);
+    const isBundleTransaction = !!io.bundleTransactionId || !!io.isBundle || isBundleItemType(item?.item_type);
+    const bundleComponents = isBundleTransaction ? (Array.isArray(io.bundleComponents) ? io.bundleComponents : []) : [];
 
     if (returnQty <= 0) {
         showToast('Invalid sign-in quantity on this record.', 'error');
@@ -6794,7 +6796,37 @@ async function returnProjectItem(projectId, signoutId, options = {}) {
         }
     }
 
-    if (item) {
+    if (isBundleTransaction) {
+        const stockRestorations = [];
+        for (const component of bundleComponents) {
+            const childItem = inventoryItems.find(inventoryItem => inventoryItem.id === component.itemId);
+            if (!childItem) continue;
+
+            const componentQty = Math.max(1, parseInt(component.quantity, 10) || 1);
+            const currentStock = Math.max(0, parseInt(childItem.stock, 10) || 0);
+            const nextStock = currentStock + componentQty;
+            const updated = await updateItemInSupabase(childItem.id, { stock: nextStock });
+            if (!updated) {
+                for (const snapshot of stockRestorations.reverse()) {
+                    await updateItemInSupabase(snapshot.item.id, { stock: snapshot.previousStock });
+                }
+                showToast('Failed to restore bundle component stock.', 'error');
+                return false;
+            }
+
+            stockRestorations.push({ item: childItem, previousStock: currentStock });
+            childItem.stock = nextStock;
+        }
+
+        const returnedBundle = await deleteBundleTransactionFromSupabase(io.id);
+        if (!returnedBundle) {
+            for (const snapshot of stockRestorations.reverse()) {
+                await updateItemInSupabase(snapshot.item.id, { stock: snapshot.previousStock });
+            }
+            showToast('Failed to return bundle in database.', 'error');
+            return false;
+        }
+    } else if (item) {
         const currentStock = Math.max(0, parseInt(item.stock, 10) || 0);
         const nextStock = currentStock + returnQty;
         const stockUpdated = await updateItemInSupabase(item.id, { stock: nextStock });
@@ -6807,22 +6839,24 @@ async function returnProjectItem(projectId, signoutId, options = {}) {
         item.stock = nextStock;
     }
 
-    if (io.id) {
-        const returned = await returnItemToSupabase(io.id);
-        if (!returned) {
-            showToast('Failed to return item in database.', 'error');
-            return false;
-        }
-    } else {
-        const returned = await returnItemByCompositeToSupabase({
-            projectId: project.id,
-            itemId: io.itemId,
-            signoutDate: io.signoutDate,
-            quantity: io.quantity
-        });
-        if (!returned) {
-            showToast('Failed to return item in database.', 'error');
-            return false;
+    if (!isBundleTransaction) {
+        if (io.id) {
+            const returned = await returnItemToSupabase(io.id);
+            if (!returned) {
+                showToast('Failed to return item in database.', 'error');
+                return false;
+            }
+        } else {
+            const returned = await returnItemByCompositeToSupabase({
+                projectId: project.id,
+                itemId: io.itemId,
+                signoutDate: io.signoutDate,
+                quantity: io.quantity
+            });
+            if (!returned) {
+                showToast('Failed to return item in database.', 'error');
+                return false;
+            }
         }
     }
 
@@ -7735,6 +7769,11 @@ async function openSignOutModal(itemId) {
         const projId = document.getElementById('so-project').value;
         const qty = parseInt(document.getElementById('so-qty').value);
         let assignedToUserId = null;
+        const isBundle = isBundleItemType(item?.item_type);
+        const bundleComponents = isBundle ? Array.isArray(item.bundleComponents) ? item.bundleComponents : [] : [];
+        const bundleRequiresDoorUnlock = isBundle
+            ? bundleComponents.some(component => itemRequiresDoorUnlock(component.componentItem || inventoryItems.find(child => child.id === component.componentItemId || child.id === component.itemId)))
+            : itemRequiresDoorUnlock(item);
         
         // Get assignee from form if teacher, otherwise use project owner
         if (currentUser.role !== 'student') {
@@ -7771,7 +7810,7 @@ async function openSignOutModal(itemId) {
                 }
             }
 
-            if (currentUser?.role === 'student' && itemRequiresDoorUnlock(item)) {
+            if (currentUser?.role === 'student' && bundleRequiresDoorUnlock) {
                 const unlocked = await requestDoorUnlockAndLogAccess({
                     actionType: 'sign-out',
                     item,
@@ -7787,6 +7826,140 @@ async function openSignOutModal(itemId) {
 
             // For students, assign to project owner; for teachers, use selected assignee
             const finalAssignedToUserId = assignedToUserId || project.ownerId;
+
+            if (isBundle) {
+                if (bundleComponents.length === 0) {
+                    showToast('This bundle has no components configured.', 'error');
+                    return;
+                }
+
+                const bundleTransactionId = createUuid();
+                const signoutDate = new Date().toISOString();
+                const dueDate = calculateDueDate(new Date(), currentUser, project);
+
+                const bundleTransaction = await addProjectBundleTransactionToSupabase({
+                    id: bundleTransactionId,
+                    projectId: project.id,
+                    bundleItemId: item.id,
+                    bundleQuantity: qty,
+                    signoutDate,
+                    dueDate,
+                    assignedToUserId: finalAssignedToUserId,
+                    signedOutByUserId: currentUser.id
+                });
+
+                if (!bundleTransaction) {
+                    showToast('Failed to save bundle transaction.', 'error');
+                    return;
+                }
+
+                const childRows = [];
+                const stockSnapshots = [];
+                for (const component of bundleComponents) {
+                    const childItem = inventoryItems.find(child => child.id === component.componentItemId || child.id === component.itemId);
+                    if (!childItem) {
+                        continue;
+                    }
+
+                    const componentQty = Math.max(1, parseInt(component.componentQuantity || component.quantity, 10) || 1) * qty;
+                    const currentStock = Math.max(0, parseInt(childItem.stock, 10) || 0);
+                    if (currentStock < componentQty) {
+                        for (const snapshot of stockSnapshots.reverse()) {
+                            await updateItemInSupabase(snapshot.item.id, { stock: snapshot.previousStock });
+                        }
+                        await deleteBundleTransactionFromSupabase(bundleTransaction.id);
+                        showToast(`Not enough stock for ${childItem.name} to build this bundle.`, 'error');
+                        return;
+                    }
+
+                    childRows.push({
+                        id: generateId('OUT'),
+                        projectId: project.id,
+                        itemId: childItem.id,
+                        quantity: componentQty,
+                        signoutDate,
+                        dueDate,
+                        assignedToUserId: finalAssignedToUserId,
+                        signedOutByUserId: currentUser.id,
+                        bundleTransactionId: bundleTransaction.id,
+                        requiresDoorUnlock: childItem.requiresDoorUnlock ?? childItem.requires_door_unlock ?? false
+                    });
+                }
+
+                const savedRows = await addProjectItemOutBatchToSupabase(childRows);
+                if (!savedRows) {
+                    await deleteBundleTransactionFromSupabase(bundleTransaction.id);
+                    showToast('Failed to save bundle items. Transaction was rolled back.', 'error');
+                    return;
+                }
+
+                for (const component of bundleComponents) {
+                    const childItem = inventoryItems.find(child => child.id === component.componentItemId || child.id === component.itemId);
+                    if (!childItem) continue;
+
+                    const componentQty = Math.max(1, parseInt(component.componentQuantity || component.quantity, 10) || 1) * qty;
+                    const currentStock = Math.max(0, parseInt(childItem.stock, 10) || 0);
+                    const nextStock = currentStock - componentQty;
+                    stockSnapshots.push({ item: childItem, previousStock: currentStock });
+
+                    const stockUpdated = await updateItemInSupabase(childItem.id, { stock: nextStock });
+                    if (!stockUpdated) {
+                        for (const snapshot of stockSnapshots.reverse()) {
+                            await updateItemInSupabase(snapshot.item.id, { stock: snapshot.previousStock });
+                        }
+                        for (const savedRow of savedRows) {
+                            await returnItemToSupabase(savedRow.id);
+                        }
+                        await deleteBundleTransactionFromSupabase(bundleTransaction.id);
+                        showToast('Failed to update bundle component stock. Sign-out was rolled back.', 'error');
+                        return;
+                    }
+
+                    childItem.stock = nextStock;
+                }
+
+                const bundleSummary = {
+                    id: bundleTransaction.id,
+                    itemId: item.id,
+                    quantity: qty,
+                    signoutDate,
+                    dueDate,
+                    assignedToUserId: finalAssignedToUserId,
+                    signedOutByUserId: currentUser.id,
+                    bundleTransactionId: bundleTransaction.id,
+                    bundleComponents: savedRows.map(savedRow => ({
+                        id: savedRow.id,
+                        itemId: savedRow.itemId,
+                        quantity: savedRow.quantity,
+                        signoutDate: savedRow.signoutDate,
+                        dueDate: savedRow.dueDate,
+                        assignedToUserId: savedRow.assignedToUserId,
+                        signedOutByUserId: savedRow.signedOutByUserId,
+                        bundleTransactionId: bundleTransaction.id
+                    })),
+                    isBundle: true
+                };
+
+                item.stock = Math.max(0, qty > 0 ? (item.stock - qty) : item.stock);
+                project.itemsOut.push(bundleSummary);
+
+                _trackItemSignout(item, qty);
+                addLog(currentUser.id, 'Sign Out', `Signed out ${qty}x bundle ${item.name} (SKU: ${item.sku}) for Project: ${String(project.id || '').startsWith('PERS-') ? 'My Items (Personal)' : project.name}`);
+
+                await Promise.all([refreshProjectsFromSupabase(), refreshInventoryFromSupabase()]);
+
+                showToast(
+                    bundleRequiresDoorUnlock
+                        ? `Signed out ${qty} bundle(s) successfully. Door opened.`
+                        : `Signed out ${qty} bundle(s) successfully.`,
+                    'success'
+                );
+                closeModal();
+                renderInventory();
+                renderProjects();
+                loadDashboard();
+                return;
+            }
 
             const signoutData = {
                 id: generateId('OUT'),
@@ -10203,6 +10376,118 @@ dynamicModal.addEventListener('mousedown', (e) => {
     }, true);
 });
 
+function isBundleItemType(itemType) {
+    return String(itemType || '').trim().toLowerCase() === 'bundle';
+}
+
+function getBundleComponentItemOptions({ bundleItemId = '', selectedItemId = '' } = {}) {
+    const excludedIds = new Set([String(bundleItemId || '').trim()].filter(Boolean));
+    return inventoryItems
+        .filter(item => String(item?.id || '').trim() && !excludedIds.has(String(item.id).trim()) && !isBundleItemType(item.item_type))
+        .map(item => `<option value="${escapeHtml(item.id)}" ${String(item.id) === String(selectedItemId) ? 'selected' : ''}>${escapeHtml(item.name)} (${escapeHtml(item.sku || item.id)})</option>`)
+        .join('');
+}
+
+function buildBundleComponentRowHtml({ bundleItemId = '', componentItemId = '', componentQuantity = 1, rowIndex = 0 } = {}) {
+    return `
+        <div class="bundle-component-row glass-panel" style="padding:0.75rem;display:grid;grid-template-columns:minmax(0,1fr) 110px auto;gap:0.75rem;align-items:end;" data-bundle-component-row>
+            <div class="form-group" style="margin:0;">
+                <label>Component Item</label>
+                <select class="form-control bundle-component-item-select">
+                    <option value="">Select item</option>
+                    ${getBundleComponentItemOptions({ bundleItemId, selectedItemId: componentItemId })}
+                </select>
+            </div>
+            <div class="form-group" style="margin:0;">
+                <label>Qty</label>
+                <input type="number" class="form-control bundle-component-qty" min="1" value="${Math.max(1, parseInt(componentQuantity, 10) || 1)}">
+            </div>
+            <button type="button" class="btn btn-secondary bundle-remove-component-btn" style="height:42px;" aria-label="Remove component ${rowIndex + 1}">
+                <i class="ph ph-trash"></i>
+            </button>
+        </div>
+    `;
+}
+
+function buildBundleComponentEditorHtml({ bundleItemId = '', components = [] } = {}) {
+    const rows = (Array.isArray(components) && components.length > 0)
+        ? components
+        : [{ componentItemId: '', componentQuantity: 1 }];
+
+    return `
+        <div class="form-group hidden" id="bundle-components-section">
+            <label>Bundle Components</label>
+            <small class="text-muted" style="display:block;margin-bottom:0.5rem;">Pick the existing items and quantities that make up this bundle.</small>
+            <div id="bundle-components-list" style="display:flex;flex-direction:column;gap:0.75rem;">
+                ${rows.map((row, index) => buildBundleComponentRowHtml({
+                    bundleItemId,
+                    componentItemId: row.componentItemId || row.component_item_id || row.itemId || '',
+                    componentQuantity: row.componentQuantity || row.component_quantity || row.quantity || 1,
+                    rowIndex: index
+                })).join('')}
+            </div>
+            <button type="button" class="btn btn-secondary btn-sm mt-3" id="add-bundle-component-row">
+                <i class="ph ph-plus"></i> Add Component
+            </button>
+        </div>
+    `;
+}
+
+function collectBundleComponentRows() {
+    return Array.from(document.querySelectorAll('#bundle-components-list [data-bundle-component-row]'))
+        .map(row => ({
+            componentItemId: String(row.querySelector('.bundle-component-item-select')?.value || '').trim(),
+            componentQuantity: Math.max(1, parseInt(row.querySelector('.bundle-component-qty')?.value, 10) || 1)
+        }))
+        .filter(row => row.componentItemId);
+}
+
+function setBundleComponentsSectionVisibility(itemType) {
+    const section = document.getElementById('bundle-components-section');
+    if (!section) return;
+    section.classList.toggle('hidden', !isBundleItemType(itemType));
+}
+
+function wireBundleComponentsEditor(bundleItemId = '') {
+    const section = document.getElementById('bundle-components-section');
+    const list = document.getElementById('bundle-components-list');
+    const addBtn = document.getElementById('add-bundle-component-row');
+    if (!section || !list) return;
+
+    const refreshRemoveButtons = () => {
+        const rows = Array.from(list.querySelectorAll('[data-bundle-component-row]'));
+        rows.forEach((row, index) => {
+            const removeBtn = row.querySelector('.bundle-remove-component-btn');
+            if (!removeBtn) return;
+            removeBtn.disabled = rows.length === 1;
+            removeBtn.title = rows.length === 1 ? 'At least one component is required.' : `Remove component ${index + 1}`;
+        });
+    };
+
+    addBtn?.addEventListener('click', () => {
+        const wrapper = document.createElement('div');
+        wrapper.innerHTML = buildBundleComponentRowHtml({ bundleItemId, rowIndex: list.querySelectorAll('[data-bundle-component-row]').length });
+        const row = wrapper.firstElementChild;
+        if (!row) return;
+        list.appendChild(row);
+        refreshRemoveButtons();
+    });
+
+    list.addEventListener('click', event => {
+        const removeBtn = event.target?.closest?.('.bundle-remove-component-btn');
+        if (!removeBtn) return;
+
+        const rows = Array.from(list.querySelectorAll('[data-bundle-component-row]'));
+        if (rows.length <= 1) return;
+
+        const row = removeBtn.closest('[data-bundle-component-row]');
+        if (row) row.remove();
+        refreshRemoveButtons();
+    });
+
+    refreshRemoveButtons();
+}
+
 // Setup Add Item flow
 document.getElementById('add-item-btn')?.addEventListener('click', openAddItemModal);
 
@@ -10273,7 +10558,7 @@ async function openAddItemModal() {
                 </div>
             </div>
             <div class="form-group">
-                <label>Supplier Product Listing Link</label>
+                <label>Item Image</label>
                 <input type="url" id="add-supplier-link" class="form-control" placeholder="https://...">
             </div>
             <div class="form-group">
@@ -10281,9 +10566,11 @@ async function openAddItemModal() {
                 <select id="add-item-type" class="form-control">
                     <option value="item">Item (Tracked, Sign In/Out)</option>
                     <option value="consumable">Consumable (No Stock Tracking)</option>
+                    <option value="bundle">Bundle (Grouped Items)</option>
                 </select>
                 <small class="text-muted">Items are tracked with sign-in/out. Consumables don't show stock levels.</small>
             </div>
+            ${buildBundleComponentEditorHtml()}
             <div class="grid-2-col" style="gap:1rem">
                 <div class="form-group">
                     <label>Initial Stock</label>
@@ -10326,6 +10613,13 @@ async function openAddItemModal() {
 
     openModal(html);
 
+    const addItemTypeSelect = document.getElementById('add-item-type');
+    setBundleComponentsSectionVisibility(addItemTypeSelect?.value || 'item');
+    wireBundleComponentsEditor();
+    addItemTypeSelect?.addEventListener('change', () => {
+        setBundleComponentsSectionVisibility(addItemTypeSelect.value);
+    });
+
     const submitBtn = document.getElementById('confirm-add-item');
     submitBtn?.addEventListener('click', () => {
         withButtonPending(submitBtn, 'Adding...', async () => {
@@ -10340,6 +10634,7 @@ async function openAddItemModal() {
         const imageLink = document.getElementById('add-image-link')?.value.trim() || '';
         const supplierLink = document.getElementById('add-supplier-link')?.value.trim() || '';
         const itemType = document.getElementById('add-item-type')?.value || 'item';
+        const bundleComponents = isBundleItemType(itemType) ? collectBundleComponentRows() : [];
         const visibilityLevel = document.getElementById('add-visibility-level')?.value || 'standard';
         const requiresDoorUnlock = document.getElementById('add-requires-door-unlock')?.checked !== false;
         const stock = Math.max(0, parseInt(document.getElementById('add-stock').value, 10) || 0);
@@ -10348,6 +10643,11 @@ async function openAddItemModal() {
 
         if (!name) {
             showToast('Item name is required.', 'error');
+            return;
+        }
+
+        if (isBundleItemType(itemType) && bundleComponents.length === 0) {
+            showToast('Add at least one item to create a bundle.', 'error');
             return;
         }
 
@@ -10385,6 +10685,15 @@ async function openAddItemModal() {
         if (!createdItem) {
             showToast('Failed to add item in database.', 'error');
             return;
+        }
+
+        if (isBundleItemType(itemType)) {
+            const bundleSaved = typeof saveInventoryItemBundleComponentsInSupabase === 'function'
+                ? await saveInventoryItemBundleComponentsInSupabase(createdItem.id || newItem.id, bundleComponents)
+                : false;
+            if (!bundleSaved) {
+                showToast('Item created, but bundle components failed to save.', 'warning');
+            }
         }
 
         const persistedItemId = createdItem.id || newItem.id;
@@ -10450,11 +10759,11 @@ function openEditProjectModal(projectId) {
             </div>
             ${canAssignOwner ? `
             <div class="form-group">
-                <label>Project/Team Manager</label>
+                <label>Project/Team Managers</label>
                 <select id="edit-proj-owner" class="form-control">
                     ${ownerOptions || '<option value="">No eligible users found</option>'}
                 </select>
-                <small class="text-muted">Teachers and developers can assign a Project/Team Manager to eligible users.</small>
+                <small class="text-muted">Teachers and developers can assign the lead manager, then add Captain and Mentor team roles below.</small>
             </div>` : ''}
             <div class="form-group">
                 <label>Project Team Members</label>
@@ -10582,11 +10891,11 @@ document.getElementById('create-project-btn')?.addEventListener('click', () => {
             </div>
             ${canAssignOwner ? `
             <div class="form-group">
-                <label>Project/Team Manager</label>
+                <label>Project/Team Managers</label>
                 <select id="add-proj-owner" class="form-control">
                     ${ownerOptions || '<option value="">No eligible users found</option>'}
                 </select>
-                <small class="text-muted">Teachers and developers can assign a Project/Team Manager to eligible users.</small>
+                <small class="text-muted">Teachers and developers can assign the lead manager, then add Captain and Mentor team roles below.</small>
             </div>` : ''}
             <div class="form-group">
                 <label>Add Project Team Members (Optional)</label>
@@ -12124,9 +12433,19 @@ async function openEditItemModal(itemId) {
                 </div>
             </div>
             <div class="form-group">
-                <label>Supplier Product Listing Link</label>
+                <label>Item Image</label>
                 <input type="url" id="edit-item-supplier-link" class="form-control" value="${item.supplier_listing_link || item.supplierListingLink || ''}">
             </div>
+            <div class="form-group">
+                <label>Item Type</label>
+                <select id="edit-item-type" class="form-control">
+                    <option value="item" ${String(item.item_type || 'item') === 'item' ? 'selected' : ''}>Item (Tracked, Sign In/Out)</option>
+                    <option value="consumable" ${String(item.item_type || 'item') === 'consumable' ? 'selected' : ''}>Consumable (No Stock Tracking)</option>
+                    <option value="bundle" ${String(item.item_type || 'item') === 'bundle' ? 'selected' : ''}>Bundle (Grouped Items)</option>
+                </select>
+                <small class="text-muted">Items are tracked with sign-in/out. Consumables don't show stock levels.</small>
+            </div>
+            ${buildBundleComponentEditorHtml({ bundleItemId: item.id, components: item.bundleComponents || [] })}
             <div class="grid-2-col" style="gap:1rem">
                 <div class="form-group">
                     <label>Stock</label>
@@ -12160,6 +12479,13 @@ async function openEditItemModal(itemId) {
 
     openModal(html);
 
+    const editItemTypeSelect = document.getElementById('edit-item-type');
+    setBundleComponentsSectionVisibility(editItemTypeSelect?.value || item.item_type || 'item');
+    wireBundleComponentsEditor(item.id);
+    editItemTypeSelect?.addEventListener('change', () => {
+        setBundleComponentsSectionVisibility(editItemTypeSelect.value);
+    });
+
     document.getElementById('confirm-edit-item').addEventListener('click', async () => {
         const name = document.getElementById('edit-item-name').value.trim();
         const category = document.getElementById('edit-item-category').value;
@@ -12169,6 +12495,8 @@ async function openEditItemModal(itemId) {
         const supplier = document.getElementById('edit-item-supplier').value.trim();
         const imageLink = document.getElementById('edit-item-image-link').value.trim();
         const supplierListingLink = document.getElementById('edit-item-supplier-link').value.trim();
+        const itemType = document.getElementById('edit-item-type')?.value || item.item_type || 'item';
+        const bundleComponents = isBundleItemType(itemType) ? collectBundleComponentRows() : [];
         const stock = parseInt(document.getElementById('edit-item-stock').value) || 0;
         const threshold = parseInt(document.getElementById('edit-item-threshold').value) || 0;
         const requiresDoorUnlock = document.getElementById('edit-item-requires-door-unlock')?.checked !== false;
@@ -12185,6 +12513,11 @@ async function openEditItemModal(itemId) {
                 return;
             }
 
+            if (isBundleItemType(itemType) && bundleComponents.length === 0) {
+                showToast('Add at least one item to create a bundle.', 'error');
+                return;
+            }
+
             const updated = await updateItemInSupabase(itemId, {
                 name,
                 category,
@@ -12195,6 +12528,7 @@ async function openEditItemModal(itemId) {
                 supplier,
                 image_link: imageLink || null,
                 supplier_listing_link: supplierListingLink || null,
+                item_type: itemType,
                 stock,
                 threshold,
                 requires_door_unlock: requiresDoorUnlock
@@ -12207,6 +12541,13 @@ async function openEditItemModal(itemId) {
             const tagsUpdated = await setItemVisibilityTagsInSupabase(itemId, selectedTags);
             if (!tagsUpdated) {
                 showToast('Item updated, but visibility tags failed to save.', 'warning');
+            }
+
+            if (typeof saveInventoryItemBundleComponentsInSupabase === 'function') {
+                const bundleSaved = await saveInventoryItemBundleComponentsInSupabase(itemId, bundleComponents);
+                if (!bundleSaved && isBundleItemType(itemType)) {
+                    showToast('Item updated, but bundle components failed to save.', 'warning');
+                }
             }
 
             await refreshInventoryFromSupabase();

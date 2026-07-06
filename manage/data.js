@@ -457,6 +457,7 @@ async function saveAuthPasswordToSupabase(userId, password) {
    ======================================= */
 
 let inventoryItems = [];
+let inventoryItemBundles = [];
 let mockUsers = [];
 let projects = [];
 let studentClasses = [];
@@ -488,6 +489,7 @@ async function loadAllData() {
         await Promise.all([
             loadUsers(),
             loadInventoryItems(),
+            loadInventoryItemBundles(),
             loadProjects(),
             loadCategories(),
             loadVisibilityTags(),
@@ -646,9 +648,91 @@ async function loadInventoryItems() {
         storageLocation: row.storageLocation ?? row.storage_location ?? row.location ?? null,
         imageLink: row.imageLink ?? row.image_link ?? null,
         supplierListingLink: row.supplierListingLink ?? row.supplier_listing_link ?? null,
-        requiresDoorUnlock: row.requiresDoorUnlock ?? row.requires_door_unlock ?? true
+        requiresDoorUnlock: row.requiresDoorUnlock ?? row.requires_door_unlock ?? true,
+        item_type: row.item_type || 'item',
+        visibility_level: row.visibility_level || 'standard'
     }));
+
+    hydrateInventoryItemBundles();
     console.log(`Loaded ${inventoryItems.length} inventory items`);
+}
+
+function getBundleComponentRowsForBundleItem(bundleItemId) {
+    return (inventoryItemBundles || [])
+        .filter(row => String(row.bundle_item_id || '') === String(bundleItemId || ''))
+        .map(row => ({
+            id: row.id,
+            bundleItemId: row.bundle_item_id,
+            componentItemId: row.component_item_id,
+            componentQuantity: Math.max(1, parseInt(row.component_quantity, 10) || 1)
+        }));
+}
+
+function computeBundleAvailability(bundleItemId) {
+    const components = getBundleComponentRowsForBundleItem(bundleItemId);
+    if (components.length === 0) return 0;
+
+    let availability = Number.POSITIVE_INFINITY;
+    for (const component of components) {
+        const childItem = inventoryItems.find(item => item.id === component.componentItemId);
+        const componentStock = Math.max(0, parseInt(childItem?.stock, 10) || 0);
+        const componentBundles = Math.floor(componentStock / Math.max(1, component.componentQuantity));
+        availability = Math.min(availability, componentBundles);
+    }
+
+    return Number.isFinite(availability) ? Math.max(0, availability) : 0;
+}
+
+function hydrateInventoryItemBundles() {
+    if (!Array.isArray(inventoryItems) || inventoryItems.length === 0) return;
+
+    const bundleItems = new Set((inventoryItemBundles || []).map(row => String(row.bundle_item_id || '')));
+    inventoryItems = inventoryItems.map(item => {
+        if (!bundleItems.has(String(item.id || ''))) return item;
+
+        const bundleComponents = getBundleComponentRowsForBundleItem(item.id)
+            .map(component => ({
+                ...component,
+                componentItem: inventoryItems.find(child => child.id === component.componentItemId) || null
+            }))
+            .filter(component => component.componentItemId);
+        const bundleStock = computeBundleAvailability(item.id);
+
+        return {
+            ...item,
+            bundleComponents,
+            bundleStock,
+            stock: bundleStock
+        };
+    });
+}
+
+/**
+ * Load inventory bundle component rows from public.inventory_item_bundles table
+ */
+async function loadInventoryItemBundles() {
+    const { data, error } = await dbClient.from('inventory_item_bundles').select('*');
+    if (error) {
+        const message = String(error?.message || '').toLowerCase();
+        const code = String(error?.code || '').toUpperCase();
+        const missingTableError = message.includes('does not exist') || code === '42P01' || code === 'PGRST204';
+        if (missingTableError) {
+            inventoryItemBundles = [];
+            return;
+        }
+        console.error('Error loading inventory item bundles:', error);
+        return;
+    }
+
+    inventoryItemBundles = (data || []).map(row => ({
+        ...row,
+        bundle_item_id: row.bundle_item_id,
+        component_item_id: row.component_item_id,
+        component_quantity: Math.max(1, parseInt(row.component_quantity, 10) || 1)
+    }));
+
+    hydrateInventoryItemBundles();
+    console.log(`Loaded ${inventoryItemBundles.length} inventory bundle component rows`);
 }
 
 /**
@@ -656,6 +740,7 @@ async function loadInventoryItems() {
  */
 async function refreshInventoryFromSupabase() {
     await loadInventoryItems();
+    await loadInventoryItemBundles();
     await loadInventoryItemVisibility();
     return inventoryItems;
 }
@@ -1181,25 +1266,83 @@ async function loadProjectCollaborators() {
  * Load project items out and attach to projects
  */
 async function loadProjectItemsOut() {
-    const { data, error } = await dbClient.from('project_items_out').select('*');
-    if (error) {
-        console.error('Error loading project items out:', error);
+    const isMissingTableError = (err) => {
+        const message = String(err?.message || '').toLowerCase();
+        const code = String(err?.code || '').toUpperCase();
+        return message.includes('does not exist') || code === '42P01' || code === 'PGRST204';
+    };
+
+    const [itemsOutResult, bundleTxResult] = await Promise.all([
+        dbClient.from('project_items_out').select('*'),
+        dbClient.from('project_item_bundle_transactions').select('*')
+    ]);
+
+    if (itemsOutResult.error) {
+        console.error('Error loading project items out:', itemsOutResult.error);
         return;
     }
-    
-    data.forEach(io => {
+
+    if (bundleTxResult.error && !isMissingTableError(bundleTxResult.error)) {
+        console.error('Error loading project bundle transactions:', bundleTxResult.error);
+    }
+
+    const bundleTransactions = (bundleTxResult.data || []).reduce((map, row) => {
+        map[String(row.id || '')] = row;
+        return map;
+    }, {});
+
+    const bundleChildren = (itemsOutResult.data || []).reduce((map, row) => {
+        const bundleId = String(row.bundle_transaction_id || '').trim();
+        if (!bundleId) return map;
+        if (!map[bundleId]) map[bundleId] = [];
+        map[bundleId].push(row);
+        return map;
+    }, {});
+
+    (itemsOutResult.data || []).forEach(io => {
+        if (io.bundle_transaction_id) return;
+
         const project = projects.find(p => p.id === io.project_id);
-        if (project) {
-            project.itemsOut.push({
-                id: io.id,
-                itemId: io.item_id,
-                quantity: io.quantity,
-                signoutDate: io.signout_date,
-                dueDate: io.due_date,
-                assignedToUserId: io.assigned_to_user_id ?? io.assignedToUserId ?? null,
-                signedOutByUserId: io.signed_out_by_user_id ?? io.signedOutByUserId ?? null
-            });
-        }
+        if (!project) return;
+
+        project.itemsOut.push({
+            id: io.id,
+            itemId: io.item_id,
+            quantity: io.quantity,
+            signoutDate: io.signout_date,
+            dueDate: io.due_date,
+            assignedToUserId: io.assigned_to_user_id ?? io.assignedToUserId ?? null,
+            signedOutByUserId: io.signed_out_by_user_id ?? io.signedOutByUserId ?? null
+        });
+    });
+
+    Object.values(bundleTransactions).forEach(tx => {
+        const project = projects.find(p => p.id === tx.project_id);
+        if (!project) return;
+
+        const children = (bundleChildren[String(tx.id || '')] || []).map(row => ({
+            id: row.id,
+            itemId: row.item_id,
+            quantity: row.quantity,
+            signoutDate: row.signout_date,
+            dueDate: row.due_date,
+            assignedToUserId: row.assigned_to_user_id ?? row.assignedToUserId ?? null,
+            signedOutByUserId: row.signed_out_by_user_id ?? row.signedOutByUserId ?? null,
+            bundleTransactionId: row.bundle_transaction_id
+        }));
+
+        project.itemsOut.push({
+            id: tx.id,
+            itemId: tx.bundle_item_id,
+            quantity: tx.bundle_quantity,
+            signoutDate: tx.signout_date,
+            dueDate: tx.due_date,
+            assignedToUserId: tx.assigned_to_user_id ?? tx.assignedToUserId ?? null,
+            signedOutByUserId: tx.signed_out_by_user_id ?? tx.signedOutByUserId ?? null,
+            bundleTransactionId: tx.id,
+            bundleComponents: children,
+            isBundle: true
+        });
     });
 }
 
@@ -2145,6 +2288,66 @@ async function updateItemInSupabase(itemId, updates) {
 }
 
 /**
+ * Replace the component rows for a bundle item.
+ */
+async function saveInventoryItemBundleComponentsInSupabase(bundleItemId, components) {
+    if (!bundleItemId) return false;
+
+    const normalizedComponents = (Array.isArray(components) ? components : [])
+        .map(component => ({
+            bundle_item_id: bundleItemId,
+            component_item_id: String(component?.componentItemId || component?.itemId || '').trim(),
+            component_quantity: Math.max(1, parseInt(component?.componentQuantity || component?.quantity, 10) || 1)
+        }))
+        .filter(component => component.component_item_id);
+
+    const { data: previousRows, error: previousRowsError } = await dbClient
+        .from('inventory_item_bundles')
+        .select('*')
+        .eq('bundle_item_id', bundleItemId);
+
+    if (previousRowsError) {
+        console.error('Error loading existing bundle component rows:', previousRowsError);
+        return false;
+    }
+
+    const { error: deleteError } = await dbClient
+        .from('inventory_item_bundles')
+        .delete()
+        .eq('bundle_item_id', bundleItemId);
+
+    if (deleteError) {
+        console.error('Error clearing bundle component rows:', deleteError);
+        return false;
+    }
+
+    if (normalizedComponents.length === 0) {
+        inventoryItemBundles = (inventoryItemBundles || []).filter(row => String(row.bundle_item_id || '') !== String(bundleItemId));
+        hydrateInventoryItemBundles();
+        return true;
+    }
+
+    const { error: insertError } = await dbClient
+        .from('inventory_item_bundles')
+        .insert(normalizedComponents);
+
+    if (insertError) {
+        console.error('Error saving bundle component rows:', insertError);
+        if ((previousRows || []).length > 0) {
+            await dbClient.from('inventory_item_bundles').insert(previousRows.map(row => ({
+                bundle_item_id: row.bundle_item_id,
+                component_item_id: row.component_item_id,
+                component_quantity: row.component_quantity
+            })));
+        }
+        return false;
+    }
+
+    await loadInventoryItemBundles();
+    return true;
+}
+
+/**
  * Add project to projects table
  */
 async function addProjectToSupabase(project) {
@@ -2255,6 +2458,7 @@ async function insertProjectItemOutToSupabase(itemOut, { triggerLed = true } = {
 
     const normalizedId = String(itemOut.id || createUuid()).trim();
     const normalizedQty = Math.max(1, parseInt(itemOut.quantity, 10) || 1);
+    const normalizedBundleTransactionId = String(itemOut.bundleTransactionId || itemOut.bundle_transaction_id || '').trim() || null;
 
     const payload = {
         id: normalizedId,
@@ -2264,7 +2468,8 @@ async function insertProjectItemOutToSupabase(itemOut, { triggerLed = true } = {
         signout_date: itemOut.signoutDate,
         due_date: itemOut.dueDate,
         assigned_to_user_id: itemOut.assignedToUserId || null,
-        signed_out_by_user_id: itemOut.signedOutByUserId || null
+        signed_out_by_user_id: itemOut.signedOutByUserId || null,
+        bundle_transaction_id: normalizedBundleTransactionId
     };
 
     const fallbackPayload = {
@@ -2273,7 +2478,8 @@ async function insertProjectItemOutToSupabase(itemOut, { triggerLed = true } = {
         item_id: itemOut.itemId,
         quantity: normalizedQty,
         signout_date: itemOut.signoutDate,
-        due_date: itemOut.dueDate
+        due_date: itemOut.dueDate,
+        bundle_transaction_id: normalizedBundleTransactionId
     };
 
     const minimalPayload = {
@@ -2281,7 +2487,8 @@ async function insertProjectItemOutToSupabase(itemOut, { triggerLed = true } = {
         project_id: itemOut.projectId,
         item_id: itemOut.itemId,
         quantity: normalizedQty,
-        signout_date: itemOut.signoutDate
+        signout_date: itemOut.signoutDate,
+        bundle_transaction_id: normalizedBundleTransactionId
     };
 
     const payloadNoId = {
@@ -2291,7 +2498,8 @@ async function insertProjectItemOutToSupabase(itemOut, { triggerLed = true } = {
         signout_date: itemOut.signoutDate,
         due_date: itemOut.dueDate,
         assigned_to_user_id: itemOut.assignedToUserId || null,
-        signed_out_by_user_id: itemOut.signedOutByUserId || null
+        signed_out_by_user_id: itemOut.signedOutByUserId || null,
+        bundle_transaction_id: normalizedBundleTransactionId
     };
 
     const fallbackPayloadNoId = {
@@ -2299,14 +2507,16 @@ async function insertProjectItemOutToSupabase(itemOut, { triggerLed = true } = {
         item_id: itemOut.itemId,
         quantity: normalizedQty,
         signout_date: itemOut.signoutDate,
-        due_date: itemOut.dueDate
+        due_date: itemOut.dueDate,
+        bundle_transaction_id: normalizedBundleTransactionId
     };
 
     const minimalPayloadNoId = {
         project_id: itemOut.projectId,
         item_id: itemOut.itemId,
         quantity: normalizedQty,
-        signout_date: itemOut.signoutDate
+        signout_date: itemOut.signoutDate,
+        bundle_transaction_id: normalizedBundleTransactionId
     };
 
     let data = null;
@@ -2352,6 +2562,52 @@ async function addProjectItemOutToSupabase(itemOut) {
     return insertProjectItemOutToSupabase(itemOut, { triggerLed: true });
 }
 
+async function addProjectBundleTransactionToSupabase(transaction) {
+    const { data, error } = await dbClient.from('project_item_bundle_transactions').insert([{
+        id: transaction.id || createUuid(),
+        project_id: transaction.projectId,
+        bundle_item_id: transaction.bundleItemId,
+        bundle_quantity: Math.max(1, parseInt(transaction.bundleQuantity, 10) || 1),
+        signout_date: transaction.signoutDate,
+        due_date: transaction.dueDate,
+        assigned_to_user_id: transaction.assignedToUserId || null,
+        signed_out_by_user_id: transaction.signedOutByUserId || null
+    }]).select();
+
+    if (error) {
+        console.error('Error adding bundle transaction:', error);
+        return null;
+    }
+
+    return data?.[0] || transaction;
+}
+
+async function deleteBundleTransactionFromSupabase(bundleTransactionId) {
+    if (!bundleTransactionId) return false;
+
+    const { error: childDeleteError } = await dbClient
+        .from('project_items_out')
+        .delete()
+        .eq('bundle_transaction_id', bundleTransactionId);
+
+    if (childDeleteError) {
+        console.error('Error deleting bundle child rows:', childDeleteError);
+        return false;
+    }
+
+    const { error: transactionDeleteError } = await dbClient
+        .from('project_item_bundle_transactions')
+        .delete()
+        .eq('id', bundleTransactionId);
+
+    if (transactionDeleteError) {
+        console.error('Error deleting bundle transaction row:', transactionDeleteError);
+        return false;
+    }
+
+    return true;
+}
+
 /**
  * Add multiple project item out rows and roll back any inserted rows on failure.
  */
@@ -2386,15 +2642,23 @@ async function addProjectItemOutBatchToSupabase(itemOuts) {
  * Return item (delete from project_items_out)
  */
 async function returnItemToSupabase(projectItemOutId) {
-    const { error } = await dbClient.from('project_items_out')
+    if (!projectItemOutId) return false;
+
+    const { data: deletedRows, error } = await dbClient.from('project_items_out')
         .delete()
-        .eq('id', projectItemOutId);
+        .eq('id', projectItemOutId)
+        .select('id');
     
     if (error) {
         console.error('Error returning item:', error);
         return false;
     }
-    return true;
+
+    if (Array.isArray(deletedRows) && deletedRows.length > 0) {
+        return true;
+    }
+
+    return deleteBundleTransactionFromSupabase(projectItemOutId);
 }
 
 /**
@@ -2451,6 +2715,44 @@ async function moveProjectItemOutToProjectInSupabase({
     signedOutByUserId
 }) {
     if (!toProjectId) return null;
+
+    const { data: bundleTransaction } = await dbClient
+        .from('project_item_bundle_transactions')
+        .select('id')
+        .eq('id', projectItemOutId)
+        .maybeSingle();
+
+    if (bundleTransaction?.id) {
+        const { data, error } = await dbClient
+            .from('project_item_bundle_transactions')
+            .update({ project_id: toProjectId })
+            .eq('id', projectItemOutId)
+            .select();
+
+        if (!error) {
+            const { error: childUpdateError } = await dbClient
+                .from('project_items_out')
+                .update({ project_id: toProjectId })
+                .eq('bundle_transaction_id', projectItemOutId);
+
+            if (!childUpdateError) {
+                await addProjectTransferToSupabase({
+                    projectItemOutId,
+                    fromProjectId,
+                    toProjectId,
+                    itemId,
+                    quantity,
+                    signoutDate,
+                    dueDate,
+                    assignedToUserId,
+                    signedOutByUserId
+                });
+                return data?.[0] || null;
+            }
+        }
+
+        console.error('Error moving bundle transaction, falling back to delete/insert:', error || bundleTransaction);
+    }
 
     if (projectItemOutId) {
         const { data, error } = await dbClient
