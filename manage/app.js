@@ -964,6 +964,15 @@ function isSafeHttpUrl(value) {
     }
 }
 
+function getInventoryItemImageUrl(item) {
+    const imageUrl = String(item?.image_link || item?.imageLink || item?.image_url || item?.imageUrl || '').trim();
+    return isSafeHttpUrl(imageUrl) ? imageUrl : '';
+}
+
+function getInventoryTableColumnCount() {
+    return Math.max(1, document.querySelectorAll('#page-inventory .data-table thead th').length || 0);
+}
+
 const DOOR_LINK_BACKGROUND_INTERVAL_MS = 20000;
 const DOOR_STATUS_RETRY_COOLDOWN_MS = 20000;
 const doorLinkHealthState = {
@@ -5335,6 +5344,8 @@ function renderInventory() {
     const tbody = document.getElementById('inventory-table-body');
     const searchInput = document.getElementById('inventory-smart-search');
     const resultsMeta = document.getElementById('inventory-results-meta');
+    const isGridView = inventoryViewMode === 'grid';
+    const tableColumnCount = getInventoryTableColumnCount();
 
     syncInventoryViewModeUI();
 
@@ -5366,12 +5377,12 @@ function renderInventory() {
     }
 
     if (filtered.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No items match your current search.</td></tr>';
+        tbody.innerHTML = `<tr class="${isGridView ? 'inventory-grid-card-row' : ''}"><td colspan="${tableColumnCount}" class="text-center text-muted">No items match your current search.</td></tr>`;
         updateInventoryBulkSelectionState();
         return;
     }
 
-    tbody.innerHTML = filtered.map(item => {
+    const renderInventoryRowHtml = item => {
         const currentStatus = determineStatus(item.stock, item.threshold, item.item_type);
         const statusClass = currentStatus === 'In Stock' ? 'status-instock' : (currentStatus === 'Low Stock' || currentStatus === 'Out of Stock') ? 'status-lowstock' : 'status-na';
         const categoryLabel = escapeHtml(String(item.category || 'Uncategorized'));
@@ -5445,7 +5456,71 @@ function renderInventory() {
                 </td>
             </tr>
         `;
-    }).join('');
+    };
+
+    const renderInventoryGridCardHtml = item => {
+        const safeItemId = escapeHtml(String(item.id || ''));
+        const safeItemName = escapeHtml(String(item.name || 'Unnamed Item'));
+        const safeItemSku = escapeHtml(String(item.sku || ''));
+        const imageUrl = getInventoryItemImageUrl(item);
+        const stockValue = Math.max(0, parseInt(item?.stock, 10) || 0);
+        const totalQuantity = getItemTotalQuantity(item);
+        const tagsHtml = (item.visibilityTags || []).map(tag =>
+            `<span class="visibility-tag">${escapeHtml(String(tag || ''))}</span>`
+        ).join('');
+
+        return `
+            <tr class="inventory-grid-card-row">
+                <td colspan="${tableColumnCount}">
+                    <article class="inventory-grid-card">
+                        <div class="inventory-grid-card-media">
+                            ${imageUrl ? `<img src="${escapeHtml(imageUrl)}" alt="${safeItemName}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">` : ''}
+                            <div class="inventory-grid-card-placeholder${imageUrl ? '' : ' is-visible'}">
+                                <i class="ph ph-image"></i>
+                                <span>No image</span>
+                            </div>
+                        </div>
+                        <div class="inventory-grid-card-body">
+                            <div class="inventory-grid-card-heading">
+                                <div class="inventory-grid-card-title">
+                                    ${currentUser.role !== 'student'
+                                        ? `<button class="item-preview-btn" data-id="${safeItemId}" title="View Item Preview">${safeItemName}</button>`
+                                        : safeItemName}
+                                </div>
+                                ${renderMissingMetadataIcon(item)}
+                            </div>
+                            <div class="inventory-grid-card-meta-row">
+                                <span class="inventory-grid-card-meta-label">Stock</span>
+                                <span class="inventory-grid-card-meta-value">${stockValue} of ${totalQuantity}</span>
+                            </div>
+                            <div class="inventory-grid-card-meta-row">
+                                <span class="inventory-grid-card-meta-label">SKU</span>
+                                <span class="inventory-grid-card-meta-value">${safeItemSku || 'N/A'}</span>
+                            </div>
+                            ${currentUser.role === 'student' && tagsHtml ? `<div class="visibility-tags-row">${tagsHtml}</div>` : ''}
+                            <div class="inventory-grid-card-actions">
+                                ${currentUser.role !== 'student' ? `
+                                    <button class="btn btn-secondary btn-sm inventory-item-action-btn edit-item-btn" data-id="${safeItemId}" title="Edit Item">
+                                        <i class="ph ph-pencil-simple"></i>
+                                    </button>` : ''}
+                                <button class="btn btn-secondary btn-sm inventory-item-action-btn add-basket-btn" data-id="${safeItemId}" title="Add to Basket" 
+                                    style="background: rgba(148, 163, 184, 0.08); color: var(--text-secondary); border: 1px solid var(--glass-border)">
+                                    <i class="ph ph-shopping-cart-simple"></i>
+                                </button>
+                                <button class="btn btn-primary btn-sm inventory-item-action-btn signout-btn" data-id="${safeItemId}" title="Sign out to Project">
+                                    <i class="ph ph-export"></i> Sign Out
+                                </button>
+                            </div>
+                        </div>
+                    </article>
+                </td>
+            </tr>
+        `;
+    };
+
+    tbody.innerHTML = isGridView
+        ? filtered.map(renderInventoryGridCardHtml).join('')
+        : filtered.map(renderInventoryRowHtml).join('');
 
     // Select all items checkbox
     document.getElementById('select-all-items')?.addEventListener('change', (e) => {

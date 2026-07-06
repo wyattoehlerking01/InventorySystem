@@ -938,6 +938,15 @@ function isSafeHttpUrl(value) {
     }
 }
 
+function getInventoryItemImageUrl(item) {
+    const imageUrl = String(item?.image_link || item?.imageLink || item?.image_url || item?.imageUrl || '').trim();
+    return isSafeHttpUrl(imageUrl) ? imageUrl : '';
+}
+
+function getInventoryTableColumnCount() {
+    return Math.max(1, document.querySelectorAll('#page-inventory .data-table thead th').length || 0);
+}
+
 async function readDoorEndpointErrorSummary(response) {
     if (!response) return '';
 
@@ -4982,6 +4991,8 @@ function renderInventory() {
     const tbody = document.getElementById('inventory-table-body');
     const searchInput = document.getElementById('inventory-smart-search');
     const resultsMeta = document.getElementById('inventory-results-meta');
+    const isGridView = inventoryViewMode === 'grid';
+    const tableColumnCount = getInventoryTableColumnCount();
 
     syncInventoryViewModeUI();
 
@@ -5013,12 +5024,12 @@ function renderInventory() {
     }
 
     if (filtered.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No items match your current search.</td></tr>';
+        tbody.innerHTML = `<tr class="${isGridView ? 'inventory-grid-card-row' : ''}"><td colspan="${tableColumnCount}" class="text-center text-muted">No items match your current search.</td></tr>`;
         updateInventoryBulkSelectionState();
         return;
     }
 
-    tbody.innerHTML = filtered.map(item => {
+    const renderInventoryRowHtml = item => {
         const currentStatus = determineStatus(item.stock, item.threshold, item.item_type);
         const statusClass = currentStatus === 'In Stock' ? 'status-instock' : (currentStatus === 'Low Stock' || currentStatus === 'Out of Stock') ? 'status-lowstock' : 'status-na';
         const categoryLabel = escapeHtml(String(item.category || 'Uncategorized'));
@@ -5026,21 +5037,46 @@ function renderInventory() {
         const safeItemId = escapeHtml(String(item.id || ''));
         const safeItemName = escapeHtml(String(item.name || 'Unnamed Item'));
         const safeItemSku = escapeHtml(String(item.sku || ''));
+        const imageLink = getInventoryItemImageUrl(item);
+        const supplierLink = String(item.supplier_listing_link || item.supplierListingLink || '').trim();
+        const itemListingLink = imageLink || supplierLink;
+        const itemListingLinkHtml = inventoryViewMode === 'row' && itemListingLink
+            ? `<span class="inventory-item-listing-link">${buildExternalItemLink(itemListingLink, 'Item Listing Image Link')}</span>`
+            : '';
+        const thumbnailHtml = imageLink
+            ? `
+                <div class="inventory-item-thumb">
+                    <img src="${escapeHtml(imageLink)}" alt="${safeItemName}" onerror="this.style.display='none';this.parentElement.querySelector('.inventory-item-thumb-placeholder').style.display='flex';">
+                    <div class="inventory-item-thumb-placeholder" style="display:none;"><i class="ph ph-image"></i></div>
+                </div>
+            `
+            : `
+                <div class="inventory-item-thumb">
+                    <div class="inventory-item-thumb-placeholder"><i class="ph ph-image"></i></div>
+                </div>
+            `;
         const tagsHtml = (item.visibilityTags || []).map(tag =>
             `<span class="visibility-tag">${escapeHtml(String(tag || ''))}</span>`
         ).join('');
 
         return `
-            <tr>
+            <tr class="inventory-row-container">
+                <td><input type="checkbox" class="item-select-cb" data-id="${safeItemId}"></td>
                 <td>
-                    <div class="font-bold">
-                        ${currentUser.role !== 'student'
-                            ? `<button class="item-preview-btn" data-id="${safeItemId}" title="View Item Preview" style="background:none;border:none;color:inherit;padding:0;text-align:left;font:inherit;cursor:pointer;">${safeItemName}</button>`
-                            : safeItemName}
-                        ${renderMissingMetadataIcon(item)}
+                    <div class="inventory-item-title-wrap">
+                        ${thumbnailHtml}
+                        <div class="inventory-item-title-copy">
+                            <div class="font-bold">
+                                ${currentUser.role !== 'student'
+                                    ? `<button class="item-preview-btn" data-id="${safeItemId}" title="View Item Preview" style="background:none;border:none;color:inherit;padding:0;text-align:left;font:inherit;cursor:pointer;">${safeItemName}</button>`
+                                    : safeItemName}
+                                ${renderMissingMetadataIcon(item)}
+                                ${itemListingLinkHtml}
+                            </div>
+                            ${item.sku ? `<small class="text-xs text-muted">SKU: ${safeItemSku}</small>` : ''}
+                            ${currentUser.role === 'student' && tagsHtml ? `<div class="visibility-tags-row">${tagsHtml}</div>` : ''}
+                        </div>
                     </div>
-                    ${item.sku ? `<small class="text-xs text-muted">SKU: ${safeItemSku}</small>` : ''}
-                    ${currentUser.role === 'student' && tagsHtml ? `<div class="visibility-tags-row">${tagsHtml}</div>` : ''}
                 </td>
                 <td>${categoryLabel}<br><small class="text-muted">${brandLabel}</small></td>
                 <td class="text-muted font-mono" style="font-size:0.8rem">${safeItemSku}</td>
@@ -5070,7 +5106,79 @@ function renderInventory() {
                 </td>
             </tr>
         `;
-    }).join('');
+    };
+
+    const renderInventoryGridCardHtml = item => {
+        const currentStatus = determineStatus(item.stock, item.threshold, item.item_type);
+        const safeItemId = escapeHtml(String(item.id || ''));
+        const safeItemName = escapeHtml(String(item.name || 'Unnamed Item'));
+        const safeItemSku = escapeHtml(String(item.sku || ''));
+        const imageUrl = getInventoryItemImageUrl(item);
+        const stockValue = Math.max(0, parseInt(item?.stock, 10) || 0);
+        const totalQuantity = getItemTotalQuantity(item);
+        const tagsHtml = (item.visibilityTags || []).map(tag =>
+            `<span class="visibility-tag">${escapeHtml(String(tag || ''))}</span>`
+        ).join('');
+
+        return `
+            <tr class="inventory-grid-card-row">
+                <td colspan="${tableColumnCount}">
+                    <article class="inventory-grid-card">
+                        <div class="inventory-grid-card-media">
+                            ${imageUrl ? `<img src="${escapeHtml(imageUrl)}" alt="${safeItemName}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">` : ''}
+                            <div class="inventory-grid-card-placeholder${imageUrl ? '' : ' is-visible'}">
+                                <i class="ph ph-image"></i>
+                                <span>No image</span>
+                            </div>
+                        </div>
+                        <div class="inventory-grid-card-body">
+                            <div class="inventory-grid-card-heading">
+                                <div class="inventory-grid-card-title">
+                                    ${currentUser.role !== 'student'
+                                        ? `<button class="item-preview-btn" data-id="${safeItemId}" title="View Item Preview">${safeItemName}</button>`
+                                        : safeItemName}
+                                </div>
+                                ${renderMissingMetadataIcon(item)}
+                            </div>
+                            <div class="inventory-grid-card-meta-row">
+                                <span class="inventory-grid-card-meta-label">Stock</span>
+                                <span class="inventory-grid-card-meta-value">${stockValue} of ${totalQuantity}</span>
+                            </div>
+                            <div class="inventory-grid-card-meta-row">
+                                <span class="inventory-grid-card-meta-label">SKU</span>
+                                <span class="inventory-grid-card-meta-value">${safeItemSku || 'N/A'}</span>
+                            </div>
+                            <div class="inventory-grid-card-meta-row">
+                                <span class="inventory-grid-card-meta-label">Status</span>
+                                <span class="status-badge ${currentStatus === 'In Stock' ? 'status-instock' : (currentStatus === 'Low Stock' || currentStatus === 'Out of Stock') ? 'status-lowstock' : 'status-na'}">${currentStatus}</span>
+                            </div>
+                            ${currentUser.role === 'student' && tagsHtml ? `<div class="visibility-tags-row">${tagsHtml}</div>` : ''}
+                            <div class="inventory-grid-card-actions">
+                                ${currentUser.role !== 'student' ? `
+                                    <button class="btn btn-secondary btn-sm inventory-item-action-btn edit-item-btn" data-id="${safeItemId}" title="Edit Item">
+                                        <i class="ph ph-pencil-simple"></i>
+                                    </button>
+                                    <button class="btn btn-danger btn-sm inventory-item-action-btn delete-item-btn" data-id="${safeItemId}" title="Delete Item">
+                                        <i class="ph ph-trash"></i>
+                                    </button>` : ''}
+                                <button class="btn btn-secondary btn-sm inventory-item-action-btn add-basket-btn" data-id="${safeItemId}" title="Add to Basket" 
+                                    style="background: rgba(16, 185, 129, 0.1); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.2)">
+                                    <i class="ph ph-shopping-cart-simple"></i>
+                                </button>
+                                <button class="btn btn-primary btn-sm inventory-item-action-btn signout-btn" data-id="${safeItemId}" title="Sign out to Project">
+                                    <i class="ph ph-export"></i> Sign Out
+                                </button>
+                            </div>
+                        </div>
+                    </article>
+                </td>
+            </tr>
+        `;
+    };
+
+    tbody.innerHTML = isGridView
+        ? filtered.map(renderInventoryGridCardHtml).join('')
+        : filtered.map(renderInventoryRowHtml).join('');
 
     // Attach listeners for actions
     // Attach basket listeners
@@ -5360,18 +5468,8 @@ async function transferProjectItemToAnotherProject(projectId, signoutId) {
         return false;
     }
 
-    const choiceText = eligibleProjects.map((project, index) => `${index + 1}. ${project.name} (${project.id})`).join('\n');
-    const selectedChoice = prompt(`Transfer to which project? Enter the project number or ID:\n\n${choiceText}`, eligibleProjects[0].id);
-    if (!selectedChoice) return false;
-
-    const trimmedChoice = String(selectedChoice).trim();
-    const selectedProject = eligibleProjects.find((project, index) => String(index + 1) === trimmedChoice || project.id === trimmedChoice);
+    const selectedProject = await openTransferProjectDestinationModal(sourceProject, sourceRow, eligibleProjects);
     if (!selectedProject) {
-        showToast('Select a valid destination project.', 'error');
-        return false;
-    }
-
-    if (!confirm(`Transfer ${sourceRow.quantity}x item from ${sourceProject.name} to ${selectedProject.name}?`)) {
         return false;
     }
 
@@ -5401,6 +5499,107 @@ async function transferProjectItemToAnotherProject(projectId, signoutId) {
     addLog(currentUser.id, 'Transfer Project Item', `Transferred ${sourceRow.quantity}x item ${sourceRow.itemId} from ${sourceProject.id} to ${selectedProject.id}`);
     showToast('Item transferred.', 'success');
     return true;
+}
+
+function buildTransferProjectListHtml(eligibleProjects, selectedProjectId = '') {
+    return eligibleProjects.map(project => {
+        const ownerLabel = getProjectOwnerLabel(project);
+        const collaboratorCount = Array.isArray(project.collaborators) ? project.collaborators.length : 0;
+        const isSelected = String(project.id) === String(selectedProjectId);
+        return `
+            <button type="button" class="transfer-project-option ${isSelected ? 'selected' : ''}" data-project-id="${escapeHtml(project.id)}" data-search="${escapeHtml(`${project.name} ${project.id} ${ownerLabel}`.toLowerCase())}">
+                <div class="transfer-project-option-main">
+                    <div class="transfer-project-option-title">${escapeHtml(project.name)}</div>
+                    <div class="transfer-project-option-subtitle">${escapeHtml(project.id)}</div>
+                </div>
+                <div class="transfer-project-option-meta">
+                    <span>${collaboratorCount} collaborator${collaboratorCount === 1 ? '' : 's'}</span>
+                    <span>${escapeHtml(ownerLabel)}</span>
+                </div>
+            </button>
+        `;
+    }).join('');
+}
+
+function openTransferProjectDestinationModal(sourceProject, sourceRow, eligibleProjects) {
+    return new Promise(resolve => {
+        let selectedProjectId = eligibleProjects[0]?.id || '';
+
+        const html = `
+            <div class="modal-header">
+                <h3><i class="ph ph-arrow-right"></i> Transfer Item</h3>
+                <button class="close-btn" id="transfer-project-close"><i class="ph ph-x"></i></button>
+            </div>
+            <div class="modal-body transfer-project-modal-body">
+                <p class="text-secondary mb-3">Choose where to transfer <strong>${escapeHtml(String(sourceRow.quantity || 1))}x ${escapeHtml(String(sourceRow.itemId || 'item'))}</strong> from <strong>${escapeHtml(sourceProject.name)}</strong>.</p>
+                <div class="form-group">
+                    <label>Search Projects</label>
+                    <input type="text" id="transfer-project-search" class="form-control" placeholder="Search by project name or ID" autocomplete="off">
+                </div>
+                <div class="transfer-project-list" id="transfer-project-list">
+                    ${buildTransferProjectListHtml(eligibleProjects, selectedProjectId)}
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="transfer-project-cancel">Cancel</button>
+                <button class="btn btn-primary" id="transfer-project-confirm">Transfer</button>
+            </div>
+        `;
+
+        openModal(html);
+        dynamicModal.classList.add('class-modal', 'transfer-project-modal');
+
+        const searchInput = document.getElementById('transfer-project-search');
+        const listEl = document.getElementById('transfer-project-list');
+        const confirmBtn = document.getElementById('transfer-project-confirm');
+        const cancelBtn = document.getElementById('transfer-project-cancel');
+        const closeBtn = document.getElementById('transfer-project-close');
+
+        const syncSelectedState = () => {
+            if (confirmBtn) confirmBtn.disabled = !selectedProjectId;
+            listEl?.querySelectorAll('.transfer-project-option').forEach(option => {
+                option.classList.toggle('selected', option.getAttribute('data-project-id') === selectedProjectId);
+            });
+        };
+
+        const filterProjects = () => {
+            const term = String(searchInput?.value || '').trim().toLowerCase();
+            listEl?.querySelectorAll('.transfer-project-option').forEach(option => {
+                const searchable = String(option.getAttribute('data-search') || '');
+                option.style.display = searchable.includes(term) ? '' : 'none';
+            });
+        };
+
+        listEl?.querySelectorAll('.transfer-project-option').forEach(option => {
+            option.addEventListener('click', () => {
+                selectedProjectId = String(option.getAttribute('data-project-id') || '');
+                syncSelectedState();
+            });
+        });
+
+        searchInput?.addEventListener('input', filterProjects);
+        confirmBtn?.addEventListener('click', () => {
+            const selectedProject = eligibleProjects.find(project => String(project.id) === String(selectedProjectId));
+            if (!selectedProject) {
+                showToast('Select a valid destination project.', 'error');
+                return;
+            }
+            closeModal();
+            resolve(selectedProject);
+        });
+        cancelBtn?.addEventListener('click', () => {
+            closeModal();
+            resolve(null);
+        });
+        closeBtn?.addEventListener('click', () => {
+            closeModal();
+            resolve(null);
+        });
+
+        syncSelectedState();
+        filterProjects();
+        requestAnimationFrame(() => searchInput?.focus({ preventScroll: true }));
+    });
 }
 
 async function openProjectsPageAndFocusProject(projectId) {
@@ -9004,7 +9203,7 @@ document.getElementById('bulk-suspend-users-btn')?.addEventListener('click', asy
    MODAL & NOTIFICATION HELPERS
    ======================================= */
 function openModal(contentHtml) {
-    dynamicModal.classList.remove('debug-modal', 'class-modal', 'order-request-modal');
+    dynamicModal.classList.remove('debug-modal', 'class-modal', 'order-request-modal', 'transfer-project-modal');
     const safeFragment = sanitizeModalHtml(contentHtml);
     dynamicModal.replaceChildren(safeFragment);
     modalContainer.classList.remove('hidden');
@@ -9019,7 +9218,7 @@ function closeModal(options = {}) {
 
     modalContainer.classList.add('hidden');
     dynamicModal.replaceChildren();
-    dynamicModal.classList.remove('debug-modal', 'class-modal', 'order-request-modal');
+    dynamicModal.classList.remove('debug-modal', 'class-modal', 'order-request-modal', 'transfer-project-modal');
 }
 
 function focusModalPrimaryInput() {
