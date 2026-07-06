@@ -255,6 +255,26 @@ let ordersStudentViewEnabled = localStorage.getItem(ordersStudentViewStorageKey)
 
 let inventorySmartSearchTerm = '';
 let inventorySearchDebounceTimer = null;
+const inventoryViewStorageKey = 'inventoryLayoutView';
+let inventoryViewMode = localStorage.getItem(inventoryViewStorageKey) === 'row' ? 'row' : 'grid';
+function setInventoryViewMode(viewMode) {
+    inventoryViewMode = viewMode === 'row' ? 'row' : 'grid';
+    localStorage.setItem(inventoryViewStorageKey, inventoryViewMode);
+    syncInventoryViewModeUI();
+    renderInventory();
+}
+
+function syncInventoryViewModeUI() {
+    const page = document.getElementById('page-inventory');
+    const container = document.querySelector('#page-inventory .table-container');
+    const isGridView = inventoryViewMode === 'grid';
+
+    page?.classList.toggle('inventory-grid-view', isGridView);
+    container?.classList.toggle('grid-view-active', isGridView);
+    document.getElementById('inventory-view-row-btn')?.classList.toggle('active-view', !isGridView);
+    document.getElementById('inventory-view-grid-btn')?.classList.toggle('active-view', isGridView);
+}
+
 let ordersTabMode = 'all';
 
 // Modals & Toasts
@@ -4959,6 +4979,8 @@ function renderInventory() {
     const searchInput = document.getElementById('inventory-smart-search');
     const resultsMeta = document.getElementById('inventory-results-meta');
 
+    syncInventoryViewModeUI();
+
     if (searchInput) inventorySmartSearchTerm = String(searchInput.value || '').trim().toLowerCase();
 
     let filtered = currentUser.role === 'student'
@@ -6336,14 +6358,15 @@ function renderProjects() {
         });
     }
 
-    const ensuredPersonalProject = getOrCreatePersonalProject(currentUser.id);
-    if (!visibleProjects.some(p => p.id === ensuredPersonalProject.id)) {
+    const showPersonalProject = canUsePersonalItems(currentUser);
+    const ensuredPersonalProject = showPersonalProject ? getOrCreatePersonalProject(currentUser.id) : null;
+    if (ensuredPersonalProject && !visibleProjects.some(p => p.id === ensuredPersonalProject.id)) {
         visibleProjects = [ensuredPersonalProject, ...visibleProjects];
     }
 
     // Separate personal projects for display in a dedicated section
     const personalProjectId = `PERS-${currentUser.id}`;
-    const personalProject = visibleProjects.find(p => p.id === personalProjectId);
+    const personalProject = showPersonalProject ? visibleProjects.find(p => p.id === personalProjectId) : null;
     const nonPersonalProjects = visibleProjects.filter(p => p.id !== personalProjectId);
 
     let html = '';
@@ -6508,9 +6531,10 @@ async function openSignOutModal(itemId) {
     if (currentUser.role !== 'student') {
         const staffProjects = projects.filter(p => (p.ownerId === currentUser.id || (Array.isArray(p.collaborators) && p.collaborators.includes(currentUser.id))) && !String(p.id || '').startsWith('PERS-'));
         const staffClasses = getManagedClassesForCheckout();
+        const allowPersonalDestination = canUsePersonalItems(currentUser);
         const defaultDestinationMode = staffProjects.length > 0
             ? 'project'
-            : (staffClasses.length > 0 ? 'class' : 'personal');
+            : (staffClasses.length > 0 ? 'class' : (allowPersonalDestination ? 'personal' : 'project'));
 
         const projectOptionsHtml = staffProjects.length > 0
             ? staffProjects.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join('')
@@ -6546,7 +6570,7 @@ async function openSignOutModal(itemId) {
                 <div class="form-group">
                     <label>Sign Out Destination</label>
                     <select id="so-destination-mode" class="form-control">
-                        <option value="personal" ${defaultDestinationMode === 'personal' ? 'selected' : ''}>My Items (Personal)</option>
+                        ${allowPersonalDestination ? `<option value="personal" ${defaultDestinationMode === 'personal' ? 'selected' : ''}>My Items (Personal)</option>` : ''}
                         <option value="project" ${defaultDestinationMode === 'project' ? 'selected' : ''}>Project</option>
                         ${staffClasses.length > 0 ? `<option value="class" ${defaultDestinationMode === 'class' ? 'selected' : ''}>Class</option>` : ''}
                     </select>
@@ -7001,12 +7025,12 @@ async function openSignOutModal(itemId) {
     // Only show active projects where current user is owner or collaborator
     const myProjects = projects.filter(p => (p.ownerId === currentUser.id || (Array.isArray(p.collaborators) && p.collaborators.includes(currentUser.id))) && !String(p.id || '').startsWith('PERS-'));
 
-    const personalOption = `<option value="personal">My Items (Personal)</option>`;
-    const projectsOptions = personalOption + myProjects.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join('');
+    const allowPersonalDestination = canUsePersonalItems(currentUser);
+    const projectsOptions = myProjects.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join('');
 
     // Build assignee options based on first project (will update when project changes)
     const getAssigneeOptions = (projId) => {
-        if (projId === 'personal') {
+        if (projId === 'personal' && allowPersonalDestination) {
             return `<option value="${escapeHtml(currentUser.id)}">${escapeHtml(currentUser.name)}</option>`;
         }
         const proj = projects.find(p => p.id === projId);
@@ -7035,7 +7059,9 @@ async function openSignOutModal(itemId) {
     };
 
     // Determine default assignee based on role
-    const defaultAssigneeId = currentUser.role === 'student' ? projects.find(p => p.id === (myProjects[0]?.id || 'personal'))?.ownerId || currentUser.id : currentUser.id;
+    const defaultAssigneeId = currentUser.role === 'student'
+        ? projects.find(p => p.id === (myProjects[0]?.id || ''))?.ownerId || currentUser.id
+        : currentUser.id;
 
     // Only show "Assign To" field for teachers
     const assignToFieldHtml = currentUser.role !== 'student' ? `
@@ -7114,7 +7140,7 @@ async function openSignOutModal(itemId) {
                 assigneeSelect.innerHTML = getAssigneeOptions(projId);
             }
             const previewEl = document.getElementById('so-due-preview');
-            const selectedProject = projId === 'personal'
+            const selectedProject = projId === 'personal' && allowPersonalDestination
                 ? getOrCreatePersonalProject(currentUser.id)
                 : projects.find(p => p.id === projId);
             if (previewEl) previewEl.textContent = new Date(calculateDueDate(new Date(), currentUser, selectedProject)).toLocaleString();
@@ -7123,7 +7149,7 @@ async function openSignOutModal(itemId) {
         document.getElementById('so-project')?.addEventListener('change', (e) => {
             const projId = e.target.value;
             const previewEl = document.getElementById('so-due-preview');
-            const selectedProject = projId === 'personal'
+            const selectedProject = projId === 'personal' && allowPersonalDestination
                 ? getOrCreatePersonalProject(currentUser.id)
                 : projects.find(p => p.id === projId);
             if (previewEl) previewEl.textContent = new Date(calculateDueDate(new Date(), currentUser, selectedProject)).toLocaleString();
@@ -7143,6 +7169,10 @@ async function openSignOutModal(itemId) {
         if (qty > 0 && qty <= item.stock) {
             let project;
             if (projId === 'personal') {
+                if (!canUsePersonalItems(currentUser)) {
+                    showToast('Personal items are disabled for this user.', 'error');
+                    return;
+                }
                 project = getOrCreatePersonalProject(currentUser.id);
             } else {
                 project = projects.find(p => p.id === projId);
@@ -8437,6 +8467,10 @@ function getItemsOutForUser(userId) {
     return rows;
 }
 
+function canUsePersonalItems(user = currentUser) {
+    return !!(user?.personalItemsEnabled ?? user?.personal_items_enabled);
+}
+
 function openUserItemsModal(userId) {
     const user = mockUsers.find(u => u.id === userId);
     if (!user) return;
@@ -8509,18 +8543,25 @@ function openUserItemsModal(userId) {
         `).join('')
         : '<p class="text-sm text-muted" style="margin-top:0.65rem;">No project items out.</p>';
 
-    const itemsHtml = `
-        <div class="glass-panel" style="padding:1rem;display:flex;gap:0.75rem;align-items:center;justify-content:space-between;flex-wrap:wrap;">
-            <div>
-                <div class="font-bold" style="font-size:1rem;">${projectCount} project${projectCount === 1 ? '' : 's'}, ${projectItemCount} project item${projectItemCount === 1 ? '' : 's'}</div>
-                <div class="text-sm text-muted">Personal items: ${personalItemCount} | Total items out: ${totalItemCount}</div>
-            </div>
-            <span class="badge">${user.role}</span>
-        </div>
+    const showPersonalItems = canUsePersonalItems(user);
+    const personalSectionHtml = showPersonalItems
+        ? `
         <div class="glass-panel" style="padding:0.85rem;margin-top:0.85rem;">
             <div class="font-bold">My Items (Personal)</div>
             ${renderItemsTable(personalRows)}
         </div>
+        `
+        : '';
+
+    const itemsHtml = `
+        <div class="glass-panel" style="padding:1rem;display:flex;gap:0.75rem;align-items:center;justify-content:space-between;flex-wrap:wrap;">
+            <div>
+                <div class="font-bold" style="font-size:1rem;">${projectCount} project${projectCount === 1 ? '' : 's'}, ${projectItemCount} project item${projectItemCount === 1 ? '' : 's'}</div>
+                <div class="text-sm text-muted">Personal items: ${showPersonalItems ? personalItemCount : 0} | Total items out: ${showPersonalItems ? totalItemCount : projectItemCount}</div>
+            </div>
+            <span class="badge">${user.role}</span>
+        </div>
+        ${personalSectionHtml}
         <div style="margin-top:0.85rem;">
             <div class="font-bold">Project Items</div>
             ${projectSectionsHtml}
@@ -9387,6 +9428,7 @@ function openEditProjectModal(projectId) {
     `;
 
     openModal(html);
+    document.getElementById('edit-proj-owner')?.closest('.form-group')?.remove();
 
     const ownerSelect = document.getElementById('edit-proj-owner');
     ownerSelect?.addEventListener('change', () => {
@@ -9534,9 +9576,7 @@ document.getElementById('create-project-btn')?.addEventListener('click', () => {
         withButtonPending(submitBtn, 'Creating...', async () => {
             const name = document.getElementById('add-proj-name').value.trim();
             const desc = document.getElementById('add-proj-desc').value.trim();
-            const ownerId = canAssignOwner
-                ? (document.getElementById('add-proj-owner')?.value || '')
-                : currentUser.id;
+            const ownerId = document.getElementById('add-proj-owner')?.value || currentUser.id;
             const collaborators = Array.from(document.querySelectorAll('#add-proj-collaborators-wrap .proj-student-checkbox:checked')).map(cb => cb.value);
 
             if (!ownerId) {
