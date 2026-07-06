@@ -5204,6 +5204,14 @@ document.getElementById('inventory-smart-search')?.addEventListener('keydown', e
     runInventorySearchAction();
 });
 
+document.getElementById('inventory-view-row-btn')?.addEventListener('click', () => {
+    setInventoryViewMode('row');
+});
+
+document.getElementById('inventory-view-grid-btn')?.addEventListener('click', () => {
+    setInventoryViewMode('grid');
+});
+
 document.getElementById('request-item-btn')?.addEventListener('click', () => {
     openOrderRequestModal({
         initialName: document.getElementById('inventory-smart-search')?.value || ''
@@ -5218,19 +5226,35 @@ document.getElementById('request-item-btn')?.addEventListener('click', () => {
 function canCurrentUserReturnProjectItem(project) {
     if (!currentUser) return false;
     if (currentUser.role !== 'student') return true;
-    return project.ownerId === currentUser.id || project.collaborators.includes(currentUser.id);
+    return project.ownerId === currentUser.id || getProjectMembershipRole(project, currentUser.id) === 'collaborator';
 }
 
 function canCurrentUserViewProject(project) {
     if (!currentUser || !project) return false;
     if (currentUser.role !== 'student') return true;
-    return project.ownerId === currentUser.id || project.collaborators.includes(currentUser.id);
+    return project.ownerId === currentUser.id || !!getProjectMembershipRole(project, currentUser.id);
 }
 
 function canCurrentUserManageProject(project) {
     if (!currentUser || !project) return false;
     if (currentUser.role !== 'student') return true;
-    return project.ownerId === currentUser.id;
+    return project.ownerId === currentUser.id || getProjectMembershipRole(project, currentUser.id) === 'collaborator';
+}
+
+function normalizeProjectCollaboratorRole(role) {
+    const normalized = String(role || 'collaborator').trim().toLowerCase();
+    return ['collaborator', 'mentor', 'captain'].includes(normalized) ? normalized : 'collaborator';
+}
+
+function getProjectMembershipRole(project, userId) {
+    if (!project || !userId) return null;
+    if (project.ownerId === userId) return 'owner';
+    const explicitRole = normalizeProjectCollaboratorRole(project.collaboratorRoles?.[userId]);
+    if (explicitRole) return explicitRole;
+    if (Array.isArray(project.collaborators) && project.collaborators.includes(userId)) {
+        return 'collaborator';
+    }
+    return null;
 }
 
 function canCurrentUserDeleteProject(project) {
@@ -5244,19 +5268,8 @@ function getProjectOwnerCandidates() {
     return mockUsers.filter(u => ['student', 'teacher', 'developer'].includes(u.role) && u.status !== 'Suspended');
 }
 
-function buildProjectCollaboratorOptions({ selectedOwnerId = '', selectedCollaborators = [] } = {}) {
-    const selectedSet = new Set(selectedCollaborators || []);
-    return getProjectOwnerCandidates()
-        .filter(user => user.id !== selectedOwnerId)
-        .map(user => `
-            <div style="margin-bottom:0.5rem">
-                <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">
-                    <input type="checkbox" value="${user.id}" class="proj-student-checkbox" ${selectedSet.has(user.id) ? 'checked' : ''}>
-                    ${user.name} (${user.id})
-                </label>
-            </div>
-        `)
-        .join('');
+function buildProjectCollaboratorOptions({ selectedOwnerId = '', selectedCollaborators = [], collaboratorRoles = {} } = {}) {
+    return buildSearchableProjectCollaborators({ selectedOwnerId, selectedCollaborators, collaboratorRoles });
 }
 
 function getProjectOwnerLabel(project) {
@@ -5264,7 +5277,7 @@ function getProjectOwnerLabel(project) {
     return owner ? `${owner.name} (${owner.id})` : project.ownerId;
 }
 
-async function syncProjectCollaboratorsInSupabase(projectId, nextCollaborators, prevCollaborators) {
+async function syncProjectCollaboratorsInSupabase(projectId, nextCollaborators, prevCollaborators, nextCollaboratorRoles = {}, prevCollaboratorRoles = {}) {
     const prev = new Set(prevCollaborators || []);
     const next = new Set(nextCollaborators || []);
 
@@ -5276,12 +5289,89 @@ async function syncProjectCollaboratorsInSupabase(projectId, nextCollaborators, 
     }
 
     for (const userId of next) {
-        if (!prev.has(userId)) {
-            const added = await addProjectCollaboratorToSupabase(projectId, userId);
+        const nextRole = normalizeProjectCollaboratorRole(nextCollaboratorRoles[userId]);
+        const prevRole = normalizeProjectCollaboratorRole(prevCollaboratorRoles[userId]);
+
+        if (!prev.has(userId) || nextRole !== prevRole) {
+            if (prev.has(userId) && nextRole !== prevRole) {
+                const removed = await removeProjectCollaboratorFromSupabase(projectId, userId);
+                if (!removed) return false;
+            }
+
+            const added = await addProjectCollaboratorToSupabase(projectId, userId, nextRole);
             if (!added) return false;
         }
     }
 
+    return true;
+}
+
+async function transferProjectItemToAnotherProject(projectId, signoutId) {
+    const sourceProject = projects.find(p => p.id === projectId);
+    if (!sourceProject) return false;
+
+    if (!canCurrentUserManageProject(sourceProject)) {
+        showToast('You do not have permission to transfer items from this project.', 'error');
+        return false;
+    }
+
+    const sourceRow = sourceProject.itemsOut.find(io => String(io.id || `${io.itemId}-${io.signoutDate}-${io.quantity}`) === String(signoutId));
+    if (!sourceRow) {
+        showToast('Could not find the selected sign-out record.', 'error');
+        return false;
+    }
+
+    const eligibleProjects = projects.filter(project =>
+        project.id !== projectId
+        && !String(project.id || '').startsWith('PERS-')
+        && canCurrentUserManageProject(project)
+    );
+
+    if (eligibleProjects.length === 0) {
+        showToast('No transferable destination projects are available.', 'error');
+        return false;
+    }
+
+    const choiceText = eligibleProjects.map((project, index) => `${index + 1}. ${project.name} (${project.id})`).join('\n');
+    const selectedChoice = prompt(`Transfer to which project? Enter the project number or ID:\n\n${choiceText}`, eligibleProjects[0].id);
+    if (!selectedChoice) return false;
+
+    const trimmedChoice = String(selectedChoice).trim();
+    const selectedProject = eligibleProjects.find((project, index) => String(index + 1) === trimmedChoice || project.id === trimmedChoice);
+    if (!selectedProject) {
+        showToast('Select a valid destination project.', 'error');
+        return false;
+    }
+
+    if (!confirm(`Transfer ${sourceRow.quantity}x item from ${sourceProject.name} to ${selectedProject.name}?`)) {
+        return false;
+    }
+
+    const moved = await moveProjectItemOutToProjectInSupabase({
+        projectItemOutId: sourceRow.id || null,
+        fromProjectId: sourceProject.id,
+        toProjectId: selectedProject.id,
+        itemId: sourceRow.itemId,
+        quantity: sourceRow.quantity,
+        signoutDate: sourceRow.signoutDate,
+        dueDate: sourceRow.dueDate,
+        assignedToUserId: sourceRow.assignedToUserId || sourceProject.ownerId || null,
+        signedOutByUserId: sourceRow.signedOutByUserId || currentUser.id || null
+    });
+
+    if (!moved) {
+        showToast('Failed to transfer the selected item.', 'error');
+        return false;
+    }
+
+    await Promise.all([
+        refreshProjectsFromSupabase(),
+        refreshInventoryFromSupabase()
+    ]);
+    renderProjects();
+    renderInventory();
+    addLog(currentUser.id, 'Transfer Project Item', `Transferred ${sourceRow.quantity}x item ${sourceRow.itemId} from ${sourceProject.id} to ${selectedProject.id}`);
+    showToast('Item transferred.', 'success');
     return true;
 }
 
@@ -6299,6 +6389,7 @@ function renderProjects() {
             : null;
         const outCount = proj.itemsOut.reduce((acc, curr) => acc + curr.quantity, 0);
         const canManage = canCurrentUserManageProject(proj);
+        const membershipRole = currentUser.role === 'student' ? getProjectMembershipRole(proj, currentUser.id) : null;
 
         // List items out
         const itemsOutHtml = proj.itemsOut.length > 0 ? `
@@ -6321,6 +6412,7 @@ function renderProjects() {
                                 <div style="display:flex;align-items:center;gap:0.5rem;">
                                     <span class="text-muted font-mono" style="font-size:0.75rem">${escapeHtml(item ? item.sku : 'N/A')}</span>
                                     ${canCurrentUserReturnProjectItem(proj) ? `<button class="btn btn-secondary text-sm return-project-item-btn" data-project-id="${escapeHtml(proj.id)}" data-signout-id="${escapeHtml(signoutId)}" style="padding:0.2rem 0.5rem;font-size:0.75rem;"><i class="ph ph-arrow-counter-clockwise"></i> Sign In</button>` : ''}
+                                    ${canManage ? `<button class="btn btn-secondary text-sm transfer-project-item-btn" data-project-id="${escapeHtml(proj.id)}" data-signout-id="${escapeHtml(signoutId)}" style="padding:0.2rem 0.5rem;font-size:0.75rem;"><i class="ph ph-arrow-right"></i> Transfer</button>` : ''}
                                 </div>
                             </div>
                         `;
@@ -6338,6 +6430,7 @@ function renderProjects() {
                     <span class="status-badge ${getProjectStatusBadgeClass(proj.status)}">${escapeHtml(proj.status)}</span>
                 </div>
                 <p class="text-muted text-sm mb-2">Owner: ${escapeHtml(owner ? owner.name : 'Unknown')}</p>
+                ${membershipRole && membershipRole !== 'owner' ? `<p class="text-muted text-sm mb-2">Your Role: ${escapeHtml(membershipRole.charAt(0).toUpperCase() + membershipRole.slice(1))}</p>` : ''}
                 ${linkedClass ? `<p class="text-muted text-sm mb-2">Class: ${escapeHtml(linkedClass.name || linkedClass.id)}</p>` : ''}
                 <p class="project-desc mb-4">${escapeHtml(proj.description)}</p>
                 <div class="project-footer"><strong>${outCount}</strong> items signed out</div>
@@ -6374,6 +6467,14 @@ function renderProjects() {
             const projectId = e.currentTarget.getAttribute('data-project-id');
             const signoutId = e.currentTarget.getAttribute('data-signout-id');
             await returnProjectItem(projectId, signoutId);
+        });
+    });
+
+    document.querySelectorAll('.transfer-project-item-btn').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+            const projectId = e.currentTarget.getAttribute('data-project-id');
+            const signoutId = e.currentTarget.getAttribute('data-signout-id');
+            await transferProjectItemToAnotherProject(projectId, signoutId);
         });
     });
 
@@ -8016,6 +8117,7 @@ async function openUserModal(editId = null) {
     const cJoin = isEdit ? (userToEdit.perms?.canJoinProjects ?? true) : true;
     const cSignOut = isEdit ? (userToEdit.perms?.canSignOut ?? false) : false;
     const signInAttentionAutotrigger = isEdit ? shouldAutoTriggerAttentionOnSignIn(userToEdit) : false;
+    const personalItemsEnabled = isEdit ? (userToEdit.personalItemsEnabled ?? userToEdit.personal_items_enabled ?? false) : false;
     const initialGrade = isEdit ? String(userToEdit.grade || '') : '';
 
     const html = `
@@ -8050,6 +8152,13 @@ async function openUserModal(editId = null) {
                     Auto-trigger attention light when this user signs in
                 </label>
                 <small class="text-muted">When enabled, this user login will fire the configured LED attention endpoint.</small>
+            </div>
+            <div class="form-group">
+                <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer">
+                    <input type="checkbox" id="user-personal-items-enabled" ${personalItemsEnabled ? 'checked' : ''}>
+                    Show My Items (Personal)
+                </label>
+                <small class="text-muted">New users start hidden; enable this when the user should see personal sign-outs.</small>
             </div>
             <div class="form-group" id="class-assign-container" style="display: ${(!isEdit || userToEdit.role === 'student') ? 'block' : 'none'};">
                 <label>Assigned Class</label>
@@ -8128,6 +8237,7 @@ async function openUserModal(editId = null) {
         const grade = document.getElementById('user-grade-input').value.trim();
         const role = document.getElementById('user-role-input').value;
         const autoTriggerAttentionOnSignIn = document.getElementById('user-signin-attention-autotrigger')?.checked === true;
+        const personalItemsEnabled = document.getElementById('user-personal-items-enabled')?.checked === true;
 
         // Developer role restrictions
         if (role === 'developer' && currentUser.role === 'teacher') {
@@ -8219,6 +8329,8 @@ async function openUserModal(editId = null) {
             userToEdit.grade = grade;
             userToEdit.autoTriggerAttentionOnSignIn = autoTriggerAttentionOnSignIn;
             userToEdit.auto_trigger_attention_on_sign_in = autoTriggerAttentionOnSignIn;
+            userToEdit.personalItemsEnabled = personalItemsEnabled;
+            userToEdit.personal_items_enabled = personalItemsEnabled;
             userToEdit.perms = perms;
 
             // Update Class Alignment
@@ -8235,7 +8347,8 @@ async function openUserModal(editId = null) {
                 role,
                 grade,
                 status: userToEdit.status,
-                auto_trigger_attention_on_sign_in: autoTriggerAttentionOnSignIn
+                auto_trigger_attention_on_sign_in: autoTriggerAttentionOnSignIn,
+                personal_items_enabled: personalItemsEnabled
             });
             if (result.error) {
                 let errorMsg = 'Failed to update user in database.';
@@ -8264,6 +8377,8 @@ async function openUserModal(editId = null) {
                 role: role,
                 autoTriggerAttentionOnSignIn: autoTriggerAttentionOnSignIn,
                 auto_trigger_attention_on_sign_in: autoTriggerAttentionOnSignIn,
+                personalItemsEnabled: personalItemsEnabled,
+                personal_items_enabled: personalItemsEnabled,
                 perms: perms,
                 status: 'Active'
             };
@@ -9218,7 +9333,8 @@ function openEditProjectModal(projectId) {
 
     const collaboratorOptions = buildProjectCollaboratorOptions({
         selectedOwnerId: project.ownerId,
-        selectedCollaborators: project.collaborators || []
+        selectedCollaborators: project.collaborators || [],
+        collaboratorRoles: project.collaboratorRoles || {}
     });
 
     const html = `
@@ -9276,7 +9392,8 @@ function openEditProjectModal(projectId) {
         if (!wrapper) return;
         wrapper.innerHTML = buildSearchableProjectCollaborators({
             selectedOwnerId: ownerSelect.value,
-            selectedCollaborators: project.collaborators || []
+            selectedCollaborators: project.collaborators || [],
+            collaboratorRoles: project.collaboratorRoles || {}
         }) || '<p class="text-sm text-muted">No eligible student collaborators.</p>';
         setupProjectCollaboratorSearch();
     });
@@ -9297,6 +9414,11 @@ function openEditProjectModal(projectId) {
             ? (document.getElementById('edit-proj-owner')?.value || project.ownerId)
             : project.ownerId;
         const collaborators = Array.from(document.querySelectorAll('#edit-proj-collaborators-wrap .proj-student-checkbox:checked')).map(cb => cb.value);
+        const collaboratorRoles = Array.from(document.querySelectorAll('#edit-proj-collaborators-wrap .proj-collab-role')).reduce((roles, select) => {
+            const userId = select.getAttribute('data-user-id');
+            if (userId) roles[userId] = select.value;
+            return roles;
+        }, {});
 
         if (!selectedOwnerId) {
             showToast('Please select a project owner.', 'error');
@@ -9319,7 +9441,13 @@ function openEditProjectModal(projectId) {
             return;
         }
 
-        const collaboratorsSaved = await syncProjectCollaboratorsInSupabase(project.id, collaborators, project.collaborators || []);
+        const collaboratorsSaved = await syncProjectCollaboratorsInSupabase(
+            project.id,
+            collaborators,
+            project.collaborators || [],
+            collaboratorRoles,
+            project.collaboratorRoles || {}
+        );
         if (!collaboratorsSaved) {
             showToast('Project updated, but collaborator sync failed.', 'warning');
         }
@@ -11923,16 +12051,23 @@ function renderDebugSettings(el) {
 }
 
 
-function buildSearchableProjectCollaborators({ selectedOwnerId = '', selectedCollaborators = [], containerId = 'proj-collab-search-wrap' } = {}) {
+function buildSearchableProjectCollaborators({ selectedOwnerId = '', selectedCollaborators = [], collaboratorRoles = {}, containerId = 'proj-collab-search-wrap' } = {}) {
     const candidates = getProjectOwnerCandidates().filter(user => user.id !== selectedOwnerId);
     const selectedSet = new Set(selectedCollaborators || []);
     
     const listHtml = candidates.map(user => `
         <div style="margin-bottom:0.5rem" class="proj-collab-item" data-search="${`${user.name} ${user.id}`.toLowerCase()}">
-            <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer">
-                <input type="checkbox" value="${user.id}" class="proj-student-checkbox" ${selectedSet.has(user.id) ? 'checked' : ''}>
-                ${user.name} (${user.id})
-            </label>
+            <div style="display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap;">
+                <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;min-width:220px;flex:1;">
+                    <input type="checkbox" value="${user.id}" class="proj-student-checkbox" ${selectedSet.has(user.id) ? 'checked' : ''}>
+                    ${user.name} (${user.id})
+                </label>
+                <select class="form-control proj-collab-role" data-user-id="${user.id}" style="max-width:180px;">
+                    <option value="collaborator" ${normalizeProjectCollaboratorRole(collaboratorRoles[user.id]) === 'collaborator' ? 'selected' : ''}>Collaborator</option>
+                    <option value="mentor" ${normalizeProjectCollaboratorRole(collaboratorRoles[user.id]) === 'mentor' ? 'selected' : ''}>Mentor</option>
+                    <option value="captain" ${normalizeProjectCollaboratorRole(collaboratorRoles[user.id]) === 'captain' ? 'selected' : ''}>Captain</option>
+                </select>
+            </div>
         </div>
     `).join('');
     

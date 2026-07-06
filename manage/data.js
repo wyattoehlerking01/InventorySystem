@@ -541,6 +541,17 @@ async function loadUsers() {
         };
     };
 
+    const normalizePersonalItemsEnabled = (value) => {
+        if (typeof value === 'boolean') return value;
+        if (typeof value === 'number') return value !== 0;
+        if (typeof value === 'string') {
+            const normalized = value.trim().toLowerCase();
+            if (['true', '1', 'yes', 'y', 'on'].includes(normalized)) return true;
+            if (['false', '0', 'no', 'n', 'off'].includes(normalized)) return false;
+        }
+        return false;
+    };
+
     const { data, error } = await dbClient.from('users').select('*');
     if (error) {
         console.error('Error loading users:', error);
@@ -585,7 +596,9 @@ async function loadUsers() {
 
         return {
             ...user,
-            perms: normalizedPerms
+            perms: normalizedPerms,
+            personalItemsEnabled: normalizePersonalItemsEnabled(user?.personal_items_enabled ?? user?.personalItemsEnabled),
+            personal_items_enabled: normalizePersonalItemsEnabled(user?.personal_items_enabled ?? user?.personalItemsEnabled)
         };
     });
     console.log(`Loaded ${mockUsers.length} users`);
@@ -659,6 +672,7 @@ async function loadProjects() {
     projects = data.map(proj => ({
         ...proj,
         collaborators: [],
+        collaboratorRoles: {},
         itemsOut: [],
         ownerId: proj.owner_id,
         classId: proj.class_id ?? proj.classId ?? null,
@@ -1116,16 +1130,49 @@ async function refreshRequestsFromSupabase() {
  * Load project collaborators and attach to projects
  */
 async function loadProjectCollaborators() {
-    const { data, error } = await dbClient.from('project_collaborators').select('project_id, user_id');
+    const normalizeMemberRole = (value) => {
+        const normalized = String(value || 'collaborator').trim().toLowerCase();
+        return ['collaborator', 'mentor', 'captain'].includes(normalized) ? normalized : 'collaborator';
+    };
+
+    const { data, error } = await dbClient.from('project_collaborators').select('project_id, user_id, member_role');
     if (error) {
-        console.error('Error loading project collaborators:', error);
+        const message = String(error?.message || '').toLowerCase();
+        const code = String(error?.code || '').toUpperCase();
+        const missingColumnError = message.includes('member_role') && (message.includes('does not exist') || code === '42703' || code === 'PGRST204');
+
+        if (!missingColumnError) {
+            console.error('Error loading project collaborators:', error);
+            return;
+        }
+
+        const fallback = await dbClient.from('project_collaborators').select('project_id, user_id');
+        if (fallback.error) {
+            console.error('Error loading project collaborators:', fallback.error);
+            return;
+        }
+
+        (fallback.data || []).forEach(collab => {
+            const project = projects.find(p => p.id === collab.project_id);
+            if (project && !project.collaborators.includes(collab.user_id)) {
+                project.collaborators.push(collab.user_id);
+            }
+            if (project) {
+                project.collaboratorRoles = project.collaboratorRoles || {};
+                project.collaboratorRoles[collab.user_id] = 'collaborator';
+            }
+        });
         return;
     }
     
-    data.forEach(collab => {
+    (data || []).forEach(collab => {
         const project = projects.find(p => p.id === collab.project_id);
         if (project && !project.collaborators.includes(collab.user_id)) {
             project.collaborators.push(collab.user_id);
+        }
+        if (project) {
+            project.collaboratorRoles = project.collaboratorRoles || {};
+            project.collaboratorRoles[collab.user_id] = normalizeMemberRole(collab.member_role);
         }
     });
 }
@@ -1645,7 +1692,8 @@ async function addUserToSupabase(user) {
         role: user.role,
         grade: user.grade || null,
         status: user.status || 'Active',
-        auto_trigger_attention_on_sign_in: user.auto_trigger_attention_on_sign_in ?? user.autoTriggerAttentionOnSignIn ?? false
+        auto_trigger_attention_on_sign_in: user.auto_trigger_attention_on_sign_in ?? user.autoTriggerAttentionOnSignIn ?? false,
+        personal_items_enabled: user.personal_items_enabled ?? user.personalItemsEnabled ?? false
     };
 
     let { data, error } = await dbClient.from('users').insert([payload]).select();
@@ -1657,20 +1705,23 @@ async function addUserToSupabase(user) {
                 name: user.name,
                 role: user.role,
                 status: user.status || 'Active',
-                auto_trigger_attention_on_sign_in: user.auto_trigger_attention_on_sign_in ?? user.autoTriggerAttentionOnSignIn ?? false
+                auto_trigger_attention_on_sign_in: user.auto_trigger_attention_on_sign_in ?? user.autoTriggerAttentionOnSignIn ?? false,
+                personal_items_enabled: user.personal_items_enabled ?? user.personalItemsEnabled ?? false
             },
             {
                 id: user.id,
                 name: user.name,
                 role: user.role,
                 grade: user.grade || null,
-                status: user.status || 'Active'
+                status: user.status || 'Active',
+                personal_items_enabled: user.personal_items_enabled ?? user.personalItemsEnabled ?? false
             },
             {
                 id: user.id,
                 name: user.name,
                 role: user.role,
-                status: user.status || 'Active'
+                status: user.status || 'Active',
+                personal_items_enabled: user.personal_items_enabled ?? user.personalItemsEnabled ?? false
             }
         ];
 
@@ -1704,7 +1755,13 @@ async function updateUserInSupabase(userId, updates) {
             || (msg.includes('could not find') && msg.includes('auto_trigger_attention_on_sign_in') && msg.includes('schema cache'));
     };
 
-    const isSchemaColumnError = (err) => isMissingGradeColumnError(err) || isMissingSignInAttentionColumnError(err);
+    const isMissingPersonalItemsColumnError = (err) => {
+        const msg = String(err?.message || '').toLowerCase();
+        return /column .*personal_items_enabled|personal_items_enabled.*does not exist/i.test(String(err?.message || ''))
+            || (msg.includes('could not find') && msg.includes('personal_items_enabled') && msg.includes('schema cache'));
+    };
+
+    const isSchemaColumnError = (err) => isMissingGradeColumnError(err) || isMissingSignInAttentionColumnError(err) || isMissingPersonalItemsColumnError(err);
 
     let { data, error } = await dbClient.from('users')
         .update(updates)
@@ -1717,6 +1774,9 @@ async function updateUserInSupabase(userId, updates) {
         }
         if (isMissingSignInAttentionColumnError(error) && Object.prototype.hasOwnProperty.call(fallbackUpdates, 'auto_trigger_attention_on_sign_in')) {
             delete fallbackUpdates.auto_trigger_attention_on_sign_in;
+        }
+        if (isMissingPersonalItemsColumnError(error) && Object.prototype.hasOwnProperty.call(fallbackUpdates, 'personal_items_enabled')) {
+            delete fallbackUpdates.personal_items_enabled;
         }
 
         ({ data, error } = await dbClient.from('users')
@@ -2399,7 +2459,20 @@ async function moveProjectItemOutToProjectInSupabase({
             .eq('id', projectItemOutId)
             .select();
 
-        if (!error) return data?.[0] || null;
+        if (!error) {
+            await addProjectTransferToSupabase({
+                projectItemOutId,
+                fromProjectId,
+                toProjectId,
+                itemId,
+                quantity,
+                signoutDate,
+                dueDate,
+                assignedToUserId,
+                signedOutByUserId
+            });
+            return data?.[0] || null;
+        }
 
         console.error('Error moving project item by id, falling back to delete/insert:', error);
     }
@@ -2413,7 +2486,7 @@ async function moveProjectItemOutToProjectInSupabase({
 
     if (!removed) return null;
 
-    return addProjectItemOutToSupabase({
+    const inserted = await addProjectItemOutToSupabase({
         projectId: toProjectId,
         itemId,
         quantity,
@@ -2422,6 +2495,22 @@ async function moveProjectItemOutToProjectInSupabase({
         assignedToUserId,
         signedOutByUserId
     });
+
+    if (inserted) {
+        await addProjectTransferToSupabase({
+            projectItemOutId: inserted.id,
+            fromProjectId,
+            toProjectId,
+            itemId,
+            quantity,
+            signoutDate,
+            dueDate,
+            assignedToUserId,
+            signedOutByUserId
+        });
+    }
+
+    return inserted;
 }
 
 /**
@@ -2795,10 +2884,12 @@ async function setItemVisibilityTagsInSupabase(itemId, tagNames) {
 /**
  * Add project collaborator
  */
-async function addProjectCollaboratorToSupabase(projectId, userId) {
+async function addProjectCollaboratorToSupabase(projectId, userId, memberRole = 'collaborator') {
     const { data, error } = await dbClient.from('project_collaborators').insert([{
         project_id: projectId,
-        user_id: userId
+        user_id: userId,
+        member_role: memberRole || 'collaborator'
+        member_role: 'collaborator'
     }]).select();
     
     if (error) {
@@ -2806,6 +2897,41 @@ async function addProjectCollaboratorToSupabase(projectId, userId) {
         return null;
     }
     return data?.[0];
+}
+
+/**
+ * Add a project transfer history row.
+ */
+async function addProjectTransferToSupabase(transfer) {
+    const payload = {
+        id: transfer.id,
+        project_item_out_id: transfer.projectItemOutId || null,
+        from_project_id: transfer.fromProjectId || null,
+        to_project_id: transfer.toProjectId || null,
+        item_id: transfer.itemId || null,
+        quantity: transfer.quantity || 0,
+        signout_date: transfer.signoutDate || null,
+        due_date: transfer.dueDate || null,
+        assigned_to_user_id: transfer.assignedToUserId || null,
+        signed_out_by_user_id: transfer.signedOutByUserId || null,
+        transferred_by_user_id: transfer.transferredByUserId || null,
+        created_at: transfer.createdAt || new Date().toISOString()
+    };
+
+    const { data, error } = await dbClient.from('project_item_transfers').insert([payload]).select();
+
+    if (error) {
+        const message = String(error?.message || '').toLowerCase();
+        const code = String(error?.code || '').toUpperCase();
+        const missingTableError = message.includes('project_item_transfers') && (message.includes('does not exist') || code === '42P01' || code === 'PGRST204');
+
+        if (!missingTableError) {
+            console.error('Error adding project transfer:', error);
+        }
+        return null;
+    }
+
+    return data?.[0] || null;
 }
 
 /**
