@@ -5897,18 +5897,13 @@ async function transferProjectItemToAnotherProject(projectId, signoutId) {
         return false;
     }
 
-    const choiceText = eligibleProjects.map((project, index) => `${index + 1}. ${project.name} (${project.id})`).join('\n');
-    const selectedChoice = prompt(`Transfer to which project? Enter the project number or ID:\n\n${choiceText}`, eligibleProjects[0].id);
-    if (!selectedChoice) return false;
-
-    const trimmedChoice = String(selectedChoice).trim();
-    const selectedProject = eligibleProjects.find((project, index) => String(index + 1) === trimmedChoice || project.id === trimmedChoice);
+    const selectedProject = await openTransferProjectDestinationModal(sourceProject, sourceRow, eligibleProjects);
     if (!selectedProject) {
-        showToast('Select a valid destination project.', 'error');
         return false;
     }
 
-    if (!confirm(`Transfer ${sourceRow.quantity}x item from ${sourceProject.name} to ${selectedProject.name}?`)) {
+    const verifiedTransferMember = await openTransferMemberScanModal(selectedProject);
+    if (!verifiedTransferMember) {
         return false;
     }
 
@@ -5921,7 +5916,8 @@ async function transferProjectItemToAnotherProject(projectId, signoutId) {
         signoutDate: sourceRow.signoutDate,
         dueDate: sourceRow.dueDate,
         assignedToUserId: sourceRow.assignedToUserId || sourceProject.ownerId || null,
-        signedOutByUserId: sourceRow.signedOutByUserId || currentUser.id || null
+        signedOutByUserId: sourceRow.signedOutByUserId || currentUser.id || null,
+        transferredByUserId: verifiedTransferMember.id || currentUser.id || null
     });
 
     if (!moved) {
@@ -5935,9 +5931,242 @@ async function transferProjectItemToAnotherProject(projectId, signoutId) {
     ]);
     renderProjects();
     renderInventory();
-    addLog(currentUser.id, 'Transfer Project Item', `Transferred ${sourceRow.quantity}x item ${sourceRow.itemId} from ${sourceProject.id} to ${selectedProject.id}`);
+    addLog(currentUser.id, 'Transfer Project Item', `Transferred ${sourceRow.quantity}x item ${sourceRow.itemId} from ${sourceProject.id} to ${selectedProject.id} after scan by ${verifiedTransferMember.name} (${verifiedTransferMember.id})`);
     showToast('Item transferred.', 'success');
     return true;
+}
+
+function getProjectTransferMemberCandidates(project) {
+    if (!project) return [];
+
+    const memberIds = new Set();
+    if (project.ownerId) memberIds.add(project.ownerId);
+    if (Array.isArray(project.collaborators)) {
+        project.collaborators.forEach(userId => memberIds.add(userId));
+    }
+
+    return Array.from(memberIds)
+        .map(userId => mockUsers.find(user => user.id === userId))
+        .filter(user => !!user && String(user.status || '').toLowerCase() !== 'suspended');
+}
+
+function findProjectTransferMember(project, rawId) {
+    const scannedId = String(rawId || '').trim();
+    if (!scannedId || !project) return null;
+
+    const normalizedScan = scannedId.toUpperCase();
+    const candidates = getProjectTransferMemberCandidates(project);
+
+    return candidates.find(user => {
+        const userId = String(user.id || '').trim().toUpperCase();
+        const userName = String(user.name || '').trim().toUpperCase();
+        const userBarcode = String(user.barcode || '').trim().toUpperCase();
+        return normalizedScan === userId || normalizedScan === userBarcode || normalizedScan === userName;
+    }) || null;
+}
+
+function buildTransferProjectListHtml(eligibleProjects, selectedProjectId = '') {
+    return eligibleProjects.map(project => {
+        const owner = mockUsers.find(user => user.id === project.ownerId);
+        const memberCount = getProjectTransferMemberCandidates(project).length;
+        const isSelected = String(project.id) === String(selectedProjectId);
+        return `
+            <button type="button" class="transfer-project-option ${isSelected ? 'selected' : ''}" data-project-id="${escapeHtml(project.id)}" data-search="${escapeHtml(`${project.name} ${project.id} ${owner ? owner.name : ''}`.toLowerCase())}">
+                <div class="transfer-project-option-main">
+                    <div class="transfer-project-option-title">${escapeHtml(project.name)}</div>
+                    <div class="transfer-project-option-subtitle">${escapeHtml(project.id)}</div>
+                </div>
+                <div class="transfer-project-option-meta">
+                    <span>${memberCount} member${memberCount === 1 ? '' : 's'}</span>
+                    <span>${escapeHtml(owner ? owner.name : 'Unknown owner')}</span>
+                </div>
+            </button>
+        `;
+    }).join('');
+}
+
+function openTransferProjectDestinationModal(sourceProject, sourceRow, eligibleProjects) {
+    return new Promise(resolve => {
+        let selectedProjectId = eligibleProjects[0]?.id || '';
+
+        const html = `
+            <div class="modal-header">
+                <h3><i class="ph ph-arrow-right"></i> Transfer Item</h3>
+                <button class="close-btn" id="transfer-project-close"><i class="ph ph-x"></i></button>
+            </div>
+            <div class="modal-body transfer-project-modal-body">
+                <p class="text-secondary mb-3">Choose where to transfer <strong>${escapeHtml(String(sourceRow.quantity || 1))}x ${escapeHtml(String(sourceRow.itemId || 'item'))}</strong> from <strong>${escapeHtml(sourceProject.name)}</strong>.</p>
+                <div class="form-group">
+                    <label>Search Projects</label>
+                    <input type="text" id="transfer-project-search" class="form-control" placeholder="Search by project name or ID" autocomplete="off">
+                </div>
+                <div class="transfer-project-list" id="transfer-project-list">
+                    ${buildTransferProjectListHtml(eligibleProjects, selectedProjectId)}
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="transfer-project-cancel">Cancel</button>
+                <button class="btn btn-primary" id="transfer-project-confirm">Transfer</button>
+            </div>
+        `;
+
+        openModal(html);
+        dynamicModal.classList.add('class-modal', 'transfer-project-modal');
+
+        const searchInput = document.getElementById('transfer-project-search');
+        const listEl = document.getElementById('transfer-project-list');
+        const confirmBtn = document.getElementById('transfer-project-confirm');
+        const cancelBtn = document.getElementById('transfer-project-cancel');
+        const closeBtn = document.getElementById('transfer-project-close');
+
+        const syncSelectedState = () => {
+            if (confirmBtn) confirmBtn.disabled = !selectedProjectId;
+            listEl?.querySelectorAll('.transfer-project-option').forEach(option => {
+                option.classList.toggle('selected', option.getAttribute('data-project-id') === selectedProjectId);
+            });
+        };
+
+        const filterProjects = () => {
+            const term = String(searchInput?.value || '').trim().toLowerCase();
+            listEl?.querySelectorAll('.transfer-project-option').forEach(option => {
+                const searchable = String(option.getAttribute('data-search') || '');
+                option.style.display = searchable.includes(term) ? '' : 'none';
+            });
+        };
+
+        listEl?.querySelectorAll('.transfer-project-option').forEach(option => {
+            option.addEventListener('click', () => {
+                selectedProjectId = String(option.getAttribute('data-project-id') || '');
+                syncSelectedState();
+            });
+        });
+
+        searchInput?.addEventListener('input', filterProjects);
+        confirmBtn?.addEventListener('click', () => {
+            const selectedProject = eligibleProjects.find(project => String(project.id) === String(selectedProjectId));
+            if (!selectedProject) {
+                showToast('Select a valid destination project.', 'error');
+                return;
+            }
+            closeModal();
+            resolve(selectedProject);
+        });
+        cancelBtn?.addEventListener('click', () => {
+            closeModal();
+            resolve(null);
+        });
+        closeBtn?.addEventListener('click', () => {
+            closeModal();
+            resolve(null);
+        });
+
+        syncSelectedState();
+        filterProjects();
+        requestAnimationFrame(() => searchInput?.focus({ preventScroll: true }));
+    });
+}
+
+function openTransferMemberScanModal(selectedProject) {
+    return new Promise(resolve => {
+        const eligibleMembers = getProjectTransferMemberCandidates(selectedProject);
+        const memberHint = eligibleMembers.length > 0
+            ? `${eligibleMembers.map(user => user.name).join(', ')}`
+            : 'No team members are available for this project.';
+
+        const html = `
+            <div class="modal-header">
+                <h3><i class="ph ph-barcode"></i> Scan Team Member ID</h3>
+                <button class="close-btn" id="transfer-scan-close"><i class="ph ph-x"></i></button>
+            </div>
+            <div class="modal-body transfer-scan-modal-body">
+                <p class="text-secondary mb-4">Scan an ID from a member of <strong>${escapeHtml(selectedProject.name)}</strong> to complete the transfer.</p>
+                <div class="scanner-container transfer-scan-container">
+                    <div class="scanner-anim"></div>
+                    <i class="ph ph-barcode"></i>
+                    <p>Waiting for ID Scan...</p>
+                    <input type="password" id="transfer-scan-input" class="hidden-input" autocomplete="off" autofocus placeholder="Scan ID">
+                </div>
+                <small class="text-muted transfer-scan-hint">Team members: ${escapeHtml(memberHint)}</small>
+                <small id="transfer-scan-error" class="text-danger transfer-scan-error" style="display:none;"></small>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="transfer-scan-cancel">Cancel</button>
+            </div>
+        `;
+
+        openModal(html);
+        dynamicModal.classList.add('class-modal', 'transfer-scan-modal');
+
+        const finish = (member) => {
+            closeModal();
+            resolve(member);
+        };
+
+        const showError = (message) => {
+            const errorEl = document.getElementById('transfer-scan-error');
+            if (!errorEl) return;
+            errorEl.textContent = message;
+            errorEl.style.display = '';
+        };
+
+        const approve = async () => {
+            const rawId = String(document.getElementById('transfer-scan-input')?.value || '').trim();
+            if (!rawId) {
+                showError('Scan a team member ID to continue.');
+                return;
+            }
+
+            let scannedUser = null;
+            if (typeof loginWithBarcode === 'function') {
+                try {
+                    const loginResult = await loginWithBarcode(rawId);
+                    if (loginResult?.user) {
+                        scannedUser = loginResult.user;
+                    }
+                } catch (error) {
+                    console.warn('Transfer scan lookup via loginWithBarcode failed:', error);
+                }
+            }
+
+            if (!scannedUser) {
+                const normalized = rawId.toUpperCase();
+                scannedUser = mockUsers.find(user => String(user.id || '').trim().toUpperCase() === normalized || String(user.name || '').trim().toUpperCase() === normalized) || null;
+            }
+
+            if (!scannedUser) {
+                showError('ID not recognized.');
+                return;
+            }
+
+            const memberMatch = findProjectTransferMember(selectedProject, scannedUser.id || rawId);
+            if (!memberMatch) {
+                showError('That ID does not belong to this project team.');
+                return;
+            }
+
+            showToast(`Verified ${memberMatch.name}.`, 'success');
+            finish(memberMatch);
+        };
+
+        document.getElementById('transfer-scan-cancel')?.addEventListener('click', () => finish(null));
+        document.getElementById('transfer-scan-close')?.addEventListener('click', () => finish(null));
+        document.getElementById('transfer-scan-input')?.addEventListener('keydown', (event) => {
+            if (event.key !== 'Enter') return;
+            event.preventDefault();
+            approve().catch(error => {
+                console.error('Failed to validate transfer scan:', error);
+                showError('Unable to validate that ID right now.');
+            });
+        });
+        document.getElementById('transfer-scan-input')?.addEventListener('input', () => {
+            const errorEl = document.getElementById('transfer-scan-error');
+            if (!errorEl) return;
+            errorEl.textContent = '';
+            errorEl.style.display = 'none';
+        });
+
+        requestAnimationFrame(() => document.getElementById('transfer-scan-input')?.focus({ preventScroll: true }));
+    });
 }
 
 async function openProjectsPageAndFocusProject(projectId) {
@@ -10241,7 +10470,7 @@ document.getElementById('bulk-user-perms-btn')?.addEventListener('click', async 
    MODAL & NOTIFICATION HELPERS
    ======================================= */
 function openModal(contentHtml) {
-    dynamicModal.classList.remove('debug-modal', 'class-modal', 'order-request-modal');
+    dynamicModal.classList.remove('debug-modal', 'class-modal', 'order-request-modal', 'transfer-project-modal', 'transfer-scan-modal');
     const safeFragment = sanitizeModalHtml(contentHtml);
     dynamicModal.replaceChildren(safeFragment);
     modalContainer.classList.remove('hidden');
@@ -10257,7 +10486,7 @@ function closeModal(options = {}) {
 
     modalContainer.classList.add('hidden');
     dynamicModal.replaceChildren();
-    dynamicModal.classList.remove('debug-modal', 'class-modal', 'order-request-modal');
+    dynamicModal.classList.remove('debug-modal', 'class-modal', 'order-request-modal', 'transfer-project-modal', 'transfer-scan-modal');
     document.body.classList.remove('modal-open');
 }
 

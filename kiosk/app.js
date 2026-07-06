@@ -315,6 +315,10 @@ function canBypassOperatingHours(user = currentUser) {
     return user?.role === 'teacher' || user?.role === 'developer';
 }
 
+function canCurrentUserViewActivityLog(user = currentUser) {
+    return user?.role === 'teacher' || user?.role === 'developer';
+}
+
 function shouldShowOutOfHoursLock(user = currentUser) {
     return !isWithinKioskOperatingHours() && !canBypassOperatingHours(user);
 }
@@ -3484,7 +3488,7 @@ function login(user) {
         document.getElementById('bulk-import-items-btn')?.classList.add('hidden');
         setProfilePrivilegedActionState(false);
     } else {
-        navLogs?.classList.remove('hidden');
+        navLogs?.classList.toggle('hidden', !canCurrentUserViewActivityLog(user));
         navUsers?.classList.remove('hidden');
         navClasses?.classList.remove('hidden');
         navClassDisplay?.classList.remove('hidden');
@@ -7784,9 +7788,7 @@ function renderLogs() {
     const actionFilter = document.getElementById('logs-action-filter');
     const actorFilter = document.getElementById('logs-actor-filter');
     if (!tbody) return;
-    // Restrict activity log in kiosk mode: only teachers and developers may view
-    if (currentUser?.role === 'student') {
-        tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">Access restricted to teachers and developers.</td></tr>';
+    if (!canCurrentUserViewActivityLog()) {
         return;
     }
 
