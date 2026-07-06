@@ -805,6 +805,38 @@ h6 {
     min-width: 0;
 }
 
+#page-inventory .inventory-item-title-copy .font-bold {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+#page-inventory .inventory-item-listing-link {
+    display: inline-flex;
+    align-items: center;
+}
+
+#page-inventory .inventory-item-listing-link a {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.18rem 0.55rem;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--accent-secondary);
+    text-decoration: none;
+    font-size: 0.72rem;
+    letter-spacing: 0.03em;
+    white-space: nowrap;
+}
+
+#page-inventory .inventory-item-listing-link a:hover {
+    background: rgba(255, 255, 255, 0.14);
+    color: var(--text-primary);
+}
+
+#page-inventory.active.inventory-grid-view .table-container .data-table,
 #page-inventory.active .table-container.grid-view-active .data-table {
     display: flex;
     flex-wrap: wrap;
@@ -813,14 +845,18 @@ h6 {
     padding: 0;
 }
 
+#page-inventory.active.inventory-grid-view .table-container .data-table thead,
 #page-inventory.active .table-container.grid-view-active .data-table thead {
     display: none;
 }
 
+#page-inventory.active.inventory-grid-view .table-container .data-table tbody,
 #page-inventory.active .table-container.grid-view-active .data-table tbody {
-    display: contents;
+    display: block;
+    width: 100%;
 }
 
+#page-inventory.active.inventory-grid-view .table-container .inventory-row-container,
 #page-inventory.active .table-container.grid-view-active .inventory-row-container {
     display: flex;
     flex-direction: column;
@@ -834,12 +870,14 @@ h6 {
     transition: transform var(--transition-fast), background var(--transition-fast), box-shadow var(--transition-fast);
 }
 
+#page-inventory.active.inventory-grid-view .table-container .inventory-row-container:hover,
 #page-inventory.active .table-container.grid-view-active .inventory-row-container:hover {
     transform: translateY(-2px);
     background: rgba(255, 255, 255, 0.05);
     box-shadow: 0 14px 36px rgba(0, 0, 0, 0.18);
 }
 
+#page-inventory.active.inventory-grid-view .table-container .inventory-row-container td,
 #page-inventory.active .table-container.grid-view-active .inventory-row-container td {
     display: block;
     width: 100%;
@@ -847,24 +885,29 @@ h6 {
     padding: 0.75rem 1rem;
 }
 
+#page-inventory.active.inventory-grid-view .table-container .inventory-row-container td:first-child,
 #page-inventory.active .table-container.grid-view-active .inventory-row-container td:first-child {
     display: none;
 }
 
+#page-inventory.active.inventory-grid-view .table-container .inventory-row-container td:nth-child(2),
 #page-inventory.active .table-container.grid-view-active .inventory-row-container td:nth-child(2) {
     padding-top: 1rem;
     padding-bottom: 0.5rem;
 }
 
+#page-inventory.active.inventory-grid-view .table-container .inventory-row-container td:nth-child(5),
 #page-inventory.active .table-container.grid-view-active .inventory-row-container td:nth-child(5) {
     border-top: 1px solid var(--glass-border);
     padding-top: 0.85rem;
 }
 
+#page-inventory.active.inventory-grid-view .table-container .inventory-item-title-wrap,
 #page-inventory.active .table-container.grid-view-active .inventory-item-title-wrap {
     align-items: flex-start;
 }
 
+#page-inventory.active.inventory-grid-view .table-container .inventory-item-thumb,
 #page-inventory.active .table-container.grid-view-active .inventory-item-thumb {
     width: 72px;
     height: 72px;
@@ -872,11 +915,13 @@ h6 {
     border-radius: 18px;
 }
 
+#page-inventory.active.inventory-grid-view .table-container .inventory-item-actions,
 #page-inventory.active .table-container.grid-view-active .inventory-item-actions {
     flex-wrap: wrap;
 }
 
 @media (max-width: 1100px) {
+    #page-inventory.active.inventory-grid-view .table-container .inventory-row-container,
     #page-inventory.active .table-container.grid-view-active .inventory-row-container {
         width: calc(50% - 0.5rem);
     }
@@ -887,6 +932,7 @@ h6 {
         margin-left: 0;
     }
 
+    #page-inventory.active.inventory-grid-view .table-container .inventory-row-container,
     #page-inventory.active .table-container.grid-view-active .inventory-row-container {
         width: 100%;
     }

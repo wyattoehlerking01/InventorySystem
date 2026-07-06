@@ -214,9 +214,11 @@ function setInventoryViewMode(viewMode) {
 }
 
 function syncInventoryViewModeUI() {
+    const page = document.getElementById('page-inventory');
     const container = document.querySelector('#page-inventory .table-container');
     const isGridView = inventoryViewMode === 'grid';
 
+    page?.classList.toggle('inventory-grid-view', isGridView);
     container?.classList.toggle('grid-view-active', isGridView);
     document.getElementById('inventory-view-row-btn')?.classList.toggle('active-view', !isGridView);
     document.getElementById('inventory-view-grid-btn')?.classList.toggle('active-view', isGridView);
@@ -3125,7 +3127,7 @@ async function checkoutBasket() {
                 );
                 await Promise.all([refreshProjectsFromSupabase(), refreshInventoryFromSupabase()]);
                 renderInventory();
-                renderDashboard();
+                renderProjects();
                 renderProjects();
                 return;
             }
@@ -3146,7 +3148,7 @@ async function checkoutBasket() {
                 showToast(`Checkout failed while updating stock for ${item.name}. Sign-out was rolled back.`, 'error');
                 await Promise.all([refreshProjectsFromSupabase(), refreshInventoryFromSupabase()]);
                 renderInventory();
-                renderDashboard();
+                renderProjects();
                 renderProjects();
                 return;
             }
@@ -3174,7 +3176,7 @@ async function checkoutBasket() {
     );
     toggleBasket(false);
     renderInventory();
-    renderDashboard();
+    renderProjects();
     renderProjects();
 }
 
@@ -3508,7 +3510,7 @@ async function handleBarcodeLogin(rawId) {
                 login(user);
             } catch (loginError) {
                 console.error('Login transition failed:', loginError);
-                showToast('Login succeeded but dashboard failed to load.', 'error');
+                showToast('Login succeeded but projects failed to load.', 'error');
                 return;
             }
 
@@ -3628,7 +3630,7 @@ function showHardwareReturnModal(item, record) {
         showToast(`Successfully returned ${item.name}!`, 'success');
         addLog('SYSTEM', 'Return Item', `Hardware Return: ${item.name} from ${record.projectName}`);
         closeModal();
-        if (currentUser) renderDashboard();
+        if (currentUser) renderProjects();
     });
 }
 
@@ -3871,7 +3873,8 @@ function login(user, options = {}) {
     if (profileAvatar) profileAvatar.innerHTML = getRoleIcon(user.role);
 
     userNameEl.textContent = user.name;
-    userRoleEl.textContent = user.role;
+    const isStaffRole = ['teacher', 'developer'].includes(String(user.role || '').toLowerCase());
+    userRoleEl.textContent = isStaffRole ? user.role : 'User';
 
     // Student Class Visibility
     const userClassEl = document.getElementById('user-class');
@@ -3891,6 +3894,7 @@ function login(user, options = {}) {
     if (user.role === 'developer') userRoleEl.style.color = '#8b5cf6';
     else if (user.role === 'teacher') userRoleEl.style.color = '#f59e0b';
     else userRoleEl.style.color = '#94a3b8';
+    userRoleEl.classList.toggle('hidden', !isStaffRole);
 
     // Access Control & Permission Enforcement
     const navRequests = document.getElementById('nav-requests');
@@ -3967,8 +3971,8 @@ function login(user, options = {}) {
         mainView.classList.remove('hidden');
         setTimeout(() => mainView.classList.add('active'), 50);
 
-        // Load initial Dashboard from fresh Supabase state
-        switchPage('dashboard', 'Dashboard').catch(err => console.error(err));
+        // Load initial Projects view from fresh Supabase state
+        switchPage('projects', 'Projects').catch(err => console.error(err));
 
         // Run one-time authentication password setup audit for staff users.
         setTimeout(() => {
@@ -4001,7 +4005,7 @@ function logout(message = 'Logged out successfully') {
         mainView.classList.add('hidden');
         loginView.classList.remove('hidden');
         // Keep nav selection aligned with the default landing page.
-        setActiveNavForTarget('dashboard');
+        setActiveNavForTarget('projects');
         // Show OehlerOS version badge on login screen
         const versionOverlay = document.querySelector('.app-version-overlay');
         if (versionOverlay) versionOverlay.style.display = '';
@@ -4045,7 +4049,7 @@ function returnToLoginView(options = {}) {
         mainView.classList.add('hidden');
         loginHelpView.classList.add('hidden');
         loginView.classList.remove('hidden');
-        setActiveNavForTarget('dashboard');
+        setActiveNavForTarget('projects');
         // Show OehlerOS version badge on login screen
         const versionOverlay = document.querySelector('.app-version-overlay');
         if (versionOverlay) versionOverlay.style.display = '';
@@ -4435,8 +4439,12 @@ async function refreshPageDataFromSupabase(targetId) {
         return;
     }
 
-    if (targetId === 'dashboard') {
-        await loadAllData();
+    if (targetId === 'dashboard' || targetId === 'projects') {
+        await Promise.all([
+            refreshProjectsFromSupabase(),
+            refreshInventoryFromSupabase(),
+            refreshUsersFromSupabase()
+        ]);
         return;
     }
 
@@ -4502,6 +4510,11 @@ async function refreshPageDataFromSupabase(targetId) {
 async function switchPage(targetId, title) {
     const pageContentEl = document.getElementById('page-content');
 
+    if (targetId === 'dashboard') {
+        targetId = 'projects';
+        title = 'Projects';
+    }
+
     if (targetId === 'requests') {
         targetId = 'orders';
         title = 'Operations Hub';
@@ -4556,7 +4569,6 @@ async function switchPage(targetId, title) {
     }
 
     // Call data load functions based on page
-    if (targetId === 'dashboard') loadDashboard();
     if (targetId === 'inventory') renderInventory();
     if (targetId === 'projects') renderProjects();
     if (targetId === 'class-display') renderClassDisplay();
@@ -4572,6 +4584,9 @@ async function switchPage(targetId, title) {
    DASHBOARD LOGIC
    ======================================= */
 function loadDashboard() {
+    renderProjects();
+    return;
+
     const statsContainer = document.getElementById('dashboard-stats');
     const studentWidgets = document.getElementById('student-dashboard-widgets');
     const tabbedWidget = document.getElementById('dashboard-tabbed-widget');
@@ -5093,7 +5108,7 @@ function loadDashboard() {
                         strong.textContent = escapeHtml(row.name);
                         const smallOwner = document.createElement('small');
                         smallOwner.className = 'text-muted block';
-                        smallOwner.textContent = `Owner: ${escapeHtml(row.owner)}`;
+                        smallOwner.textContent = `Project/Team Manager: ${escapeHtml(row.owner)}`;
                         const smallStats = document.createElement('small');
                         smallStats.className = 'text-muted block';
                         smallStats.textContent = `Out: ${row.outQty} · Due now: ${row.dueQty}`;
@@ -5165,7 +5180,7 @@ function loadDashboard() {
 }
 
 function renderDashboard() {
-     loadDashboard();
+    renderProjects();
 }
 
 /* =======================================
@@ -5295,7 +5310,7 @@ function openItemPreviewModal(itemId) {
                     <div style="margin-top:0.2rem;">${buildExternalItemLink(supplierLink, 'Open Listing')}</div>
                 </div>
                 <div class="glass-panel" style="padding:0.85rem;">
-                    <div class="text-sm text-muted">Image Link</div>
+                    <div class="text-sm text-muted">Item Listing Image Link</div>
                     <div style="margin-top:0.2rem;">${buildExternalItemLink(imageLink, 'Open Image')}</div>
                 </div>
                 <div class="glass-panel" style="padding:0.85rem;">
@@ -5365,6 +5380,11 @@ function renderInventory() {
         const safeItemName = escapeHtml(String(item.name || 'Unnamed Item'));
         const safeItemSku = escapeHtml(String(item.sku || ''));
         const imageLink = String(item.image_link || item.imageLink || '').trim();
+        const supplierLink = String(item.supplier_listing_link || item.supplierListingLink || '').trim();
+        const itemListingLink = imageLink || supplierLink;
+        const itemListingLinkHtml = inventoryViewMode === 'row' && itemListingLink
+            ? `<span class="inventory-item-listing-link">${buildExternalItemLink(itemListingLink, 'Item Listing Image Link')}</span>`
+            : '';
         const thumbnailHtml = imageLink
             ? `
                 <div class="inventory-item-thumb">
@@ -5393,6 +5413,7 @@ function renderInventory() {
                                     ? `<button class="item-preview-btn" data-id="${safeItemId}" title="View Item Preview" style="background:none;border:none;color:inherit;padding:0;text-align:left;font:inherit;cursor:pointer;">${safeItemName}</button>`
                                     : safeItemName}
                                 ${renderMissingMetadataIcon(item)}
+                                ${itemListingLinkHtml}
                             </div>
                             ${item.sku ? `<small class="text-xs text-muted">SKU: ${safeItemSku}</small>` : ''}
                             ${currentUser.role === 'student' && tagsHtml ? `<div class="visibility-tags-row">${tagsHtml}</div>` : ''}
@@ -5973,7 +5994,7 @@ function openProjectItemsModal(projectId) {
             <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
         </div>
         <div class="modal-body" style="max-height:65vh;overflow-y:auto;">
-            <p class="text-muted mb-4">Owner: ${getProjectOwnerLabel(project)}</p>
+            <p class="text-muted mb-4">Project/Team Manager: ${getProjectOwnerLabel(project)}</p>
             <ul class="stock-list">${itemsHtml}</ul>
         </div>
         <div class="modal-footer">
@@ -6973,7 +6994,7 @@ function renderProjects() {
                     </div>
                     <span class="status-badge ${getProjectStatusBadgeClass(proj.status)}">${escapeHtml(proj.status)}</span>
                 </div>
-                <p class="text-muted text-sm mb-2">Owner: ${escapeHtml(owner ? owner.name : 'Unknown')}</p>
+                <p class="text-muted text-sm mb-2">Project/Team Manager: ${escapeHtml(owner ? owner.name : 'Unknown')}</p>
                 ${membershipRole && membershipRole !== 'owner' ? `<p class="text-muted text-sm mb-2">Your Role: ${escapeHtml(membershipRole.charAt(0).toUpperCase() + membershipRole.slice(1))}</p>` : ''}
                 ${linkedClass ? `<p class="text-muted text-sm mb-2">Class: ${escapeHtml(linkedClass.name || linkedClass.id)}</p>` : ''}
                 <p class="project-desc mb-4">${escapeHtml(proj.description)}</p>
@@ -10247,7 +10268,7 @@ async function openAddItemModal() {
                     <input type="text" id="add-supplier" class="form-control" placeholder="e.g. DigiKey">
                 </div>
                 <div class="form-group">
-                    <label>Image Link</label>
+                    <label>Item Listing Image Link</label>
                     <input type="url" id="add-image-link" class="form-control" placeholder="https://...">
                 </div>
             </div>
@@ -10389,7 +10410,7 @@ function openEditProjectModal(projectId) {
     if (!project) return;
 
     if (!canCurrentUserManageProject(project)) {
-        showToast('Only project owners or teachers can edit this project.', 'error');
+        showToast('Only project managers or teachers can edit this project.', 'error');
         return;
     }
 
@@ -10429,14 +10450,14 @@ function openEditProjectModal(projectId) {
             </div>
             ${canAssignOwner ? `
             <div class="form-group">
-                <label>Project Owner</label>
+                <label>Project/Team Manager</label>
                 <select id="edit-proj-owner" class="form-control">
                     ${ownerOptions || '<option value="">No eligible users found</option>'}
                 </select>
-                <small class="text-muted">Teachers and developers can assign ownership to eligible users.</small>
+                <small class="text-muted">Teachers and developers can assign a Project/Team Manager to eligible users.</small>
             </div>` : ''}
             <div class="form-group">
-                <label>Collaborators</label>
+                <label>Project Team Members</label>
                 <div id="edit-proj-collaborators-wrap" class="glass-panel" style="padding:1rem; max-height:180px; overflow-y:auto">
                     ${collaboratorOptions || '<p class="text-sm text-muted">No eligible student collaborators.</p>'}
                 </div>
@@ -10489,7 +10510,7 @@ function openEditProjectModal(projectId) {
         }, {});
 
         if (!selectedOwnerId) {
-            showToast('Please select a project owner.', 'error');
+            showToast('Please select a Project/Team Manager.', 'error');
             return;
         }
 
@@ -10561,14 +10582,14 @@ document.getElementById('create-project-btn')?.addEventListener('click', () => {
             </div>
             ${canAssignOwner ? `
             <div class="form-group">
-                <label>Project Owner</label>
+                <label>Project/Team Manager</label>
                 <select id="add-proj-owner" class="form-control">
                     ${ownerOptions || '<option value="">No eligible users found</option>'}
                 </select>
-                <small class="text-muted">Teachers and developers can create projects for eligible users.</small>
+                <small class="text-muted">Teachers and developers can assign a Project/Team Manager to eligible users.</small>
             </div>` : ''}
             <div class="form-group">
-                <label>Add Collaborators (Optional)</label>
+                <label>Add Project Team Members (Optional)</label>
                 <div id="add-proj-collaborators-wrap" class="glass-panel" style="padding:1rem; max-height:150px; overflow-y:auto">
                     ${collaboratorOptions || '<p class="text-sm text-muted">No available student collaborators.</p>'}
                 </div>
@@ -10605,7 +10626,7 @@ document.getElementById('create-project-btn')?.addEventListener('click', () => {
             const collaborators = Array.from(document.querySelectorAll('#add-proj-collaborators-wrap .proj-student-checkbox:checked')).map(cb => cb.value);
 
             if (!ownerId) {
-                showToast('Please select a project owner.', 'error');
+                showToast('Please select a Project/Team Manager.', 'error');
                 return;
             }
 
@@ -12098,7 +12119,7 @@ async function openEditItemModal(itemId) {
                     <input type="text" id="edit-item-supplier" class="form-control" value="${item.supplier || ''}">
                 </div>
                 <div class="form-group">
-                    <label>Image Link</label>
+                    <label>Item Listing Image Link</label>
                     <input type="url" id="edit-item-image-link" class="form-control" value="${item.image_link || item.imageLink || ''}">
                 </div>
             </div>
@@ -13883,6 +13904,7 @@ function buildSearchableProjectCollaborators({ selectedOwnerId = '', selectedCol
     
     return `
         <input type="text" class="proj-collab-search" placeholder="Search collaborators..." style="width:100%;margin-bottom:0.75rem;padding:0.5rem;border:1px solid var(--glass-border);border-radius:4px;background:rgba(255,255,255,0.05);color:inherit;">
+        <div class="text-muted text-sm" style="margin-bottom:0.75rem;">Use the role dropdown to choose Collaborator, Mentor, or Captain for each project team member.</div>
         <div class="proj-collab-list" style="max-height:150px;overflow-y:auto;">
             ${listHtml || '<p class="text-sm text-muted">No available collaborators.</p>'}
         </div>

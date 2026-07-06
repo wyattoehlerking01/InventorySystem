@@ -1,7 +1,7 @@
 // Runtime environment configuration
 window.APP_ENV = {
     APP_MODE: 'kiosk',
-    APP_NAME: 'LCHS Electro-Tech',
+    APP_NAME: 'LCHS Robotics',
     APP_SUBTITLE: 'Inventory Management System',
     APP_LOGO_URL: '',
     APP_SIDEBAR_LOGO_URL: '',
