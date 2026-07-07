@@ -980,13 +980,15 @@ function getInventorySubCategory(item) {
 
 function getInventoryItemBarcode(item) {
     if (!item) return '';
+    const storedBarcode = String(item?.sku ?? item?.barcode ?? '').trim().toUpperCase();
+    if (storedBarcode) return storedBarcode;
     const composed = composeInventoryBarcode({
         mainCategory: getInventoryMainCategory(item),
         subCategory: getInventorySubCategory(item),
         brand: item?.brand || 'Unspecified',
         itemName: item?.name || 'Unnamed Item'
     });
-    return composed || String(item?.sku || item?.barcode || '').trim().toUpperCase();
+    return composed;
 }
 
 function isSkuInUse(sku, excludeItemId = null) {
@@ -10943,8 +10945,8 @@ async function openAddItemModal({ initialItemType = 'item', initialBundleCompone
             </div>
             <div class="form-group">
                 <label>Barcode</label>
-                <input type="text" id="add-sku" class="form-control" readonly>
-                <small class="text-muted">Generated from Main Category, Sub Category, Brand, and Item Name.</small>
+                <input type="text" id="add-sku" class="form-control" placeholder="Generated automatically, or type your own barcode">
+                <small class="text-muted">Auto-fills from Main Category, Sub Category, Brand, and Item Name, but you can edit it manually.</small>
             </div>
             <div class="form-group">
                 <label>Part Number (Optional)</label>
@@ -11039,7 +11041,10 @@ async function openAddItemModal({ initialItemType = 'item', initialBundleCompone
             itemName: document.getElementById('add-name')?.value || ''
         });
         const barcodeInput = document.getElementById('add-sku');
-        if (barcodeInput) barcodeInput.value = composedBarcode;
+        if (!barcodeInput) return;
+        const currentBarcode = String(barcodeInput.value || '').trim().toUpperCase();
+        if (currentBarcode && currentBarcode !== composedBarcode) return;
+        barcodeInput.value = composedBarcode;
     };
 
     ['add-name', 'add-category', 'add-sub-category', 'add-brand'].forEach(fieldId => {
@@ -12773,8 +12778,8 @@ async function openEditItemModal(itemId) {
             </div>
             <div class="form-group">
                 <label>Barcode</label>
-                <input type="text" id="edit-item-sku" class="form-control" readonly value="${escapeHtml(getInventoryItemBarcode(item) || item.sku || '')}">
-                <small class="text-muted">Generated from Main Category, Sub Category, Brand, and Item Name.</small>
+                <input type="text" id="edit-item-sku" class="form-control" value="${escapeHtml(String(item?.sku ?? item?.barcode ?? getInventoryItemBarcode(item) ?? '').trim().toUpperCase())}" placeholder="Generated automatically, or type your own barcode">
+                <small class="text-muted">Auto-fills from Main Category, Sub Category, Brand, and Item Name, but you can edit it manually.</small>
             </div>
             <div class="grid-2-col" style="gap:1rem">
                 <div class="form-group">
@@ -12847,7 +12852,10 @@ async function openEditItemModal(itemId) {
             itemName: document.getElementById('edit-item-name')?.value || ''
         });
         const barcodeInput = document.getElementById('edit-item-sku');
-        if (barcodeInput) barcodeInput.value = composedBarcode;
+        if (!barcodeInput) return;
+        const currentBarcode = String(barcodeInput.value || '').trim().toUpperCase();
+        if (currentBarcode && currentBarcode !== composedBarcode) return;
+        barcodeInput.value = composedBarcode;
     };
 
     ['edit-item-name', 'edit-item-category', 'edit-item-sub-category', 'edit-item-brand'].forEach(fieldId => {

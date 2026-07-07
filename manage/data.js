@@ -159,13 +159,15 @@ function getInventorySubCategory(item) {
 
 function getInventoryItemBarcode(item) {
     if (!item) return '';
+    const storedBarcode = String(item?.sku ?? item?.barcode ?? '').trim().toUpperCase();
+    if (storedBarcode) return storedBarcode;
     const composed = composeInventoryBarcode({
         mainCategory: getInventoryMainCategory(item),
         subCategory: getInventorySubCategory(item),
         brand: item?.brand || 'Unspecified',
         itemName: item?.name || 'Unnamed Item'
     });
-    return composed || String(item?.sku || item?.barcode || '').trim().toUpperCase();
+    return composed;
 }
 
 const INVENTORY_OPTION_LIST_STORAGE_KEY = 'manageInventoryOptionListsV1';
