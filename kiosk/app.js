@@ -1928,7 +1928,7 @@ function renderBasket() {
     }
 
     // Populate projects
-    const myProjects = projects.filter(p => (p.ownerId === currentUser.id || p.collaborators.includes(currentUser.id)) && !String(p.id || '').startsWith('PERS-'));
+    const myProjects = projects.filter(project => canCurrentUserViewProject(project) && !String(project.id || '').startsWith('PERS-'));
     projSelect.innerHTML = '<option value="">My Items (Personal)</option>' +
         myProjects.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
 }
@@ -2928,7 +2928,7 @@ async function checkoutBasket() {
             showToast('Checkout failed: one or more items no longer exist.', 'error');
             return;
         }
-        if (basketItem.qty <= 0 || basketItem.qty > item.stock) {
+        if (basketItem.qty <= 0 || (shouldTrackInventoryStock(item) && basketItem.qty > item.stock)) {
             showToast(`Checkout failed: invalid quantity for ${item.name}.`, 'error');
             return;
         }
@@ -4195,7 +4195,7 @@ function loadDashboard() {
         if (tabbedWidget) tabbedWidget.parentElement.style.display = 'none';
         if (studentWidgets) studentWidgets.style.display = '';
 
-        const myProjects = projects.filter(p => p.ownerId === currentUser.id || p.collaborators.includes(currentUser.id));
+        const myProjects = projects.filter(project => canCurrentUserViewProject(project));
         let itemsOutCount = 0;
         let dueBackCount = 0;
         let myItemsOut = [];
@@ -4773,7 +4773,7 @@ function loadDashboard() {
                         return {
                             id: p.id,
                             name: p.name,
-                            owner: getProjectOwnerLabel(p),
+                            lead: getProjectLeadLabel(p),
                             outQty,
                             dueQty
                         };
@@ -4804,7 +4804,7 @@ function loadDashboard() {
                         strong.textContent = escapeHtml(row.name);
                         const smallOwner = document.createElement('small');
                         smallOwner.className = 'text-muted block';
-                        smallOwner.textContent = `Owner: ${escapeHtml(row.owner)}`;
+                        smallOwner.textContent = `Project Lead: ${escapeHtml(row.lead)}`;
                         const smallStats = document.createElement('small');
                         smallStats.className = 'text-muted block';
                         smallStats.textContent = `Out: ${row.outQty} · Due now: ${row.dueQty}`;
@@ -5322,7 +5322,7 @@ function renderInventory() {
 
             if (confirm(`Return ${item.name} to inventory?`)) {
                 // Find the project and remove the item
-                const myProjects = projects.filter(p => p.ownerId === currentUser.id || p.collaborators.includes(currentUser.id));
+                const myProjects = projects.filter(project => canCurrentUserViewProject(project));
                 myProjects.forEach(p => {
                     const outIdx = p.itemsOut.findIndex(io => io.itemId === itemId);
                     if (outIdx > -1) {
@@ -5440,19 +5440,19 @@ document.getElementById('request-item-btn')?.addEventListener('click', () => {
 function canCurrentUserReturnProjectItem(project) {
     if (!currentUser) return false;
     if (currentUser.role !== 'student') return true;
-    return project.ownerId === currentUser.id || getProjectMembershipRole(project, currentUser.id) === 'collaborator';
+    return !!getProjectMembershipRole(project, currentUser.id);
 }
 
 function canCurrentUserViewProject(project) {
     if (!currentUser || !project) return false;
     if (currentUser.role !== 'student') return true;
-    return project.ownerId === currentUser.id || !!getProjectMembershipRole(project, currentUser.id);
+    return !!getProjectMembershipRole(project, currentUser.id);
 }
 
 function canCurrentUserManageProject(project) {
     if (!currentUser || !project) return false;
     if (currentUser.role !== 'student') return true;
-    return project.ownerId === currentUser.id || getProjectMembershipRole(project, currentUser.id) === 'collaborator';
+    return !!getProjectMembershipRole(project, currentUser.id);
 }
 
 function normalizeProjectCollaboratorRole(role) {
@@ -5462,11 +5462,13 @@ function normalizeProjectCollaboratorRole(role) {
 
 function getProjectMembershipRole(project, userId) {
     if (!project || !userId) return null;
-    if (project.ownerId === userId) return 'owner';
     const explicitRole = normalizeProjectCollaboratorRole(project.collaboratorRoles?.[userId]);
     if (explicitRole) return explicitRole;
     if (Array.isArray(project.collaborators) && project.collaborators.includes(userId)) {
         return 'collaborator';
+    }
+    if (project.ownerId === userId) {
+        return 'captain';
     }
     return null;
 }
@@ -5486,9 +5488,20 @@ function buildProjectCollaboratorOptions({ selectedOwnerId = '', selectedCollabo
     return buildSearchableProjectCollaborators({ selectedOwnerId, selectedCollaborators, collaboratorRoles });
 }
 
-function getProjectOwnerLabel(project) {
+function getProjectLeadLabel(project) {
     const owner = mockUsers.find(u => u.id === project.ownerId);
-    return owner ? `${owner.name} (${owner.id})` : project.ownerId;
+    const leadUserId = [
+        ...Object.entries(project?.collaboratorRoles || {})
+            .filter(([, role]) => {
+                const normalizedRole = normalizeProjectCollaboratorRole(role);
+                return normalizedRole === 'captain' || normalizedRole === 'mentor';
+            })
+            .map(([userId]) => userId),
+        ...(Array.isArray(project?.collaborators) ? project.collaborators : []),
+        project?.ownerId
+    ].find(Boolean);
+    const leadUser = mockUsers.find(user => user.id === leadUserId);
+    return leadUser ? `${leadUser.name} (${leadUser.id})` : 'Unassigned';
 }
 
 async function syncProjectCollaboratorsInSupabase(projectId, nextCollaborators, prevCollaborators, nextCollaboratorRoles = {}, prevCollaboratorRoles = {}) {
@@ -5721,7 +5734,7 @@ function openTransferAuthorizationModal(selectedProject) {
 
 function buildTransferProjectListHtml(eligibleProjects, selectedProjectId = '') {
     return eligibleProjects.map(project => {
-        const ownerLabel = getProjectOwnerLabel(project);
+        const ownerLabel = getProjectLeadLabel(project);
         const collaboratorCount = Array.isArray(project.collaborators) ? project.collaborators.length : 0;
         const isSelected = String(project.id) === String(selectedProjectId);
         return `
@@ -5874,7 +5887,7 @@ function openProjectItemsModal(projectId) {
             <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
         </div>
         <div class="modal-body" style="max-height:65vh;overflow-y:auto;">
-            <p class="text-muted mb-4">Owner: ${getProjectOwnerLabel(project)}</p>
+            <p class="text-muted mb-4">Project Lead: ${getProjectLeadLabel(project)}</p>
             <ul class="stock-list">${itemsHtml}</ul>
         </div>
         <div class="modal-footer">
@@ -6774,11 +6787,11 @@ function renderProjects() {
     // Teachers/Devs see ALL projects (past and active)
     let visibleProjects = projects;
     if (currentUser.role === 'student') {
-        visibleProjects = projects.filter(p => p.ownerId === currentUser.id || p.collaborators.includes(currentUser.id));
+        visibleProjects = projects.filter(project => canCurrentUserViewProject(project));
     } else {
         visibleProjects = projects.filter(p => {
             if (!String(p.id || '').startsWith('PERS-')) return true;
-            return p.ownerId === currentUser.id;
+            return canCurrentUserViewProject(p);
         });
     }
 
@@ -6878,7 +6891,7 @@ function renderProjects() {
                     </div>
                     <span class="status-badge ${getProjectStatusBadgeClass(proj.status)}">${escapeHtml(proj.status)}</span>
                 </div>
-                <p class="text-muted text-sm mb-2">Owner: ${escapeHtml(owner ? owner.name : 'Unknown')}</p>
+                <p class="text-muted text-sm mb-2">Project Lead: ${escapeHtml(owner ? owner.name : 'Unknown')}</p>
                 ${membershipRole && membershipRole !== 'owner' ? `<p class="text-muted text-sm mb-2">Your Role: ${escapeHtml(membershipRole.charAt(0).toUpperCase() + membershipRole.slice(1))}</p>` : ''}
                 ${linkedClass ? `<p class="text-muted text-sm mb-2">Class: ${escapeHtml(linkedClass.name || linkedClass.id)}</p>` : ''}
                 <p class="project-desc mb-4">${escapeHtml(proj.description)}</p>
@@ -6953,7 +6966,7 @@ async function openSignOutModal(itemId) {
     }
 
     if (currentUser.role !== 'student') {
-        const staffProjects = projects.filter(p => (p.ownerId === currentUser.id || (Array.isArray(p.collaborators) && p.collaborators.includes(currentUser.id))) && !String(p.id || '').startsWith('PERS-'));
+        const staffProjects = projects.filter(project => canCurrentUserViewProject(project) && !String(project.id || '').startsWith('PERS-'));
         const staffClasses = getManagedClassesForCheckout();
         const allowPersonalDestination = canUsePersonalItems(currentUser);
         const defaultDestinationMode = staffProjects.length > 0
@@ -7447,7 +7460,9 @@ async function openSignOutModal(itemId) {
     }
 
     // Only show active projects where current user is owner or collaborator
-    const myProjects = projects.filter(p => (p.ownerId === currentUser.id || (Array.isArray(p.collaborators) && p.collaborators.includes(currentUser.id))) && !String(p.id || '').startsWith('PERS-'));
+    const myProjects = projects.filter(project => canCurrentUserViewProject(project) && !String(project.id || '').startsWith('PERS-'));
+            <p class="text-muted mb-4">Project Lead: ${getProjectLeadLabel(project)}</p>
+                        smallOwner.textContent = `Project Lead: ${escapeHtml(row.owner)}`;
 
     const allowPersonalDestination = canUsePersonalItems(currentUser);
     const projectsOptions = myProjects.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join('');
@@ -7465,7 +7480,7 @@ async function openSignOutModal(itemId) {
         if (currentUser.role !== 'student') {
             options += `<option value="${escapeHtml(currentUser.id)}">Myself (${escapeHtml(currentUser.name)})</option>`;
         }
-        // Add project owner if not already added
+        // Add project lead if not already included
         if (currentUser.role === 'student' || proj.ownerId !== currentUser.id) {
             const owner = mockUsers.find(u => u.id === proj.ownerId);
             options += `<option value="${escapeHtml(proj.ownerId)}">${escapeHtml(owner ? owner.name : proj.ownerId)}</option>`;
@@ -7585,7 +7600,7 @@ async function openSignOutModal(itemId) {
         const qty = parseInt(document.getElementById('so-qty').value);
         let assignedToUserId = null;
         
-        // Get assignee from form if teacher, otherwise use project owner
+        // Get assignee from form if teacher, otherwise use the selected project lead
         if (currentUser.role !== 'student') {
             assignedToUserId = document.getElementById('so-assignee')?.value;
         }
@@ -7629,7 +7644,7 @@ async function openSignOutModal(itemId) {
                 }
             }
 
-            // For students, assign to project owner; for teachers, use selected assignee
+            // For students, assign to the project lead; for teachers, use the selected assignee
             const finalAssignedToUserId = assignedToUserId || project.ownerId;
 
             const signoutData = {
@@ -9814,15 +9829,9 @@ function openEditProjectModal(projectId) {
     if (!project) return;
 
     if (!canCurrentUserManageProject(project)) {
-        showToast('Only project owners or teachers can edit this project.', 'error');
+        showToast('Only project leads or teachers can edit this project.', 'error');
         return;
     }
-
-    const canAssignOwner = currentUser.role !== 'student';
-    const ownerCandidates = getProjectOwnerCandidates();
-    const ownerOptions = ownerCandidates.map(student =>
-        `<option value="${escapeHtml(student.id)}" ${student.id === project.ownerId ? 'selected' : ''}>${escapeHtml(student.name)} (${escapeHtml(student.id)})</option>`
-    ).join('');
 
     const collaboratorOptions = buildProjectCollaboratorOptions({
         selectedOwnerId: project.ownerId,
@@ -9852,14 +9861,6 @@ function openEditProjectModal(projectId) {
                     <option value="Archived" ${project.status === 'Archived' ? 'selected' : ''}>Archived</option>
                 </select>
             </div>
-            ${canAssignOwner ? `
-            <div class="form-group">
-                <label>Project Owner</label>
-                <select id="edit-proj-owner" class="form-control">
-                    ${ownerOptions || '<option value="">No eligible users found</option>'}
-                </select>
-                <small class="text-muted">Teachers and developers can assign ownership to eligible users.</small>
-            </div>` : ''}
             <div class="form-group">
                 <label>Collaborators</label>
                 <div id="edit-proj-collaborators-wrap" class="glass-panel" style="padding:1rem; max-height:180px; overflow-y:auto">
@@ -9878,19 +9879,6 @@ function openEditProjectModal(projectId) {
     `;
 
     openModal(html);
-    document.getElementById('edit-proj-owner')?.closest('.form-group')?.remove();
-
-    const ownerSelect = document.getElementById('edit-proj-owner');
-    ownerSelect?.addEventListener('change', () => {
-        const wrapper = document.getElementById('edit-proj-collaborators-wrap');
-        if (!wrapper) return;
-        wrapper.innerHTML = buildSearchableProjectCollaborators({
-            selectedOwnerId: ownerSelect.value,
-            selectedCollaborators: project.collaborators || [],
-            collaboratorRoles: project.collaboratorRoles || {}
-        }) || '<p class="text-sm text-muted">No eligible student collaborators.</p>';
-        setupProjectCollaboratorSearch();
-    });
 
     setTimeout(() => {
         setupProjectCollaboratorSearch();
@@ -9904,20 +9892,12 @@ function openEditProjectModal(projectId) {
         const name = document.getElementById('edit-proj-name').value.trim();
         const desc = document.getElementById('edit-proj-desc').value.trim();
         const status = document.getElementById('edit-proj-status').value;
-        const selectedOwnerId = canAssignOwner
-            ? (document.getElementById('edit-proj-owner')?.value || project.ownerId)
-            : project.ownerId;
         const collaborators = Array.from(document.querySelectorAll('#edit-proj-collaborators-wrap .proj-student-checkbox:checked')).map(cb => cb.value);
         const collaboratorRoles = Array.from(document.querySelectorAll('#edit-proj-collaborators-wrap .proj-collab-role')).reduce((roles, select) => {
             const userId = select.getAttribute('data-user-id');
             if (userId) roles[userId] = select.value;
             return roles;
         }, {});
-
-        if (!selectedOwnerId) {
-            showToast('Please select a project owner.', 'error');
-            return;
-        }
 
         if (!name) {
             showToast('Project name is required.', 'error');
@@ -9926,7 +9906,6 @@ function openEditProjectModal(projectId) {
 
         const updated = await updateProjectInSupabase(project.id, {
             name,
-            owner_id: selectedOwnerId,
             description: desc,
             status
         });
@@ -9948,7 +9927,7 @@ function openEditProjectModal(projectId) {
 
         await refreshProjectsFromSupabase();
 
-        addLog(currentUser.id, 'Edit Project', `Updated project: ${name} (owner ${selectedOwnerId}, ${collaborators.length} collaborators)`);
+        addLog(currentUser.id, 'Edit Project', `Updated project: ${name} (${collaborators.length} collaborators)`);
         showToast('Project updated.', 'success');
         closeModal();
         if (document.getElementById('page-projects').classList.contains('active')) {
@@ -9959,17 +9938,8 @@ function openEditProjectModal(projectId) {
 
 // Create Project Flow
 document.getElementById('create-project-btn')?.addEventListener('click', () => {
-    const canAssignOwner = currentUser.role !== 'student';
-    const ownerCandidates = getProjectOwnerCandidates();
-    const defaultOwnerId = canAssignOwner
-        ? (ownerCandidates[0]?.id || '')
-        : currentUser.id;
-
-    const ownerOptions = ownerCandidates.map(student =>
-        `<option value="${escapeHtml(student.id)}" ${student.id === defaultOwnerId ? 'selected' : ''}>${escapeHtml(student.name)} (${escapeHtml(student.id)})</option>`
-    ).join('');
-
-    const collaboratorOptions = buildSearchableProjectCollaborators({ selectedOwnerId: defaultOwnerId });
+    const creatorRole = currentUser.role === 'student' ? 'captain' : 'mentor';
+    const collaboratorOptions = buildSearchableProjectCollaborators({ selectedOwnerId: currentUser.id });
 
     const html = `
         <div class="modal-header">
@@ -9985,14 +9955,6 @@ document.getElementById('create-project-btn')?.addEventListener('click', () => {
                 <label>Description</label>
                 <textarea id="add-proj-desc" class="form-control" rows="3" placeholder="Brief details about the project..."></textarea>
             </div>
-            ${canAssignOwner ? `
-            <div class="form-group">
-                <label>Project Owner</label>
-                <select id="add-proj-owner" class="form-control">
-                    ${ownerOptions || '<option value="">No eligible users found</option>'}
-                </select>
-                <small class="text-muted">Teachers and developers can create projects for eligible users.</small>
-            </div>` : ''}
             <div class="form-group">
                 <label>Add Collaborators (Optional)</label>
                 <div id="add-proj-collaborators-wrap" class="glass-panel" style="padding:1rem; max-height:150px; overflow-y:auto">
@@ -10008,15 +9970,6 @@ document.getElementById('create-project-btn')?.addEventListener('click', () => {
 
     openModal(html);
 
-    const ownerSelect = document.getElementById('add-proj-owner');
-    ownerSelect?.addEventListener('change', () => {
-        const wrap = document.getElementById('add-proj-collaborators-wrap');
-        if (!wrap) return;
-        wrap.innerHTML = buildSearchableProjectCollaborators({ selectedOwnerId: ownerSelect.value })
-            || '<p class="text-sm text-muted">No available student collaborators.</p>';
-        setupProjectCollaboratorSearch();
-    });
-
     setTimeout(() => {
         setupProjectCollaboratorSearch();
     }, 10);
@@ -10026,13 +9979,9 @@ document.getElementById('create-project-btn')?.addEventListener('click', () => {
         withButtonPending(submitBtn, 'Creating...', async () => {
             const name = document.getElementById('add-proj-name').value.trim();
             const desc = document.getElementById('add-proj-desc').value.trim();
-            const ownerId = document.getElementById('add-proj-owner')?.value || currentUser.id;
-            const collaborators = Array.from(document.querySelectorAll('#add-proj-collaborators-wrap .proj-student-checkbox:checked')).map(cb => cb.value);
-
-            if (!ownerId) {
-                showToast('Please select a project owner.', 'error');
-                return;
-            }
+            const collaborators = Array.from(document.querySelectorAll('#add-proj-collaborators-wrap .proj-student-checkbox:checked'))
+                .map(cb => cb.value)
+                .filter(userId => userId && userId !== currentUser.id);
 
             if (!name) {
                 showToast('Project name is required.', 'error');
@@ -10042,9 +9991,10 @@ document.getElementById('create-project-btn')?.addEventListener('click', () => {
             const newProject = {
                 id: generateId('PRJ'),
                 name,
-                ownerId,
+                ownerId: null,
                 description: desc,
                 collaborators,
+                collaboratorRoles: { [currentUser.id]: creatorRole },
                 status: 'Active',
                 itemsOut: []
             };
@@ -10058,10 +10008,11 @@ document.getElementById('create-project-btn')?.addEventListener('click', () => {
             for (const collaboratorId of collaborators) {
                 await addProjectCollaboratorToSupabase(newProject.id, collaboratorId);
             }
+            await addProjectCollaboratorToSupabase(newProject.id, currentUser.id, creatorRole);
 
             await refreshProjectsFromSupabase();
 
-            addLog(currentUser.id, 'Create Project', `Created new project: ${name} for ${ownerId} with ${collaborators.length} collaborators.`);
+            addLog(currentUser.id, 'Create Project', `Created new project: ${name} with ${collaborators.length} collaborators.`);
             showToast(`Project ${name} created.`, 'success');
             closeModal();
             if (document.getElementById('page-projects').classList.contains('active')) {
