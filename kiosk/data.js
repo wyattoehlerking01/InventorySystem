@@ -2188,7 +2188,8 @@ async function moveProjectItemOutToProjectInSupabase({
     signoutDate,
     dueDate,
     assignedToUserId,
-    signedOutByUserId
+    signedOutByUserId,
+    transferredByUserId
 }) {
     if (!toProjectId) return null;
 
@@ -2209,7 +2210,8 @@ async function moveProjectItemOutToProjectInSupabase({
                 signoutDate,
                 dueDate,
                 assignedToUserId,
-                signedOutByUserId
+                signedOutByUserId,
+                transferredByUserId
             });
             return data?.[0] || null;
         }
@@ -2233,7 +2235,8 @@ async function moveProjectItemOutToProjectInSupabase({
         signoutDate,
         dueDate,
         assignedToUserId,
-        signedOutByUserId
+        signedOutByUserId,
+        transferredByUserId
     });
 
     if (inserted) {
@@ -2246,7 +2249,8 @@ async function moveProjectItemOutToProjectInSupabase({
             signoutDate,
             dueDate,
             assignedToUserId,
-            signedOutByUserId
+            signedOutByUserId,
+            transferredByUserId
         });
     }
 

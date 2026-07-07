@@ -5508,6 +5508,11 @@ async function transferProjectItemToAnotherProject(projectId, signoutId) {
         return false;
     }
 
+    const authorizedTransferMember = await openTransferAuthorizationModal(selectedProject);
+    if (!authorizedTransferMember) {
+        return false;
+    }
+
     const moved = await moveProjectItemOutToProjectInSupabase({
         projectItemOutId: sourceRow.id || null,
         fromProjectId: sourceProject.id,
@@ -5517,7 +5522,8 @@ async function transferProjectItemToAnotherProject(projectId, signoutId) {
         signoutDate: sourceRow.signoutDate,
         dueDate: sourceRow.dueDate,
         assignedToUserId: sourceRow.assignedToUserId || sourceProject.ownerId || null,
-        signedOutByUserId: sourceRow.signedOutByUserId || currentUser.id || null
+        signedOutByUserId: sourceRow.signedOutByUserId || currentUser.id || null,
+        transferredByUserId: authorizedTransferMember.id || currentUser.id || null
     });
 
     if (!moved) {
@@ -5531,9 +5537,143 @@ async function transferProjectItemToAnotherProject(projectId, signoutId) {
     ]);
     renderProjects();
     renderInventory();
-    addLog(currentUser.id, 'Transfer Project Item', `Transferred ${sourceRow.quantity}x item ${sourceRow.itemId} from ${sourceProject.id} to ${selectedProject.id}`);
+    addLog(currentUser.id, 'Transfer Project Item', `Transferred ${sourceRow.quantity}x item ${sourceRow.itemId} from ${sourceProject.id} to ${selectedProject.id} after authorization by ${authorizedTransferMember.name} (${authorizedTransferMember.id})`);
     showToast('Item transferred.', 'success');
     return true;
+}
+
+function normalizeProjectTransferMemberToken(value) {
+    return String(value || '').trim().toUpperCase();
+}
+
+function getProjectTransferMemberCandidates(project) {
+    if (!project) return [];
+
+    const memberIds = new Set();
+    if (project.ownerId) memberIds.add(project.ownerId);
+    if (Array.isArray(project.collaborators)) {
+        project.collaborators.forEach(userId => memberIds.add(userId));
+    }
+
+    return Array.from(memberIds)
+        .map(userId => mockUsers.find(user => user.id === userId))
+        .filter(user => !!user && String(user.status || '').toLowerCase() !== 'suspended');
+}
+
+function findProjectTransferMember(project, rawId) {
+    const scannedId = normalizeProjectTransferMemberToken(rawId);
+    if (!scannedId || !project) return null;
+
+    const candidates = getProjectTransferMemberCandidates(project);
+    return candidates.find(user => {
+        const userId = normalizeProjectTransferMemberToken(user.id);
+        const userName = normalizeProjectTransferMemberToken(user.name);
+        const userBarcode = normalizeProjectTransferMemberToken(user.barcode);
+        return scannedId === userId || scannedId === userBarcode || scannedId === userName;
+    }) || null;
+}
+
+function openTransferAuthorizationModal(selectedProject) {
+    return new Promise(resolve => {
+        const eligibleMembers = getProjectTransferMemberCandidates(selectedProject);
+        const memberHint = eligibleMembers.length > 0
+            ? `${eligibleMembers.map(user => user.name).join(', ')}`
+            : 'No team members are available for this project.';
+
+        const html = `
+            <div class="modal-header">
+                <h3><i class="ph ph-shield-check"></i> Transfer Authorization</h3>
+                <button class="close-btn" id="transfer-auth-close"><i class="ph ph-x"></i></button>
+            </div>
+            <div class="modal-body transfer-auth-modal-body">
+                <p class="text-secondary mb-4">Scan a barcode or enter a user ID from a member of <strong>${escapeHtml(selectedProject.name)}</strong> to authorize the transfer.</p>
+                <div class="scanner-container transfer-auth-container">
+                    <div class="scanner-anim"></div>
+                    <i class="ph ph-barcode"></i>
+                    <p>Waiting for barcode scan...</p>
+                    <input type="password" id="transfer-auth-input" class="hidden-input" autocomplete="off" autofocus placeholder="Scan barcode or enter user ID">
+                </div>
+                <small class="text-muted transfer-auth-hint">Team members: ${escapeHtml(memberHint)}</small>
+                <small id="transfer-auth-error" class="text-danger transfer-auth-error" style="display:none;"></small>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="transfer-auth-cancel">Cancel</button>
+            </div>
+        `;
+
+        openModal(html);
+        dynamicModal.classList.add('transfer-project-modal', 'transfer-auth-modal');
+
+        const finish = (member) => {
+            closeModal();
+            resolve(member);
+        };
+
+        const showError = (message) => {
+            const errorEl = document.getElementById('transfer-auth-error');
+            if (!errorEl) return;
+            errorEl.textContent = message;
+            errorEl.style.display = '';
+        };
+
+        const approve = async () => {
+            const rawId = String(document.getElementById('transfer-auth-input')?.value || '').trim();
+            if (!rawId) {
+                showError('Scan a project member barcode or enter a user ID to continue.');
+                return;
+            }
+
+            let scannedUser = null;
+            if (typeof loginWithBarcode === 'function') {
+                try {
+                    const loginResult = await loginWithBarcode(rawId);
+                    if (loginResult?.user) {
+                        scannedUser = loginResult.user;
+                    }
+                } catch (error) {
+                    console.warn('Transfer authorization lookup via loginWithBarcode failed:', error);
+                }
+            }
+
+            if (!scannedUser) {
+                const normalized = rawId.toUpperCase();
+                scannedUser = mockUsers.find(user => String(user.id || '').trim().toUpperCase() === normalized || String(user.name || '').trim().toUpperCase() === normalized || String(user.barcode || '').trim().toUpperCase() === normalized) || null;
+            }
+
+            if (!scannedUser) {
+                showError('ID not recognized.');
+                return;
+            }
+
+            const memberMatch = findProjectTransferMember(selectedProject, scannedUser.id || rawId);
+            if (!memberMatch) {
+                showError('That barcode or user ID does not belong to this destination project.');
+                return;
+            }
+
+            showToast(`Verified ${memberMatch.name}.`, 'success');
+            finish(memberMatch);
+        };
+
+        document.getElementById('transfer-auth-cancel')?.addEventListener('click', () => finish(null));
+        document.getElementById('transfer-auth-close')?.addEventListener('click', () => finish(null));
+        document.getElementById('transfer-auth-input')?.addEventListener('keydown', (event) => {
+            if (event.key !== 'Enter') return;
+            event.preventDefault();
+            approve().catch(error => {
+                console.error('Failed to validate transfer authorization:', error);
+                showError('Unable to validate that ID right now.');
+            });
+        });
+        document.getElementById('transfer-auth-input')?.addEventListener('input', () => {
+            const errorEl = document.getElementById('transfer-auth-error');
+            if (!errorEl) return;
+            errorEl.textContent = '';
+            errorEl.style.display = 'none';
+        });
+
+        requestAnimationFrame(() => document.getElementById('transfer-auth-input')?.focus({ preventScroll: true }));
+    });
 }
 
 function buildTransferProjectListHtml(eligibleProjects, selectedProjectId = '') {

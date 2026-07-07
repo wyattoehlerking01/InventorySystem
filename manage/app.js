@@ -6054,7 +6054,7 @@ async function transferProjectItemToAnotherProject(projectId, signoutId) {
     ]);
     renderProjects();
     renderInventory();
-    addLog(currentUser.id, 'Transfer Project Item', `Transferred ${sourceRow.quantity}x item ${sourceRow.itemId} from ${sourceProject.id} to ${selectedProject.id} after scan by ${verifiedTransferMember.name} (${verifiedTransferMember.id})`);
+    addLog(currentUser.id, 'Transfer Project Item', `Transferred ${sourceRow.quantity}x item ${sourceRow.itemId} from ${sourceProject.id} to ${selectedProject.id} after authorization by ${verifiedTransferMember.name} (${verifiedTransferMember.id})`);
     showToast('Item transferred.', 'success');
     return true;
 }
@@ -6198,16 +6198,16 @@ function openTransferMemberScanModal(selectedProject) {
 
         const html = `
             <div class="modal-header">
-                <h3><i class="ph ph-barcode"></i> Scan Team Member ID</h3>
+                <h3><i class="ph ph-shield-check"></i> Transfer Authorization</h3>
                 <button class="close-btn" id="transfer-scan-close"><i class="ph ph-x"></i></button>
             </div>
             <div class="modal-body transfer-scan-modal-body">
-                <p class="text-secondary mb-4">Scan an ID from a member of <strong>${escapeHtml(selectedProject.name)}</strong> to complete the transfer.</p>
+                <p class="text-secondary mb-4">Scan a barcode or enter a user ID from a member of <strong>${escapeHtml(selectedProject.name)}</strong> to authorize the transfer.</p>
                 <div class="scanner-container transfer-scan-container">
                     <div class="scanner-anim"></div>
                     <i class="ph ph-barcode"></i>
-                    <p>Waiting for ID Scan...</p>
-                    <input type="password" id="transfer-scan-input" class="hidden-input" autocomplete="off" autofocus placeholder="Scan ID">
+                    <p>Waiting for barcode scan...</p>
+                    <input type="password" id="transfer-scan-input" class="hidden-input" autocomplete="off" autofocus placeholder="Scan barcode or enter user ID">
                 </div>
                 <small class="text-muted transfer-scan-hint">Team members: ${escapeHtml(memberHint)}</small>
                 <small id="transfer-scan-error" class="text-danger transfer-scan-error" style="display:none;"></small>
@@ -6218,7 +6218,7 @@ function openTransferMemberScanModal(selectedProject) {
         `;
 
         openModal(html);
-        dynamicModal.classList.add('class-modal', 'transfer-scan-modal');
+    dynamicModal.classList.add('class-modal', 'transfer-scan-modal', 'transfer-auth-modal');
 
         const finish = (member) => {
             closeModal();
@@ -6235,7 +6235,7 @@ function openTransferMemberScanModal(selectedProject) {
         const approve = async () => {
             const rawId = String(document.getElementById('transfer-scan-input')?.value || '').trim();
             if (!rawId) {
-                showError('Scan a team member ID to continue.');
+                showError('Scan a project member barcode or enter a user ID to continue.');
                 return;
             }
 
@@ -6263,7 +6263,7 @@ function openTransferMemberScanModal(selectedProject) {
 
             const memberMatch = findProjectTransferMember(selectedProject, scannedUser.id || rawId);
             if (!memberMatch) {
-                showError('That ID does not belong to this project team.');
+                showError('That barcode or user ID does not belong to this destination project.');
                 return;
             }
 
@@ -10860,6 +10860,26 @@ function wireBundleComponentsEditor(bundleItemId = '') {
 }
 
 // Setup Add Item flow
+function buildInventoryOptionSelectHtml(options, selectedValue, fallbackValue) {
+    const optionSet = new Set();
+    const orderedOptions = [];
+    const selected = String(selectedValue || '').trim() || String(fallbackValue || '').trim();
+
+    [fallbackValue, selected, ...(options || [])].forEach(option => {
+        const normalized = String(option || '').trim();
+        if (!normalized) return;
+        const key = normalized.toLowerCase();
+        if (optionSet.has(key)) return;
+        optionSet.add(key);
+        orderedOptions.push(normalized);
+    });
+
+    return orderedOptions.map(option => {
+        const isSelected = option === selected;
+        return `<option value="${escapeHtml(option)}" ${isSelected ? 'selected' : ''}>${escapeHtml(option)}</option>`;
+    }).join('');
+}
+
 document.getElementById('add-item-btn')?.addEventListener('click', openAddItemModal);
 
 async function openAddItemModal() {
@@ -10897,7 +10917,9 @@ async function openAddItemModal() {
             </div>
             <div class="form-group">
                 <label>Sub Category</label>
-                <input type="text" id="add-sub-category" class="form-control" placeholder="e.g. Motors" value="General">
+                <select id="add-sub-category" class="form-control">
+                    ${buildInventoryOptionSelectHtml(subCategories, 'General', 'General')}
+                </select>
             </div>
             <div class="form-group">
                 <label>Barcode</label>
@@ -10915,7 +10937,9 @@ async function openAddItemModal() {
                 </div>
                 <div class="form-group">
                     <label>Brand</label>
-                    <input type="text" id="add-brand" class="form-control" placeholder="e.g. Bosch">
+                    <select id="add-brand" class="form-control">
+                        ${buildInventoryOptionSelectHtml(brands, 'Unspecified', 'Unspecified')}
+                    </select>
                 </div>
             </div>
             <div class="grid-2-col" style="gap:1rem">
@@ -12800,7 +12824,9 @@ async function openEditItemModal(itemId) {
             </div>
             <div class="form-group">
                 <label>Sub Category</label>
-                <input type="text" id="edit-item-sub-category" class="form-control" value="${escapeHtml(getInventorySubCategory(item))}">
+                <select id="edit-item-sub-category" class="form-control">
+                    ${buildInventoryOptionSelectHtml(subCategories, getInventorySubCategory(item), 'General')}
+                </select>
             </div>
             <div class="form-group">
                 <label>Barcode</label>
@@ -12814,7 +12840,9 @@ async function openEditItemModal(itemId) {
                 </div>
                 <div class="form-group">
                     <label>Brand</label>
-                    <input type="text" id="edit-item-brand" class="form-control" value="${item.brand || ''}">
+                    <select id="edit-item-brand" class="form-control">
+                        ${buildInventoryOptionSelectHtml(brands, item.brand || 'Unspecified', 'Unspecified')}
+                    </select>
                 </div>
             </div>
             <div class="grid-2-col" style="gap:1rem">
@@ -13127,15 +13155,28 @@ document.getElementById('manage-categories-btn')?.addEventListener('click', asyn
     }
 
     function renderCategoryModal() {
-        const categoryList = categories.map((cat, i) => `
+        const renderOptionRows = (options, renameClass, deleteClass) => (options || []).map((option, index) => `
             <div style="display:flex; align-items:center; justify-content:space-between; padding:0.5rem; border-bottom:1px solid rgba(255,255,255,0.05);">
-                <span style="color:var(--text-primary)">${cat}</span>
+                <span style="color:var(--text-primary)">${escapeHtml(option)}</span>
                 <div style="display:flex;gap:0.5rem;">
-                    <button class="icon-btn text-accent rename-cat-btn" data-index="${i}" title="Rename"><i class="ph ph-pencil-simple"></i></button>
-                    <button class="icon-btn text-danger delete-cat-btn" data-index="${i}" title="Delete"><i class="ph ph-trash"></i></button>
+                    <button class="icon-btn text-accent ${renameClass}" data-index="${index}" title="Rename"><i class="ph ph-pencil-simple"></i></button>
+                    <button class="icon-btn text-danger ${deleteClass}" data-index="${index}" title="Delete"><i class="ph ph-trash"></i></button>
                 </div>
             </div>
         `).join('');
+
+        const renderSection = ({ title, icon, options, emptyMessage, addInputId, addBtnId, addPlaceholder, renameClass, deleteClass }) => `
+            <div class="glass-panel" style="padding:0.9rem;margin-bottom:1rem;">
+                <h4 style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.75rem;"><i class="ph ${icon}"></i> ${escapeHtml(title)}</h4>
+                <div style="max-height:220px; overflow-y:auto; background:rgba(0,0,0,0.2); border-radius:var(--radius-sm); border:1px solid var(--glass-border); margin-bottom:0.9rem;">
+                    ${renderOptionRows(options, renameClass, deleteClass) || `<p class="text-muted" style="padding:1rem;">${escapeHtml(emptyMessage)}</p>`}
+                </div>
+                <div class="form-group" style="display:flex;gap:0.5rem;">
+                    <input type="text" id="${addInputId}" class="form-control" placeholder="${escapeHtml(addPlaceholder)}" style="flex:1">
+                    <button class="btn btn-primary" id="${addBtnId}">Add</button>
+                </div>
+            </div>
+        `;
 
         const html = `
             <div class="modal-header">
@@ -13143,13 +13184,40 @@ document.getElementById('manage-categories-btn')?.addEventListener('click', asyn
                 <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
             </div>
             <div class="modal-body">
-                <div style="max-height:250px; overflow-y:auto; background:rgba(0,0,0,0.2); border-radius:var(--radius-sm); border:1px solid var(--glass-border); margin-bottom:1rem;">
-                    ${categoryList || '<p class="text-muted" style="padding:1rem;">No categories defined.</p>'}
-                </div>
-                <div class="form-group" style="display:flex;gap:0.5rem;">
-                    <input type="text" id="new-category-name" class="form-control" placeholder="New category name" style="flex:1">
-                    <button class="btn btn-primary" id="add-category-btn">Add</button>
-                </div>
+                <p class="text-secondary mb-4" style="font-size:0.85rem">Edit the dropdown lists used by inventory items. Main categories are saved in Supabase; subcategories and brands are stored as editable dropdown options.</p>
+                ${renderSection({
+                    title: 'Main Categories',
+                    icon: 'ph-tag',
+                    options: categories,
+                    emptyMessage: 'No categories defined.',
+                    addInputId: 'new-category-name',
+                    addBtnId: 'add-category-btn',
+                    addPlaceholder: 'New category name',
+                    renameClass: 'rename-cat-btn',
+                    deleteClass: 'delete-cat-btn'
+                })}
+                ${renderSection({
+                    title: 'Sub Categories',
+                    icon: 'ph-stack',
+                    options: subCategories,
+                    emptyMessage: 'No sub categories defined.',
+                    addInputId: 'new-sub-category-name',
+                    addBtnId: 'add-sub-category-btn',
+                    addPlaceholder: 'New sub category name',
+                    renameClass: 'rename-sub-cat-btn',
+                    deleteClass: 'delete-sub-cat-btn'
+                })}
+                ${renderSection({
+                    title: 'Brands',
+                    icon: 'ph-trademark',
+                    options: brands,
+                    emptyMessage: 'No brands defined.',
+                    addInputId: 'new-brand-name',
+                    addBtnId: 'add-brand-btn',
+                    addPlaceholder: 'New brand name',
+                    renameClass: 'rename-brand-btn',
+                    deleteClass: 'delete-brand-btn'
+                })}
             </div>
         `;
 
@@ -13170,6 +13238,46 @@ document.getElementById('manage-categories-btn')?.addEventListener('click', asyn
             } else if (categories.includes(name)) {
                 showToast('Category already exists.', 'error');
             }
+        });
+
+        document.getElementById('add-sub-category-btn')?.addEventListener('click', async () => {
+            const name = document.getElementById('new-sub-category-name').value.trim();
+            if (!name) return;
+            if (subCategories.some(option => option.toLowerCase() === name.toLowerCase())) {
+                showToast('Sub category already exists.', 'error');
+                return;
+            }
+
+            const created = await addSubCategoryToSupabase(name);
+            if (!created) {
+                showToast('Failed to add sub category.', 'error');
+                return;
+            }
+
+            await loadInventoryDropdownOptions();
+            showToast(`Sub category "${name}" added.`, 'success');
+            addLog(currentUser.id, 'Manage Categories', `Added sub category: ${name}`);
+            renderCategoryModal();
+        });
+
+        document.getElementById('add-brand-btn')?.addEventListener('click', async () => {
+            const name = document.getElementById('new-brand-name').value.trim();
+            if (!name) return;
+            if (brands.some(option => option.toLowerCase() === name.toLowerCase())) {
+                showToast('Brand already exists.', 'error');
+                return;
+            }
+
+            const created = await addBrandToSupabase(name);
+            if (!created) {
+                showToast('Failed to add brand.', 'error');
+                return;
+            }
+
+            await loadInventoryDropdownOptions();
+            showToast(`Brand "${name}" added.`, 'success');
+            addLog(currentUser.id, 'Manage Categories', `Added brand: ${name}`);
+            renderCategoryModal();
         });
 
         document.querySelectorAll('.rename-cat-btn').forEach(btn => {
@@ -13194,6 +13302,44 @@ document.getElementById('manage-categories-btn')?.addEventListener('click', asyn
             });
         });
 
+        document.querySelectorAll('.rename-sub-cat-btn').forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                const idx = parseInt(e.currentTarget.getAttribute('data-index'));
+                const oldName = subCategories[idx];
+                const newName = prompt(`Rename "${oldName}" to:`, oldName);
+                if (newName && newName.trim() && newName.trim() !== oldName) {
+                    const renamed = await renameSubCategoryInSupabase(oldName, newName.trim());
+                    if (!renamed) {
+                        showToast('Failed to rename sub category.', 'error');
+                        return;
+                    }
+                    await refreshInventoryFromSupabase();
+                    showToast(`Sub category renamed to "${newName.trim()}".`, 'success');
+                    addLog(currentUser.id, 'Manage Categories', `Renamed sub category: ${oldName} → ${newName.trim()}`);
+                    renderCategoryModal();
+                }
+            });
+        });
+
+        document.querySelectorAll('.rename-brand-btn').forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                const idx = parseInt(e.currentTarget.getAttribute('data-index'));
+                const oldName = brands[idx];
+                const newName = prompt(`Rename "${oldName}" to:`, oldName);
+                if (newName && newName.trim() && newName.trim() !== oldName) {
+                    const renamed = await renameBrandInSupabase(oldName, newName.trim());
+                    if (!renamed) {
+                        showToast('Failed to rename brand.', 'error');
+                        return;
+                    }
+                    await refreshInventoryFromSupabase();
+                    showToast(`Brand renamed to "${newName.trim()}".`, 'success');
+                    addLog(currentUser.id, 'Manage Categories', `Renamed brand: ${oldName} → ${newName.trim()}`);
+                    renderCategoryModal();
+                }
+            });
+        });
+
         document.querySelectorAll('.delete-cat-btn').forEach(btn => {
             btn.addEventListener('click', async (e) => {
                 const idx = parseInt(e.currentTarget.getAttribute('data-index'));
@@ -13210,6 +13356,42 @@ document.getElementById('manage-categories-btn')?.addEventListener('click', asyn
                     ]);
                     showToast(`Category "${catName}" deleted.`, 'success');
                     addLog(currentUser.id, 'Manage Categories', `Deleted category: ${catName}`);
+                    renderCategoryModal();
+                }
+            });
+        });
+
+        document.querySelectorAll('.delete-sub-cat-btn').forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                const idx = parseInt(e.currentTarget.getAttribute('data-index'));
+                const name = subCategories[idx];
+                if (confirm(`Delete sub category "${name}"? Items in this sub category will become "General".`)) {
+                    const deleted = await deleteSubCategoryFromSupabase(name);
+                    if (!deleted) {
+                        showToast('Failed to delete sub category.', 'error');
+                        return;
+                    }
+                    await refreshInventoryFromSupabase();
+                    showToast(`Sub category "${name}" deleted.`, 'success');
+                    addLog(currentUser.id, 'Manage Categories', `Deleted sub category: ${name}`);
+                    renderCategoryModal();
+                }
+            });
+        });
+
+        document.querySelectorAll('.delete-brand-btn').forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                const idx = parseInt(e.currentTarget.getAttribute('data-index'));
+                const name = brands[idx];
+                if (confirm(`Delete brand "${name}"? Items using it will become "Unspecified".`)) {
+                    const deleted = await deleteBrandFromSupabase(name);
+                    if (!deleted) {
+                        showToast('Failed to delete brand.', 'error');
+                        return;
+                    }
+                    await refreshInventoryFromSupabase();
+                    showToast(`Brand "${name}" deleted.`, 'success');
+                    addLog(currentUser.id, 'Manage Categories', `Deleted brand: ${name}`);
                     renderCategoryModal();
                 }
             });

@@ -167,6 +167,191 @@ function getInventoryItemBarcode(item) {
     });
     return composed || String(item?.sku || item?.barcode || '').trim().toUpperCase();
 }
+
+const INVENTORY_OPTION_LIST_STORAGE_KEY = 'manageInventoryOptionListsV1';
+const DEFAULT_INVENTORY_SUB_CATEGORIES = ['General'];
+const DEFAULT_INVENTORY_BRANDS = ['Unspecified'];
+
+function normalizeInventoryOptionValue(value, fallbackValue) {
+    const normalized = String(value || '').trim();
+    return normalized || String(fallbackValue || '').trim();
+}
+
+function uniqueInventoryOptionList(values, fallbackValue) {
+    const seen = new Set();
+    const next = [];
+
+    for (const value of values || []) {
+        const normalized = normalizeInventoryOptionValue(value, fallbackValue);
+        if (!normalized) continue;
+        const key = normalized.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        next.push(normalized);
+    }
+
+    const fallback = normalizeInventoryOptionValue(fallbackValue, fallbackValue);
+    if (fallback) {
+        const fallbackKey = fallback.toLowerCase();
+        if (!seen.has(fallbackKey)) {
+            next.unshift(fallback);
+        }
+    }
+
+    return next;
+}
+
+function readInventoryOptionListsFromStorage() {
+    try {
+        const parsed = JSON.parse(localStorage.getItem(INVENTORY_OPTION_LIST_STORAGE_KEY) || '{}');
+        return {
+            subCategories: Array.isArray(parsed?.subCategories) ? parsed.subCategories : [],
+            brands: Array.isArray(parsed?.brands) ? parsed.brands : []
+        };
+    } catch {
+        return { subCategories: [], brands: [] };
+    }
+}
+
+function writeInventoryOptionListsToStorage(nextLists) {
+    try {
+        localStorage.setItem(INVENTORY_OPTION_LIST_STORAGE_KEY, JSON.stringify({
+            subCategories: Array.isArray(nextLists?.subCategories) ? nextLists.subCategories : [],
+            brands: Array.isArray(nextLists?.brands) ? nextLists.brands : []
+        }));
+    } catch (error) {
+        console.warn('Failed to persist inventory option lists:', error);
+    }
+}
+
+function hydrateInventoryOptionLists() {
+    const stored = readInventoryOptionListsFromStorage();
+    const derivedSubCategories = inventoryItems.map(item => getInventorySubCategory(item)).filter(Boolean);
+    const derivedBrands = inventoryItems.map(item => normalizeInventoryOptionValue(item?.brand, 'Unspecified')).filter(Boolean);
+
+    subCategories = uniqueInventoryOptionList([
+        ...stored.subCategories,
+        ...derivedSubCategories,
+        ...DEFAULT_INVENTORY_SUB_CATEGORIES
+    ], 'General');
+
+    brands = uniqueInventoryOptionList([
+        ...stored.brands,
+        ...derivedBrands,
+        ...DEFAULT_INVENTORY_BRANDS
+    ], 'Unspecified');
+
+    writeInventoryOptionListsToStorage({ subCategories, brands });
+}
+
+function getInventoryOptionList(kind) {
+    return kind === 'brands' ? brands : subCategories;
+}
+
+function setInventoryOptionList(kind, nextValues) {
+    if (kind === 'brands') {
+        brands = uniqueInventoryOptionList(nextValues, 'Unspecified');
+    } else {
+        subCategories = uniqueInventoryOptionList(nextValues, 'General');
+    }
+
+    writeInventoryOptionListsToStorage({ subCategories, brands });
+}
+
+async function syncInventoryOptionFieldValues(fieldName, fromValue, toValue) {
+    if (!fromValue || !toValue || fromValue === toValue) return true;
+
+    const { error } = await dbClient
+        .from('inventory_items')
+        .update({ [fieldName]: toValue })
+        .eq(fieldName, fromValue);
+
+    if (error) {
+        console.error(`Error updating inventory_items.${fieldName}:`, error);
+        return false;
+    }
+
+    return true;
+}
+
+async function addInventoryOptionValue(kind, value, fallbackValue) {
+    const normalized = normalizeInventoryOptionValue(value, fallbackValue);
+    if (!normalized) return null;
+
+    const current = getInventoryOptionList(kind);
+    if (current.some(option => option.toLowerCase() === normalized.toLowerCase())) {
+        return { name: normalized };
+    }
+
+    setInventoryOptionList(kind, [...current, normalized]);
+    return { name: normalized };
+}
+
+async function renameInventoryOptionValue(kind, oldValue, newValue, fieldName, fallbackValue) {
+    const currentOld = normalizeInventoryOptionValue(oldValue, fallbackValue);
+    const currentNew = normalizeInventoryOptionValue(newValue, fallbackValue);
+    if (!currentOld || !currentNew || currentOld === currentNew) return false;
+
+    const updated = await syncInventoryOptionFieldValues(fieldName, currentOld, currentNew);
+    if (!updated) return false;
+
+    const nextValues = getInventoryOptionList(kind)
+        .map(option => option.toLowerCase() === currentOld.toLowerCase() ? currentNew : option);
+    setInventoryOptionList(kind, nextValues);
+    return true;
+}
+
+async function deleteInventoryOptionValue(kind, value, fieldName, fallbackValue) {
+    const currentValue = normalizeInventoryOptionValue(value, fallbackValue);
+    const fallback = normalizeInventoryOptionValue(fallbackValue, fallbackValue);
+    if (!currentValue) return false;
+
+    const updated = await syncInventoryOptionFieldValues(fieldName, currentValue, fallback);
+    if (!updated) return false;
+
+    const nextValues = getInventoryOptionList(kind).filter(option => option.toLowerCase() !== currentValue.toLowerCase());
+    setInventoryOptionList(kind, nextValues);
+    return true;
+}
+
+async function loadSubCategories() {
+    hydrateInventoryOptionLists();
+    console.log(`Loaded ${subCategories.length} sub categories`);
+}
+
+async function loadBrands() {
+    hydrateInventoryOptionLists();
+    console.log(`Loaded ${brands.length} brands`);
+}
+
+async function addSubCategoryToSupabase(name) {
+    return addInventoryOptionValue('subCategories', name, 'General');
+}
+
+async function addBrandToSupabase(name) {
+    return addInventoryOptionValue('brands', name, 'Unspecified');
+}
+
+async function renameSubCategoryInSupabase(oldName, newName) {
+    return renameInventoryOptionValue('subCategories', oldName, newName, 'sub_category', 'General');
+}
+
+async function renameBrandInSupabase(oldName, newName) {
+    return renameInventoryOptionValue('brands', oldName, newName, 'brand', 'Unspecified');
+}
+
+async function deleteSubCategoryFromSupabase(name) {
+    return deleteInventoryOptionValue('subCategories', name, 'sub_category', 'General');
+}
+
+async function deleteBrandFromSupabase(name) {
+    return deleteInventoryOptionValue('brands', name, 'brand', 'Unspecified');
+}
+
+async function loadInventoryDropdownOptions() {
+    hydrateInventoryOptionLists();
+    console.log(`Loaded ${subCategories.length} sub categories and ${brands.length} brands`);
+}
 async function loginWithBarcode(barcode) {
     try {
         const rawBarcode = String(barcode || '').trim();
@@ -495,6 +680,8 @@ let mockUsers = [];
 let projects = [];
 let studentClasses = [];
 let categories = [];
+let subCategories = [];
+let brands = [];
 let visibilityTags = [];
 let activityLogs = [];
 let doorSensorEvents = [];
@@ -691,6 +878,7 @@ async function loadInventoryItems() {
     }));
 
     hydrateInventoryItemBundles();
+    hydrateInventoryOptionLists();
     console.log(`Loaded ${inventoryItems.length} inventory items`);
 }
 
@@ -2761,7 +2949,8 @@ async function moveProjectItemOutToProjectInSupabase({
     signoutDate,
     dueDate,
     assignedToUserId,
-    signedOutByUserId
+    signedOutByUserId,
+    transferredByUserId
 }) {
     if (!toProjectId) return null;
 
@@ -2794,7 +2983,8 @@ async function moveProjectItemOutToProjectInSupabase({
                     signoutDate,
                     dueDate,
                     assignedToUserId,
-                    signedOutByUserId
+                    signedOutByUserId,
+                    transferredByUserId
                 });
                 return data?.[0] || null;
             }
@@ -2820,7 +3010,8 @@ async function moveProjectItemOutToProjectInSupabase({
                 signoutDate,
                 dueDate,
                 assignedToUserId,
-                signedOutByUserId
+                signedOutByUserId,
+                transferredByUserId
             });
             return data?.[0] || null;
         }
@@ -2857,7 +3048,8 @@ async function moveProjectItemOutToProjectInSupabase({
             signoutDate,
             dueDate,
             assignedToUserId,
-            signedOutByUserId
+            signedOutByUserId,
+            transferredByUserId
         });
     }
 
