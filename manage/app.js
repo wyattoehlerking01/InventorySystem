@@ -5242,12 +5242,28 @@ function renderDashboard() {
     INVENTORY LOGIC
     ======================================= */
 function determineStatus(stock, threshold, itemType = 'item') {
-    // Consumables don't show stock status
-    if (itemType === 'consumable') return 'N/A';
+    if (isConsumableItemType(itemType)) return 'Available';
     // Items show out of stock or low stock
     if (stock <= 0) return 'Out of Stock';
     if (stock <= threshold) return 'Low Stock';
     return 'In Stock';
+}
+
+function isConsumableItemType(itemType = 'item') {
+    return String(itemType || '').trim().toLowerCase() === 'consumable';
+}
+
+function syncConsumableFieldState(itemType, groupId, inputIds) {
+    const shouldDisable = isConsumableItemType(itemType);
+    const group = document.getElementById(groupId);
+    if (group) group.classList.toggle('is-disabled', shouldDisable);
+
+    (inputIds || []).forEach(inputId => {
+        const input = document.getElementById(inputId);
+        if (!input) return;
+        input.disabled = shouldDisable;
+        input.setAttribute('aria-disabled', shouldDisable ? 'true' : 'false');
+    });
 }
 
 function getItemRecentUsers(item, limit = 5) {
@@ -5357,11 +5373,11 @@ function openItemPreviewModal(itemId) {
                     <div style="margin-top:0.2rem;">${escapeHtml(location)}</div>
                 </div>
                 <div class="glass-panel" style="padding:0.85rem;">
-                    <div class="text-sm text-muted">Supplier</div>
-                    <div style="margin-top:0.2rem;">${escapeHtml(item.supplier || 'Unspecified')}</div>
+                    <div class="text-sm text-muted">Brand</div>
+                    <div style="margin-top:0.2rem;">${escapeHtml(item.brand || item.supplier || 'Unspecified')}</div>
                 </div>
                 <div class="glass-panel" style="padding:0.85rem;">
-                    <div class="text-sm text-muted">Supplier Product Link</div>
+                    <div class="text-sm text-muted">Product Link</div>
                     <div style="margin-top:0.2rem;">${buildExternalItemLink(supplierLink, 'Open Listing')}</div>
                 </div>
                 <div class="glass-panel" style="padding:0.85rem;">
@@ -5379,11 +5395,19 @@ function openItemPreviewModal(itemId) {
             </div>
         </div>
         <div class="modal-footer">
+            ${currentUser?.role !== 'student' ? `<button class="btn btn-secondary" id="create-bundle-from-item-btn"><i class="ph ph-package"></i> Create Bundle</button>` : ''}
             <button class="btn btn-secondary" onclick="closeModal()">Close</button>
         </div>
     `;
 
     openModal(html);
+    document.getElementById('create-bundle-from-item-btn')?.addEventListener('click', () => {
+        closeModal();
+        openAddItemModal({
+            initialItemType: 'bundle',
+            initialBundleComponents: [{ componentItemId: item.id, componentQuantity: 1 }]
+        });
+    });
 }
 
 function renderInventory() {
@@ -5407,13 +5431,11 @@ function renderInventory() {
             const sku = String(i.sku || '').toLowerCase();
             const category = String(getInventoryMainCategory(i) || 'Uncategorized').toLowerCase();
             const subCategory = String(getInventorySubCategory(i) || 'General').toLowerCase();
-            const supplier = String(i.supplier || 'Unspecified').toLowerCase();
             const brand = String(i.brand || 'Unspecified').toLowerCase();
             return name.includes(inventorySmartSearchTerm)
                 || sku.includes(inventorySmartSearchTerm)
                 || category.includes(inventorySmartSearchTerm)
                 || subCategory.includes(inventorySmartSearchTerm)
-                || supplier.includes(inventorySmartSearchTerm)
                 || brand.includes(inventorySmartSearchTerm);
         });
     }
@@ -5432,7 +5454,8 @@ function renderInventory() {
 
     const renderInventoryRowHtml = item => {
         const currentStatus = determineStatus(item.stock, item.threshold, item.item_type);
-        const statusClass = currentStatus === 'In Stock' ? 'status-instock' : (currentStatus === 'Low Stock' || currentStatus === 'Out of Stock') ? 'status-lowstock' : 'status-na';
+        const isConsumable = isConsumableItemType(item.item_type);
+        const statusClass = currentStatus === 'In Stock' ? 'status-instock' : (currentStatus === 'Low Stock' || currentStatus === 'Out of Stock') ? 'status-lowstock' : isConsumable ? 'status-available' : 'status-na';
         const categoryLabel = escapeHtml(`${getInventoryMainCategory(item)} / ${getInventorySubCategory(item)}`);
         const brandLabel = escapeHtml(String(item.brand || 'Unspecified'));
         const safeItemId = escapeHtml(String(item.id || ''));
@@ -5440,10 +5463,6 @@ function renderInventory() {
         const safeItemSku = escapeHtml(getInventoryItemBarcode(item) || String(item.sku || ''));
         const imageLink = String(item.image_link || item.imageLink || '').trim();
         const supplierLink = String(item.supplier_listing_link || item.supplierListingLink || '').trim();
-        const itemListingLink = imageLink || supplierLink;
-        const itemListingLinkHtml = inventoryViewMode === 'row' && itemListingLink
-            ? `<span class="inventory-item-listing-link">${buildExternalItemLink(itemListingLink, 'Item Listing Image Link')}</span>`
-            : '';
         const thumbnailHtml = imageLink
             ? `
                 <div class="inventory-item-thumb">
@@ -5472,7 +5491,6 @@ function renderInventory() {
                                     ? `<button class="item-preview-btn" data-id="${safeItemId}" title="View Item Preview" style="background:none;border:none;color:inherit;padding:0;text-align:left;font:inherit;cursor:pointer;">${safeItemName}</button>`
                                     : safeItemName}
                                 ${renderMissingMetadataIcon(item)}
-                                ${itemListingLinkHtml}
                             </div>
                             ${safeItemSku ? `<small class="text-xs text-muted">Barcode: ${safeItemSku}</small>` : ''}
                             ${currentUser.role === 'student' && tagsHtml ? `<div class="visibility-tags-row">${tagsHtml}</div>` : ''}
@@ -5483,7 +5501,7 @@ function renderInventory() {
                 <td class="text-muted font-mono" style="font-size:0.8rem">${safeItemSku}</td>
                 <td class="inventory-stock-status-cell">
                     <div class="inventory-stock-status-content">
-                        <span class="inventory-stock-value">${Math.max(0, parseInt(item?.stock, 10) || 0)} of ${getItemTotalQuantity(item)}</span>
+                        <span class="inventory-stock-value">${isConsumable ? 'Not tracked' : `${Math.max(0, parseInt(item?.stock, 10) || 0)} of ${getItemTotalQuantity(item)}`}</span>
                         <span class="status-badge ${statusClass}">${currentStatus}</span>
                     </div>
                 </td>
@@ -5512,6 +5530,7 @@ function renderInventory() {
         const safeItemSku = escapeHtml(String(item.sku || ''));
         const imageUrl = getInventoryItemImageUrl(item);
         const stockValue = Math.max(0, parseInt(item?.stock, 10) || 0);
+        const isConsumable = isConsumableItemType(item?.item_type);
         const totalQuantity = getItemTotalQuantity(item);
         const tagsHtml = (item.visibilityTags || []).map(tag =>
             `<span class="visibility-tag">${escapeHtml(String(tag || ''))}</span>`
@@ -5539,7 +5558,7 @@ function renderInventory() {
                             </div>
                             <div class="inventory-grid-card-meta-row">
                                 <span class="inventory-grid-card-meta-label">Stock</span>
-                                <span class="inventory-grid-card-meta-value">${stockValue} of ${totalQuantity}</span>
+                                <span class="inventory-grid-card-meta-value">${isConsumable ? 'Not tracked' : `${stockValue} of ${totalQuantity}`}</span>
                             </div>
                             <div class="inventory-grid-card-meta-row">
                                 <span class="inventory-grid-card-meta-label">SKU</span>
@@ -6207,7 +6226,7 @@ function openTransferMemberScanModal(selectedProject) {
                     <div class="scanner-anim"></div>
                     <i class="ph ph-barcode"></i>
                     <p>Waiting for barcode scan...</p>
-                    <input type="password" id="transfer-scan-input" class="hidden-input" autocomplete="off" autofocus placeholder="Scan barcode or enter user ID">
+                    <input type="text" id="transfer-scan-input" class="hidden-input" autocomplete="off" autocapitalize="off" spellcheck="false" inputmode="none" autofocus aria-hidden="true">
                 </div>
                 <small class="text-muted transfer-scan-hint">Team members: ${escapeHtml(memberHint)}</small>
                 <small id="transfer-scan-error" class="text-danger transfer-scan-error" style="display:none;"></small>
@@ -10880,9 +10899,9 @@ function buildInventoryOptionSelectHtml(options, selectedValue, fallbackValue) {
     }).join('');
 }
 
-document.getElementById('add-item-btn')?.addEventListener('click', openAddItemModal);
+document.getElementById('add-item-btn')?.addEventListener('click', () => openAddItemModal());
 
-async function openAddItemModal() {
+async function openAddItemModal({ initialItemType = 'item', initialBundleComponents = [] } = {}) {
     if (currentUser?.role === 'student') {
         showToast('You do not have permission to add inventory items.', 'error');
         return;
@@ -10898,6 +10917,8 @@ async function openAddItemModal() {
         </label>`
     ).join('');
 
+    const initialType = isBundleItemType(initialItemType) ? 'bundle' : (String(initialItemType || 'item').trim().toLowerCase() === 'consumable' ? 'consumable' : 'item');
+
     const html = `
         <div class="modal-header">
             <h3>Add New Item</h3>
@@ -10906,13 +10927,14 @@ async function openAddItemModal() {
         <div class="modal-body">
             <div class="form-group">
                 <label>Item Name</label>
-                <input type="text" id="add-name" class="form-control" placeholder="e.g. Servo Motor">
-            </div>
-            <div class="form-group">
+                <select id="add-item-type" class="form-control">
+                    <option value="item" ${initialType === 'item' ? 'selected' : ''}>Item (Tracked, Sign In/Out)</option>
+                    <option value="consumable" ${initialType === 'consumable' ? 'selected' : ''}>Consumable (No Stock Tracking)</option>
+                    <option value="bundle" ${initialType === 'bundle' ? 'selected' : ''}>Bundle (Grouped Items)</option>
                 <label>Main Category</label>
                 <select id="add-category" class="form-control">
                     ${categoryOptions}
-                </select>
+            ${buildBundleComponentEditorHtml({ components: initialBundleComponents.length > 0 ? initialBundleComponents : [] })}
                 ${categories.length === 0 ? '<small class="text-muted">No categories found yet. This item will be saved as Uncategorized.</small>' : ''}
             </div>
             <div class="form-group">
@@ -10942,19 +10964,13 @@ async function openAddItemModal() {
                     </select>
                 </div>
             </div>
-            <div class="grid-2-col" style="gap:1rem">
-                <div class="form-group">
-                    <label>Supplier</label>
-                    <input type="text" id="add-supplier" class="form-control" placeholder="e.g. DigiKey">
-                </div>
-                <div class="form-group">
-                    <label>Item Listing Image Link</label>
-                    <input type="url" id="add-image-link" class="form-control" placeholder="https://...">
-                </div>
+            <div class="form-group">
+                <label>Product Link</label>
+                <input type="url" id="add-supplier-link" class="form-control" placeholder="https://...">
             </div>
             <div class="form-group">
-                <label>Item Image</label>
-                <input type="url" id="add-supplier-link" class="form-control" placeholder="https://...">
+                <label>Item Listing Image Link</label>
+                <input type="url" id="add-image-link" class="form-control" placeholder="https://...">
             </div>
             <div class="form-group">
                 <label>Item Type</label>
@@ -10966,7 +10982,7 @@ async function openAddItemModal() {
                 <small class="text-muted">Items are tracked with sign-in/out. Consumables don't show stock levels.</small>
             </div>
             ${buildBundleComponentEditorHtml()}
-            <div class="grid-2-col" style="gap:1rem">
+            <div id="add-stock-threshold-group" class="grid-2-col inventory-stock-control-group" style="gap:1rem">
                 <div class="form-group">
                     <label>Initial Stock</label>
                     <input type="number" id="add-stock" class="form-control" value="0">
@@ -11009,10 +11025,12 @@ async function openAddItemModal() {
     openModal(html);
 
     const addItemTypeSelect = document.getElementById('add-item-type');
-    setBundleComponentsSectionVisibility(addItemTypeSelect?.value || 'item');
+    setBundleComponentsSectionVisibility(addItemTypeSelect?.value || initialType || 'item');
     wireBundleComponentsEditor();
+    syncConsumableFieldState(addItemTypeSelect?.value || initialType || 'item', 'add-stock-threshold-group', ['add-stock', 'add-threshold']);
     addItemTypeSelect?.addEventListener('change', () => {
         setBundleComponentsSectionVisibility(addItemTypeSelect.value);
+        syncConsumableFieldState(addItemTypeSelect.value, 'add-stock-threshold-group', ['add-stock', 'add-threshold']);
     });
 
     const updateBarcodePreview = () => {
@@ -11042,9 +11060,8 @@ async function openAddItemModal() {
         const partNumber = document.getElementById('add-part-number')?.value.trim() || '';
         const storageLocation = document.getElementById('add-storage-location')?.value.trim() || '';
         const brand = document.getElementById('add-brand')?.value.trim() || '';
-        const supplier = document.getElementById('add-supplier')?.value.trim() || '';
-        const imageLink = document.getElementById('add-image-link')?.value.trim() || '';
         const supplierLink = document.getElementById('add-supplier-link')?.value.trim() || '';
+        const imageLink = document.getElementById('add-image-link')?.value.trim() || '';
         const itemType = document.getElementById('add-item-type')?.value || 'item';
         const bundleComponents = isBundleItemType(itemType) ? collectBundleComponentRows() : [];
         const visibilityLevel = document.getElementById('add-visibility-level')?.value || 'standard';
@@ -11086,7 +11103,6 @@ async function openAddItemModal() {
             location: storageLocation || null,
             storageLocation: storageLocation || null,
             brand: brand || null,
-            supplier: supplier || null,
             image_link: imageLink || null,
             supplier_listing_link: supplierLink || null,
             item_type: itemType,
@@ -11137,14 +11153,7 @@ function openEditProjectModal(projectId) {
         return;
     }
 
-    const canAssignOwner = currentUser.role !== 'student';
-    const ownerCandidates = getProjectOwnerCandidates();
-    const ownerOptions = ownerCandidates.map(student =>
-        `<option value="${escapeHtml(student.id)}" ${student.id === project.ownerId ? 'selected' : ''}>${escapeHtml(student.name)} (${escapeHtml(student.id)})</option>`
-    ).join('');
-
     const collaboratorOptions = buildProjectCollaboratorOptions({
-        selectedOwnerId: project.ownerId,
         selectedCollaborators: project.collaborators || [],
         collaboratorRoles: project.collaboratorRoles || {}
     });
@@ -11171,14 +11180,6 @@ function openEditProjectModal(projectId) {
                     <option value="Archived" ${project.status === 'Archived' ? 'selected' : ''}>Archived</option>
                 </select>
             </div>
-            ${canAssignOwner ? `
-            <div class="form-group">
-                <label>Project/Team Managers</label>
-                <select id="edit-proj-owner" class="form-control">
-                    ${ownerOptions || '<option value="">No eligible users found</option>'}
-                </select>
-                <small class="text-muted">Teachers and developers can assign the lead manager, then add Captain and Mentor team roles below.</small>
-            </div>` : ''}
             <div class="form-group">
                 <label>Project Team Members</label>
                 <div id="edit-proj-collaborators-wrap" class="glass-panel" style="padding:1rem; max-height:180px; overflow-y:auto">
@@ -11197,19 +11198,6 @@ function openEditProjectModal(projectId) {
     `;
 
     openModal(html);
-    document.getElementById('edit-proj-owner')?.closest('.form-group')?.remove();
-
-    const ownerSelect = document.getElementById('edit-proj-owner');
-    ownerSelect?.addEventListener('change', () => {
-        const wrapper = document.getElementById('edit-proj-collaborators-wrap');
-        if (!wrapper) return;
-        wrapper.innerHTML = buildSearchableProjectCollaborators({
-            selectedOwnerId: ownerSelect.value,
-            selectedCollaborators: project.collaborators || [],
-            collaboratorRoles: project.collaboratorRoles || {}
-        }) || '<p class="text-sm text-muted">No eligible student collaborators.</p>';
-        setupProjectCollaboratorSearch();
-    });
 
     setTimeout(() => {
         setupProjectCollaboratorSearch();
@@ -11223,20 +11211,12 @@ function openEditProjectModal(projectId) {
         const name = document.getElementById('edit-proj-name').value.trim();
         const desc = document.getElementById('edit-proj-desc').value.trim();
         const status = document.getElementById('edit-proj-status').value;
-        const selectedOwnerId = canAssignOwner
-            ? (document.getElementById('edit-proj-owner')?.value || project.ownerId)
-            : project.ownerId;
         const collaborators = Array.from(document.querySelectorAll('#edit-proj-collaborators-wrap .proj-student-checkbox:checked')).map(cb => cb.value);
         const collaboratorRoles = Array.from(document.querySelectorAll('#edit-proj-collaborators-wrap .proj-collab-role')).reduce((roles, select) => {
             const userId = select.getAttribute('data-user-id');
             if (userId) roles[userId] = select.value;
             return roles;
         }, {});
-
-        if (!selectedOwnerId) {
-            showToast('Please select a Project/Team Manager.', 'error');
-            return;
-        }
 
         if (!name) {
             showToast('Project name is required.', 'error');
@@ -11245,7 +11225,6 @@ function openEditProjectModal(projectId) {
 
         const updated = await updateProjectInSupabase(project.id, {
             name,
-            owner_id: selectedOwnerId,
             description: desc,
             status
         });
@@ -11267,7 +11246,7 @@ function openEditProjectModal(projectId) {
 
         await refreshProjectsFromSupabase();
 
-        addLog(currentUser.id, 'Edit Project', `Updated project: ${name} (owner ${selectedOwnerId}, ${collaborators.length} collaborators)`);
+        addLog(currentUser.id, 'Edit Project', `Updated project: ${name} (${collaborators.length} collaborators)`);
         showToast('Project updated.', 'success');
         closeModal();
         if (document.getElementById('page-projects').classList.contains('active')) {
@@ -11278,17 +11257,7 @@ function openEditProjectModal(projectId) {
 
 // Create Project Flow
 document.getElementById('create-project-btn')?.addEventListener('click', () => {
-    const canAssignOwner = currentUser.role !== 'student';
-    const ownerCandidates = getProjectOwnerCandidates();
-    const defaultOwnerId = canAssignOwner
-        ? (ownerCandidates[0]?.id || '')
-        : currentUser.id;
-
-    const ownerOptions = ownerCandidates.map(student =>
-        `<option value="${escapeHtml(student.id)}" ${student.id === defaultOwnerId ? 'selected' : ''}>${escapeHtml(student.name)} (${escapeHtml(student.id)})</option>`
-    ).join('');
-
-    const collaboratorOptions = buildSearchableProjectCollaborators({ selectedOwnerId: defaultOwnerId });
+    const collaboratorOptions = buildSearchableProjectCollaborators();
 
     const html = `
         <div class="modal-header">
@@ -11304,14 +11273,6 @@ document.getElementById('create-project-btn')?.addEventListener('click', () => {
                 <label>Description</label>
                 <textarea id="add-proj-desc" class="form-control" rows="3" placeholder="Brief details about the project..."></textarea>
             </div>
-            ${canAssignOwner ? `
-            <div class="form-group">
-                <label>Project/Team Managers</label>
-                <select id="add-proj-owner" class="form-control">
-                    ${ownerOptions || '<option value="">No eligible users found</option>'}
-                </select>
-                <small class="text-muted">Teachers and developers can assign the lead manager, then add Captain and Mentor team roles below.</small>
-            </div>` : ''}
             <div class="form-group">
                 <label>Add Project Team Members (Optional)</label>
                 <div id="add-proj-collaborators-wrap" class="glass-panel" style="padding:1rem; max-height:150px; overflow-y:auto">
@@ -11325,16 +11286,6 @@ document.getElementById('create-project-btn')?.addEventListener('click', () => {
         </div>
     `;
     openModal(html);
-    document.getElementById('add-proj-owner')?.closest('.form-group')?.remove();
-
-    const ownerSelect = document.getElementById('add-proj-owner');
-    ownerSelect?.addEventListener('change', () => {
-        const wrap = document.getElementById('add-proj-collaborators-wrap');
-        if (!wrap) return;
-        wrap.innerHTML = buildSearchableProjectCollaborators({ selectedOwnerId: ownerSelect.value })
-            || '<p class="text-sm text-muted">No available student collaborators.</p>';
-        setupProjectCollaboratorSearch();
-    });
 
     setTimeout(() => {
         setupProjectCollaboratorSearch();
@@ -11345,13 +11296,7 @@ document.getElementById('create-project-btn')?.addEventListener('click', () => {
         withButtonPending(submitBtn, 'Creating...', async () => {
             const name = document.getElementById('add-proj-name').value.trim();
             const desc = document.getElementById('add-proj-desc').value.trim();
-            const ownerId = document.getElementById('add-proj-owner')?.value || currentUser.id;
             const collaborators = Array.from(document.querySelectorAll('#add-proj-collaborators-wrap .proj-student-checkbox:checked')).map(cb => cb.value);
-
-            if (!ownerId) {
-                showToast('Please select a Project/Team Manager.', 'error');
-                return;
-            }
 
             if (!name) {
                 showToast('Project name is required.', 'error');
@@ -11361,7 +11306,7 @@ document.getElementById('create-project-btn')?.addEventListener('click', () => {
             const newProject = {
                 id: generateId('PRJ'),
                 name,
-                ownerId,
+                ownerId: currentUser.id,
                 description: desc,
                 collaborators,
                 status: 'Active',
@@ -11380,7 +11325,7 @@ document.getElementById('create-project-btn')?.addEventListener('click', () => {
 
             await refreshProjectsFromSupabase();
 
-            addLog(currentUser.id, 'Create Project', `Created new project: ${name} for ${ownerId} with ${collaborators.length} collaborators.`);
+            addLog(currentUser.id, 'Create Project', `Created new project: ${name} with ${collaborators.length} collaborators.`);
             showToast(`Project ${name} created.`, 'success');
             closeModal();
             if (document.getElementById('page-projects').classList.contains('active')) {
@@ -12841,23 +12786,17 @@ async function openEditItemModal(itemId) {
                 <div class="form-group">
                     <label>Brand</label>
                     <select id="edit-item-brand" class="form-control">
-                        ${buildInventoryOptionSelectHtml(brands, item.brand || 'Unspecified', 'Unspecified')}
+                        ${buildInventoryOptionSelectHtml(brands, item.brand || item.supplier || 'Unspecified', 'Unspecified')}
                     </select>
                 </div>
             </div>
-            <div class="grid-2-col" style="gap:1rem">
-                <div class="form-group">
-                    <label>Supplier</label>
-                    <input type="text" id="edit-item-supplier" class="form-control" value="${item.supplier || ''}">
-                </div>
-                <div class="form-group">
-                    <label>Item Listing Image Link</label>
-                    <input type="url" id="edit-item-image-link" class="form-control" value="${item.image_link || item.imageLink || ''}">
-                </div>
+            <div class="form-group">
+                <label>Product Link</label>
+                <input type="url" id="edit-item-supplier-link" class="form-control" value="${item.supplier_listing_link || item.supplierListingLink || ''}">
             </div>
             <div class="form-group">
-                <label>Item Image</label>
-                <input type="url" id="edit-item-supplier-link" class="form-control" value="${item.supplier_listing_link || item.supplierListingLink || ''}">
+                <label>Item Listing Image Link</label>
+                <input type="url" id="edit-item-image-link" class="form-control" value="${item.image_link || item.imageLink || ''}">
             </div>
             <div class="form-group">
                 <label>Item Type</label>
@@ -12869,7 +12808,7 @@ async function openEditItemModal(itemId) {
                 <small class="text-muted">Items are tracked with sign-in/out. Consumables don't show stock levels.</small>
             </div>
             ${buildBundleComponentEditorHtml({ bundleItemId: item.id, components: item.bundleComponents || [] })}
-            <div class="grid-2-col" style="gap:1rem">
+            <div id="edit-stock-threshold-group" class="grid-2-col inventory-stock-control-group" style="gap:1rem">
                 <div class="form-group">
                     <label>Stock</label>
                     <input type="number" id="edit-item-stock" class="form-control" value="${item.stock}">
@@ -12922,8 +12861,10 @@ async function openEditItemModal(itemId) {
     const editItemTypeSelect = document.getElementById('edit-item-type');
     setBundleComponentsSectionVisibility(editItemTypeSelect?.value || item.item_type || 'item');
     wireBundleComponentsEditor(item.id);
+    syncConsumableFieldState(editItemTypeSelect?.value || item.item_type || 'item', 'edit-stock-threshold-group', ['edit-item-stock', 'edit-item-threshold']);
     editItemTypeSelect?.addEventListener('change', () => {
         setBundleComponentsSectionVisibility(editItemTypeSelect.value);
+        syncConsumableFieldState(editItemTypeSelect.value, 'edit-stock-threshold-group', ['edit-item-stock', 'edit-item-threshold']);
     });
 
     document.getElementById('confirm-edit-item').addEventListener('click', async () => {
@@ -12933,9 +12874,8 @@ async function openEditItemModal(itemId) {
         const sku = String(document.getElementById('edit-item-sku').value || '').trim().toUpperCase();
         const location = document.getElementById('edit-item-location').value.trim();
         const brand = document.getElementById('edit-item-brand').value.trim();
-        const supplier = document.getElementById('edit-item-supplier').value.trim();
-        const imageLink = document.getElementById('edit-item-image-link').value.trim();
         const supplierListingLink = document.getElementById('edit-item-supplier-link').value.trim();
+        const imageLink = document.getElementById('edit-item-image-link').value.trim();
         const itemType = document.getElementById('edit-item-type')?.value || item.item_type || 'item';
         const bundleComponents = isBundleItemType(itemType) ? collectBundleComponentRows() : [];
         const stock = parseInt(document.getElementById('edit-item-stock').value) || 0;
@@ -12968,7 +12908,6 @@ async function openEditItemModal(itemId) {
                 location,
                 storageLocation: location,
                 brand,
-                supplier,
                 image_link: imageLink || null,
                 supplier_listing_link: supplierListingLink || null,
                 item_type: itemType,
@@ -14844,18 +14783,20 @@ function buildSearchableProjectCollaborators({ selectedOwnerId = '', selectedCol
                     <input type="checkbox" value="${user.id}" class="proj-student-checkbox" ${selectedSet.has(user.id) ? 'checked' : ''}>
                     ${user.name} (${user.id})
                 </label>
-                <select class="form-control proj-collab-role" data-user-id="${user.id}" style="max-width:180px;">
-                    <option value="collaborator" ${normalizeProjectCollaboratorRole(collaboratorRoles[user.id]) === 'collaborator' ? 'selected' : ''}>Collaborator</option>
-                    <option value="mentor" ${normalizeProjectCollaboratorRole(collaboratorRoles[user.id]) === 'mentor' ? 'selected' : ''}>Mentor</option>
-                    <option value="captain" ${normalizeProjectCollaboratorRole(collaboratorRoles[user.id]) === 'captain' ? 'selected' : ''}>Captain</option>
-                </select>
+                <div class="proj-collab-role-wrap${selectedSet.has(user.id) ? '' : ' hidden'}" data-user-id="${user.id}" style="max-width:180px;width:180px;">
+                    <select class="form-control proj-collab-role" data-user-id="${user.id}" style="max-width:180px;">
+                        <option value="collaborator" ${normalizeProjectCollaboratorRole(collaboratorRoles[user.id]) === 'collaborator' ? 'selected' : ''}>Collaborator</option>
+                        <option value="mentor" ${normalizeProjectCollaboratorRole(collaboratorRoles[user.id]) === 'mentor' ? 'selected' : ''}>Mentor</option>
+                        <option value="captain" ${normalizeProjectCollaboratorRole(collaboratorRoles[user.id]) === 'captain' ? 'selected' : ''}>Captain</option>
+                    </select>
+                </div>
             </div>
         </div>
     `).join('');
     
     return `
         <input type="text" class="proj-collab-search" placeholder="Search collaborators..." style="width:100%;margin-bottom:0.75rem;padding:0.5rem;border:1px solid var(--glass-border);border-radius:4px;background:rgba(255,255,255,0.05);color:inherit;">
-        <div class="text-muted text-sm" style="margin-bottom:0.75rem;">Use the role dropdown to choose Collaborator, Mentor, or Captain for each project team member.</div>
+        <div class="text-muted text-sm" style="margin-bottom:0.75rem;">Select a team member first, then choose Collaborator, Mentor, or Captain.</div>
         <div class="proj-collab-list" style="max-height:150px;overflow-y:auto;">
             ${listHtml || '<p class="text-sm text-muted">No available collaborators.</p>'}
         </div>
@@ -14865,6 +14806,15 @@ function buildSearchableProjectCollaborators({ selectedOwnerId = '', selectedCol
 function setupProjectCollaboratorSearch() {
     const searchInput = document.querySelector('.proj-collab-search');
     if (!searchInput) return;
+
+    const syncRoleVisibility = () => {
+        document.querySelectorAll('.proj-collab-item').forEach(item => {
+            const checkbox = item.querySelector('.proj-student-checkbox');
+            const roleWrap = item.querySelector('.proj-collab-role-wrap');
+            if (!checkbox || !roleWrap) return;
+            roleWrap.classList.toggle('hidden', !checkbox.checked);
+        });
+    };
     
     searchInput.addEventListener('input', (e) => {
         const term = e.target.value.toLowerCase();
@@ -14873,57 +14823,10 @@ function setupProjectCollaboratorSearch() {
             item.style.display = searchText.includes(term) ? '' : 'none';
         });
     });
-}
 
-function buildSearchableProjectOwners({ selectedOwnerId = '', showSearch = true } = {}) {
-    const candidates = getProjectOwnerCandidates();
-    
-    const listHtml = candidates.map(user => `
-        <div style="padding:0.5rem;cursor:pointer;border-radius:4px;transition:background 0.2s;" 
-             class="proj-owner-item" data-id="${user.id}" data-search="${`${user.name} ${user.id}`.toLowerCase()}"
-             onmouseover="this.style.background='rgba(255,255,255,0.08)'" 
-             onmouseout="this.style.background=''">
-            ${user.name} (${user.id})
-        </div>
-    `).join('');
-    
-    const searchHtml = showSearch ? `<input type="text" class="proj-owner-search" placeholder="Search owners..." style="width:100%;margin-bottom:0.5rem;padding:0.5rem;border:1px solid var(--glass-border);border-radius:4px;background:rgba(255,255,255,0.05);color:inherit;">` : '';
-    
-    return `
-        ${searchHtml}
-        <div class="proj-owner-list" style="max-height:180px;overflow-y:auto;border:1px solid var(--glass-border);border-radius:4px;background:rgba(0,0,0,0.2);">
-            ${listHtml || '<p class="text-sm text-muted" style="padding:0.5rem;">No available owners.</p>'}
-        </div>
-    `;
-}
-
-function setupProjectOwnerSearch(selectElementId) {
-    const searchInput = document.querySelector('.proj-owner-search');
-    if (!searchInput) return;
-    
-    const hiddenSelect = document.getElementById(selectElementId);
-    
-    searchInput.addEventListener('input', (e) => {
-        const term = e.target.value.toLowerCase();
-        document.querySelectorAll('.proj-owner-item').forEach(item => {
-            const searchText = item.getAttribute('data-search');
-            item.style.display = searchText.includes(term) ? '' : 'none';
-        });
+    document.querySelectorAll('.proj-student-checkbox').forEach(checkbox => {
+        checkbox.addEventListener('change', syncRoleVisibility);
     });
-    
-    document.querySelectorAll('.proj-owner-item').forEach(item => {
-        item.addEventListener('click', () => {
-            const userId = item.getAttribute('data-id');
-            if (hiddenSelect) {
-                hiddenSelect.value = userId;
-                hiddenSelect.dispatchEvent(new Event('change'));
-            }
-            // Update visual selection
-            document.querySelectorAll('.proj-owner-item').forEach(i => {
-                i.style.borderLeft = i === item ? '3px solid var(--text-secondary)' : 'none';
-                i.style.paddingLeft = i === item ? 'calc(0.5rem - 3px)' : '0.5rem';
-            });
-        });
-    });
+    syncRoleVisibility();
 }
 

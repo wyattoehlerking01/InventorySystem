@@ -839,11 +839,13 @@ h6 {
 #page-inventory.active.inventory-grid-view .table-container .data-table,
 #page-inventory.active .table-container.grid-view-active .data-table {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    grid-template-columns: repeat(auto-fill, 240px);
     gap: 1rem;
     background: transparent;
     padding: 0;
-    align-items: stretch;
+    align-items: start;
+    justify-content: start;
+    grid-auto-flow: row;
 }
 
 #page-inventory.active.inventory-grid-view .table-container .data-table thead,
@@ -1009,7 +1011,7 @@ h6 {
 
     #page-inventory.active.inventory-grid-view .table-container .data-table,
     #page-inventory.active .table-container.grid-view-active .data-table {
-        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        grid-template-columns: repeat(auto-fill, 200px);
     }
 }
 
@@ -1701,6 +1703,11 @@ h6 {
 .status-lowstock {
     background: rgba(245, 158, 11, 0.15);
     color: var(--warning);
+}
+
+.status-available {
+    background: rgba(16, 185, 129, 0.18);
+    color: var(--success);
 }
 
 .status-critical {

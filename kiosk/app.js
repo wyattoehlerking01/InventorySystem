@@ -4876,12 +4876,44 @@ function renderDashboard() {
     INVENTORY LOGIC
     ======================================= */
 function determineStatus(stock, threshold, itemType = 'item') {
-    // Consumables don't show stock status
-    if (itemType === 'consumable') return 'N/A';
+    if (isConsumableItemType(itemType)) return 'Available';
     // Items show out of stock or low stock
     if (stock <= 0) return 'Out of Stock';
     if (stock <= threshold) return 'Low Stock';
     return 'In Stock';
+}
+
+function isConsumableItemType(itemType = 'item') {
+    return String(itemType || '').trim().toLowerCase() === 'consumable';
+}
+
+function normalizeInventoryOptionValue(value, fallbackValue = '') {
+    const normalized = String(value ?? '').trim();
+    return normalized || String(fallbackValue || '').trim();
+}
+
+function uniqueInventoryOptionList(values, fallbackValue = '') {
+    const orderedOptions = [];
+    const optionSet = new Set();
+
+    (Array.isArray(values) ? values : []).forEach(value => {
+        const normalized = normalizeInventoryOptionValue(value, fallbackValue);
+        if (!normalized) return;
+        const key = normalized.toLowerCase();
+        if (optionSet.has(key)) return;
+        optionSet.add(key);
+        orderedOptions.push(normalized);
+    });
+
+    return orderedOptions;
+}
+
+function buildInventoryOptionSelectHtml(options, selectedValue, fallbackValue) {
+    const normalizedSelected = normalizeInventoryOptionValue(selectedValue, fallbackValue);
+    return uniqueInventoryOptionList(options, fallbackValue).map(option => {
+        const isSelected = option === normalizedSelected;
+        return `<option value="${escapeHtml(option)}" ${isSelected ? 'selected' : ''}>${escapeHtml(option)}</option>`;
+    }).join('');
 }
 
 function getItemRecentUsers(item, limit = 5) {
@@ -4991,11 +5023,11 @@ function openItemPreviewModal(itemId) {
                     <div style="margin-top:0.2rem;">${escapeHtml(location)}</div>
                 </div>
                 <div class="glass-panel" style="padding:0.85rem;">
-                    <div class="text-sm text-muted">Supplier</div>
-                    <div style="margin-top:0.2rem;">${escapeHtml(item.supplier || 'Unspecified')}</div>
+                    <div class="text-sm text-muted">Brand</div>
+                    <div style="margin-top:0.2rem;">${escapeHtml(item.brand || item.supplier || 'Unspecified')}</div>
                 </div>
                 <div class="glass-panel" style="padding:0.85rem;">
-                    <div class="text-sm text-muted">Supplier Product Link</div>
+                    <div class="text-sm text-muted">Product Link</div>
                     <div style="margin-top:0.2rem;">${buildExternalItemLink(supplierLink, 'Open Listing')}</div>
                 </div>
                 <div class="glass-panel" style="padding:0.85rem;">
@@ -5041,13 +5073,11 @@ function renderInventory() {
             const sku = String(i.sku || '').toLowerCase();
             const category = String(getInventoryMainCategory(i) || 'Uncategorized').toLowerCase();
             const subCategory = String(getInventorySubCategory(i) || 'General').toLowerCase();
-            const supplier = String(i.supplier || 'Unspecified').toLowerCase();
             const brand = String(i.brand || 'Unspecified').toLowerCase();
             return name.includes(inventorySmartSearchTerm)
                 || sku.includes(inventorySmartSearchTerm)
                 || category.includes(inventorySmartSearchTerm)
                 || subCategory.includes(inventorySmartSearchTerm)
-                || supplier.includes(inventorySmartSearchTerm)
                 || brand.includes(inventorySmartSearchTerm);
         });
     }
@@ -5066,7 +5096,8 @@ function renderInventory() {
 
     const renderInventoryRowHtml = item => {
         const currentStatus = determineStatus(item.stock, item.threshold, item.item_type);
-        const statusClass = currentStatus === 'In Stock' ? 'status-instock' : (currentStatus === 'Low Stock' || currentStatus === 'Out of Stock') ? 'status-lowstock' : 'status-na';
+        const isConsumable = isConsumableItemType(item.item_type);
+        const statusClass = currentStatus === 'In Stock' ? 'status-instock' : (currentStatus === 'Low Stock' || currentStatus === 'Out of Stock') ? 'status-lowstock' : isConsumable ? 'status-available' : 'status-na';
         const categoryLabel = escapeHtml(`${getInventoryMainCategory(item)} / ${getInventorySubCategory(item)}`);
         const brandLabel = escapeHtml(String(item.brand || 'Unspecified'));
         const safeItemId = escapeHtml(String(item.id || ''));
@@ -5117,7 +5148,7 @@ function renderInventory() {
                 <td class="text-muted font-mono" style="font-size:0.8rem">${safeItemSku}</td>
                 <td class="inventory-stock-status-cell">
                     <div class="inventory-stock-status-content">
-                        <span class="inventory-stock-value">${Math.max(0, parseInt(item?.stock, 10) || 0)} of ${getItemTotalQuantity(item)}</span>
+                        <span class="inventory-stock-value">${isConsumable ? 'Not tracked' : `${Math.max(0, parseInt(item?.stock, 10) || 0)} of ${getItemTotalQuantity(item)}`}</span>
                         <span class="status-badge ${statusClass}">${currentStatus}</span>
                     </div>
                 </td>
@@ -5150,6 +5181,7 @@ function renderInventory() {
         const safeItemSku = escapeHtml(String(item.sku || ''));
         const imageUrl = getInventoryItemImageUrl(item);
         const stockValue = Math.max(0, parseInt(item?.stock, 10) || 0);
+        const isConsumable = isConsumableItemType(item?.item_type);
         const totalQuantity = getItemTotalQuantity(item);
         const tagsHtml = (item.visibilityTags || []).map(tag =>
             `<span class="visibility-tag">${escapeHtml(String(tag || ''))}</span>`
@@ -5177,7 +5209,7 @@ function renderInventory() {
                             </div>
                             <div class="inventory-grid-card-meta-row">
                                 <span class="inventory-grid-card-meta-label">Stock</span>
-                                <span class="inventory-grid-card-meta-value">${stockValue} of ${totalQuantity}</span>
+                                <span class="inventory-grid-card-meta-value">${isConsumable ? 'Not tracked' : `${stockValue} of ${totalQuantity}`}</span>
                             </div>
                             <div class="inventory-grid-card-meta-row">
                                 <span class="inventory-grid-card-meta-label">SKU</span>
@@ -5185,7 +5217,7 @@ function renderInventory() {
                             </div>
                             <div class="inventory-grid-card-meta-row">
                                 <span class="inventory-grid-card-meta-label">Status</span>
-                                <span class="status-badge ${currentStatus === 'In Stock' ? 'status-instock' : (currentStatus === 'Low Stock' || currentStatus === 'Out of Stock') ? 'status-lowstock' : 'status-na'}">${currentStatus}</span>
+                                <span class="status-badge ${currentStatus === 'In Stock' ? 'status-instock' : (currentStatus === 'Low Stock' || currentStatus === 'Out of Stock') ? 'status-lowstock' : isConsumable ? 'status-available' : 'status-na'}">${currentStatus}</span>
                             </div>
                             ${currentUser.role === 'student' && tagsHtml ? `<div class="visibility-tags-row">${tagsHtml}</div>` : ''}
                             <div class="inventory-grid-card-actions">
@@ -5591,7 +5623,7 @@ function openTransferAuthorizationModal(selectedProject) {
                     <div class="scanner-anim"></div>
                     <i class="ph ph-barcode"></i>
                     <p>Waiting for barcode scan...</p>
-                    <input type="password" id="transfer-auth-input" class="hidden-input" autocomplete="off" autofocus placeholder="Scan barcode or enter user ID">
+                    <input type="text" id="transfer-auth-input" class="hidden-input" autocomplete="off" autocapitalize="off" spellcheck="false" inputmode="none" autofocus aria-hidden="true">
                 </div>
                 <small class="text-muted transfer-auth-hint">Team members: ${escapeHtml(memberHint)}</small>
                 <small id="transfer-auth-error" class="text-danger transfer-auth-error" style="display:none;"></small>
@@ -9545,6 +9577,16 @@ async function openAddItemModal() {
     const categoryOptions = categories.length > 0
         ? categories.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('')
         : '<option value="Uncategorized">Uncategorized</option>';
+    const subCategoryOptions = buildInventoryOptionSelectHtml(
+        uniqueInventoryOptionList((inventoryItems || []).map(item => getInventorySubCategory(item)), 'General'),
+        'General',
+        'General'
+    );
+    const brandOptions = buildInventoryOptionSelectHtml(
+        uniqueInventoryOptionList((inventoryItems || []).map(item => item.brand || item.supplier || 'Unspecified'), 'Unspecified'),
+        'Unspecified',
+        'Unspecified'
+    );
 
     const tagCheckboxes = visibilityTags.map(tag =>
         `<label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;margin-bottom:0.4rem">
@@ -9571,7 +9613,9 @@ async function openAddItemModal() {
             </div>
             <div class="form-group">
                 <label>Sub Category</label>
-                <input type="text" id="add-sub-category" class="form-control" placeholder="e.g. Motors" value="General">
+                <select id="add-sub-category" class="form-control">
+                    ${subCategoryOptions}
+                </select>
             </div>
             <div class="form-group">
                 <label>Barcode</label>
@@ -9589,22 +9633,18 @@ async function openAddItemModal() {
                 </div>
                 <div class="form-group">
                     <label>Brand</label>
-                    <input type="text" id="add-brand" class="form-control" placeholder="e.g. Bosch">
-                </div>
-            </div>
-            <div class="grid-2-col" style="gap:1rem">
-                <div class="form-group">
-                    <label>Supplier</label>
-                    <input type="text" id="add-supplier" class="form-control" placeholder="e.g. DigiKey">
-                </div>
-                <div class="form-group">
-                    <label>Image Link</label>
-                    <input type="url" id="add-image-link" class="form-control" placeholder="https://...">
+                    <select id="add-brand" class="form-control">
+                        ${brandOptions}
+                    </select>
                 </div>
             </div>
             <div class="form-group">
-                <label>Supplier Product Listing Link</label>
+                <label>Product Link</label>
                 <input type="url" id="add-supplier-link" class="form-control" placeholder="https://...">
+            </div>
+            <div class="form-group">
+                <label>Image Link</label>
+                <input type="url" id="add-image-link" class="form-control" placeholder="https://...">
             </div>
             <div class="form-group">
                 <label>Item Type</label>
@@ -9683,7 +9723,6 @@ async function openAddItemModal() {
         const partNumber = document.getElementById('add-part-number')?.value.trim() || '';
         const storageLocation = document.getElementById('add-storage-location')?.value.trim() || '';
         const brand = document.getElementById('add-brand')?.value.trim() || '';
-        const supplier = document.getElementById('add-supplier')?.value.trim() || '';
         const imageLink = document.getElementById('add-image-link')?.value.trim() || '';
         const supplierLink = document.getElementById('add-supplier-link')?.value.trim() || '';
         const itemType = document.getElementById('add-item-type')?.value || 'item';
@@ -9721,7 +9760,6 @@ async function openAddItemModal() {
             location: storageLocation || null,
             storageLocation: storageLocation || null,
             brand: brand || null,
-            supplier: supplier || null,
             image_link: imageLink || null,
             supplier_listing_link: supplierLink || null,
             item_type: itemType,
@@ -11321,6 +11359,16 @@ async function openEditItemModal(itemId) {
     const categoryOptions = categories.map(c =>
         `<option value="${c}" ${getInventoryMainCategory(item) === c ? 'selected' : ''}>${c}</option>`
     ).join('');
+    const subCategoryOptions = buildInventoryOptionSelectHtml(
+        uniqueInventoryOptionList((inventoryItems || []).map(row => getInventorySubCategory(row)), 'General'),
+        getInventorySubCategory(item),
+        'General'
+    );
+    const brandOptions = buildInventoryOptionSelectHtml(
+        uniqueInventoryOptionList((inventoryItems || []).map(row => row.brand || row.supplier || 'Unspecified'), 'Unspecified'),
+        item.brand || item.supplier || 'Unspecified',
+        'Unspecified'
+    );
 
     const itemTagSet = new Set(item.visibilityTags || []);
     const tagOptions = visibilityTags.map(tag =>
@@ -11347,7 +11395,9 @@ async function openEditItemModal(itemId) {
             </div>
             <div class="form-group">
                 <label>Sub Category</label>
-                <input type="text" id="edit-item-sub-category" class="form-control" value="${escapeHtml(getInventorySubCategory(item))}">
+                <select id="edit-item-sub-category" class="form-control">
+                    ${subCategoryOptions}
+                </select>
             </div>
             <div class="form-group">
                 <label>Barcode</label>
@@ -11361,22 +11411,18 @@ async function openEditItemModal(itemId) {
                 </div>
                 <div class="form-group">
                     <label>Brand</label>
-                    <input type="text" id="edit-item-brand" class="form-control" value="${item.brand || ''}">
-                </div>
-            </div>
-            <div class="grid-2-col" style="gap:1rem">
-                <div class="form-group">
-                    <label>Supplier</label>
-                    <input type="text" id="edit-item-supplier" class="form-control" value="${item.supplier || ''}">
-                </div>
-                <div class="form-group">
-                    <label>Image Link</label>
-                    <input type="url" id="edit-item-image-link" class="form-control" value="${item.image_link || item.imageLink || ''}">
+                    <select id="edit-item-brand" class="form-control">
+                        ${brandOptions}
+                    </select>
                 </div>
             </div>
             <div class="form-group">
-                <label>Supplier Product Listing Link</label>
+                <label>Product Link</label>
                 <input type="url" id="edit-item-supplier-link" class="form-control" value="${item.supplier_listing_link || item.supplierListingLink || ''}">
+            </div>
+            <div class="form-group">
+                <label>Image Link</label>
+                <input type="url" id="edit-item-image-link" class="form-control" value="${item.image_link || item.imageLink || ''}">
             </div>
             <div class="grid-2-col" style="gap:1rem">
                 <div class="form-group">
@@ -11435,7 +11481,6 @@ async function openEditItemModal(itemId) {
         const sku = String(document.getElementById('edit-item-sku').value || '').trim().toUpperCase();
         const location = document.getElementById('edit-item-location').value.trim();
         const brand = document.getElementById('edit-item-brand').value.trim();
-        const supplier = document.getElementById('edit-item-supplier').value.trim();
         const imageLink = document.getElementById('edit-item-image-link').value.trim();
         const supplierListingLink = document.getElementById('edit-item-supplier-link').value.trim();
         const stock = parseInt(document.getElementById('edit-item-stock').value) || 0;
@@ -11463,7 +11508,6 @@ async function openEditItemModal(itemId) {
                 location,
                 storageLocation: location,
                 brand,
-                supplier,
                 image_link: imageLink || null,
                 supplier_listing_link: supplierListingLink || null,
                 stock,

@@ -1481,6 +1481,11 @@ h6 {
     color: var(--warning);
 }
 
+.status-available {
+    background: rgba(16, 185, 129, 0.18);
+    color: var(--success);
+}
+
 .status-critical {
     background: rgba(239, 68, 68, 0.15);
     color: var(--danger);

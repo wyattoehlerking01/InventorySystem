@@ -528,6 +528,7 @@ async function loadInventoryItems() {
         main_category: row.main_category ?? row.mainCategory ?? row.category ?? 'Uncategorized',
         sub_category: row.sub_category ?? row.subCategory ?? 'General',
         category: row.category ?? row.main_category ?? row.mainCategory ?? 'Uncategorized',
+        brand: row.brand ?? row.supplier ?? 'Unspecified',
         storageLocation: row.storageLocation ?? row.storage_location ?? row.location ?? null,
         imageLink: row.imageLink ?? row.image_link ?? null,
         supplierListingLink: row.supplierListingLink ?? row.supplier_listing_link ?? null,
@@ -1764,8 +1765,7 @@ async function addItemToSupabase(item) {
         status: item.status || 'Active',
         part_number: item.part_number || null,
         location: item.location || item.storageLocation || null,
-        brand: item.brand || null,
-        supplier: item.supplier || null,
+        brand: item.brand || item.supplier || null,
         image_link: item.image_link || item.imageLink || null,
         supplier_listing_link: item.supplier_listing_link || item.supplierListingLink || null,
         item_type: item.item_type || 'item',
@@ -1790,7 +1790,6 @@ async function addItemToSupabase(item) {
                 ...payload,
                 supplier_listing_link: undefined,
                 image_link: undefined,
-                supplier: undefined,
                 brand: undefined,
                 location: undefined,
                 requires_door_unlock: undefined
@@ -1807,7 +1806,8 @@ async function addItemToSupabase(item) {
                 status: item.status || 'Active',
                 part_number: item.part_number || null,
                 item_type: item.item_type || 'item',
-                visibility_level: item.visibility_level || 'standard'
+                visibility_level: item.visibility_level || 'standard',
+                brand: item.brand || item.supplier || null
             }
         ];
 
@@ -1843,11 +1843,17 @@ async function updateItemInSupabase(itemId, updates) {
         return isSchemaColumnError(err) && msg.includes('requires_door_unlock');
     };
 
-    const wantsDoorUnlockUpdate = Object.prototype.hasOwnProperty.call(updates || {}, 'requires_door_unlock')
-        || Object.prototype.hasOwnProperty.call(updates || {}, 'requiresDoorUnlock');
+    const normalizedUpdates = { ...(updates || {}) };
+    if (Object.prototype.hasOwnProperty.call(normalizedUpdates, 'supplier') && !Object.prototype.hasOwnProperty.call(normalizedUpdates, 'brand')) {
+        normalizedUpdates.brand = normalizedUpdates.supplier;
+    }
+    delete normalizedUpdates.supplier;
+
+    const wantsDoorUnlockUpdate = Object.prototype.hasOwnProperty.call(normalizedUpdates, 'requires_door_unlock')
+        || Object.prototype.hasOwnProperty.call(normalizedUpdates, 'requiresDoorUnlock');
 
     let { data, error } = await dbClient.from('inventory_items')
-        .update(updates)
+        .update(normalizedUpdates)
         .eq('id', itemId).select();
 
     if (error && wantsDoorUnlockUpdate && isMissingDoorUnlockColumnError(error)) {
@@ -1856,14 +1862,13 @@ async function updateItemInSupabase(itemId, updates) {
     }
 
     if (error && isSchemaColumnError(error)) {
-        const safeUpdates = { ...updates };
+        const safeUpdates = { ...normalizedUpdates };
         delete safeUpdates.main_category;
         delete safeUpdates.sub_category;
         delete safeUpdates.category;
         delete safeUpdates.location;
         delete safeUpdates.storageLocation;
         delete safeUpdates.brand;
-        delete safeUpdates.supplier;
         delete safeUpdates.image_link;
         delete safeUpdates.supplier_listing_link;
 
