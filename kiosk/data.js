@@ -563,7 +563,7 @@ async function loadProjects() {
         collaborators: [],
         collaboratorRoles: {},
         itemsOut: [],
-        ownerId: null,
+        ownerId: proj.owner_id,
         classId: proj.class_id ?? proj.classId ?? null,
         description: proj.description || '',
         name: proj.name || ''
@@ -1663,6 +1663,7 @@ async function renameUserBarcodeInSupabase(oldUserId, newUserId) {
     }
 
     const referenceUpdates = [
+        { table: 'projects', column: 'owner_id' },
         { table: 'project_collaborators', column: 'user_id' },
         { table: 'activity_logs', column: 'user_id' },
         { table: 'extension_requests', column: 'user_id' },
@@ -1905,6 +1906,7 @@ async function addProjectToSupabase(project) {
     const payload = {
         id: project.id,
         name: project.name,
+        owner_id: project.ownerId,
         description: project.description || '',
         status: project.status || 'Active',
         class_id: project.classId || project.class_id || null
