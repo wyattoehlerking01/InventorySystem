@@ -952,6 +952,52 @@ function escapeHtml(value) {
         .replace(/'/g, '&#39;');
 }
 
+function normalizeSkuToken(value) {
+    return String(value || '').trim().toUpperCase().replace(/[^A-Z0-9-]/g, '');
+}
+
+function normalizeBarcodePart(value) {
+    return String(value || '')
+        .trim()
+        .replace(/\s+/g, ' ')
+        .replace(/\|/g, '')
+        .toUpperCase();
+}
+
+function composeInventoryBarcode({ mainCategory, subCategory, brand, itemName, name } = {}) {
+    const parts = [mainCategory, subCategory, brand, itemName ?? name].map(normalizeBarcodePart);
+    if (parts.some(part => !part)) return '';
+    return parts.join('|');
+}
+
+function getInventoryMainCategory(item) {
+    return String(item?.main_category ?? item?.mainCategory ?? item?.category ?? 'Uncategorized').trim() || 'Uncategorized';
+}
+
+function getInventorySubCategory(item) {
+    return String(item?.sub_category ?? item?.subCategory ?? 'General').trim() || 'General';
+}
+
+function getInventoryItemBarcode(item) {
+    if (!item) return '';
+    const composed = composeInventoryBarcode({
+        mainCategory: getInventoryMainCategory(item),
+        subCategory: getInventorySubCategory(item),
+        brand: item?.brand || 'Unspecified',
+        itemName: item?.name || 'Unnamed Item'
+    });
+    return composed || String(item?.sku || item?.barcode || '').trim().toUpperCase();
+}
+
+function isSkuInUse(sku, excludeItemId = null) {
+    const target = String(sku || '').trim().toUpperCase();
+    if (!target) return false;
+    return inventoryItems.some(item => {
+        if (excludeItemId && item.id === excludeItemId) return false;
+        return getInventoryItemBarcode(item) === target;
+    });
+}
+
 function isSafeHttpUrl(value) {
     const raw = String(value || '').trim();
     if (!raw) return false;
@@ -5359,12 +5405,14 @@ function renderInventory() {
         filtered = filtered.filter(i => {
             const name = String(i.name || '').toLowerCase();
             const sku = String(i.sku || '').toLowerCase();
-            const category = String(i.category || 'Uncategorized').toLowerCase();
+            const category = String(getInventoryMainCategory(i) || 'Uncategorized').toLowerCase();
+            const subCategory = String(getInventorySubCategory(i) || 'General').toLowerCase();
             const supplier = String(i.supplier || 'Unspecified').toLowerCase();
             const brand = String(i.brand || 'Unspecified').toLowerCase();
             return name.includes(inventorySmartSearchTerm)
                 || sku.includes(inventorySmartSearchTerm)
                 || category.includes(inventorySmartSearchTerm)
+                || subCategory.includes(inventorySmartSearchTerm)
                 || supplier.includes(inventorySmartSearchTerm)
                 || brand.includes(inventorySmartSearchTerm);
         });
@@ -5385,11 +5433,11 @@ function renderInventory() {
     const renderInventoryRowHtml = item => {
         const currentStatus = determineStatus(item.stock, item.threshold, item.item_type);
         const statusClass = currentStatus === 'In Stock' ? 'status-instock' : (currentStatus === 'Low Stock' || currentStatus === 'Out of Stock') ? 'status-lowstock' : 'status-na';
-        const categoryLabel = escapeHtml(String(item.category || 'Uncategorized'));
+        const categoryLabel = escapeHtml(`${getInventoryMainCategory(item)} / ${getInventorySubCategory(item)}`);
         const brandLabel = escapeHtml(String(item.brand || 'Unspecified'));
         const safeItemId = escapeHtml(String(item.id || ''));
         const safeItemName = escapeHtml(String(item.name || 'Unnamed Item'));
-        const safeItemSku = escapeHtml(String(item.sku || ''));
+        const safeItemSku = escapeHtml(getInventoryItemBarcode(item) || String(item.sku || ''));
         const imageLink = String(item.image_link || item.imageLink || '').trim();
         const supplierLink = String(item.supplier_listing_link || item.supplierListingLink || '').trim();
         const itemListingLink = imageLink || supplierLink;
@@ -5426,7 +5474,7 @@ function renderInventory() {
                                 ${renderMissingMetadataIcon(item)}
                                 ${itemListingLinkHtml}
                             </div>
-                            ${item.sku ? `<small class="text-xs text-muted">SKU: ${safeItemSku}</small>` : ''}
+                            ${safeItemSku ? `<small class="text-xs text-muted">Barcode: ${safeItemSku}</small>` : ''}
                             ${currentUser.role === 'student' && tagsHtml ? `<div class="visibility-tags-row">${tagsHtml}</div>` : ''}
                         </div>
                     </div>
@@ -10841,20 +10889,20 @@ async function openAddItemModal() {
                 <input type="text" id="add-name" class="form-control" placeholder="e.g. Servo Motor">
             </div>
             <div class="form-group">
-                <label>Category</label>
+                <label>Main Category</label>
                 <select id="add-category" class="form-control">
                     ${categoryOptions}
                 </select>
                 ${categories.length === 0 ? '<small class="text-muted">No categories found yet. This item will be saved as Uncategorized.</small>' : ''}
             </div>
             <div class="form-group">
-                <label>Barcode Prefix (optional, 2 letters)</label>
-                <input type="text" id="add-sku-prefix" class="form-control" maxlength="2" placeholder="e.g. EL">
-                <small class="text-muted">If blank, category initials are used when auto-generating SKU/barcode.</small>
+                <label>Sub Category</label>
+                <input type="text" id="add-sub-category" class="form-control" placeholder="e.g. Motors" value="General">
             </div>
             <div class="form-group">
-                <label>SKU / Barcode</label>
-                <input type="text" id="add-sku" class="form-control" placeholder="Leave blank to auto-generate">
+                <label>Barcode</label>
+                <input type="text" id="add-sku" class="form-control" readonly>
+                <small class="text-muted">Generated from Main Category, Sub Category, Brand, and Item Name.</small>
             </div>
             <div class="form-group">
                 <label>Part Number (Optional)</label>
@@ -10943,13 +10991,30 @@ async function openAddItemModal() {
         setBundleComponentsSectionVisibility(addItemTypeSelect.value);
     });
 
+    const updateBarcodePreview = () => {
+        const composedBarcode = composeInventoryBarcode({
+            mainCategory: document.getElementById('add-category')?.value || 'Uncategorized',
+            subCategory: document.getElementById('add-sub-category')?.value || 'General',
+            brand: document.getElementById('add-brand')?.value || 'Unspecified',
+            itemName: document.getElementById('add-name')?.value || ''
+        });
+        const barcodeInput = document.getElementById('add-sku');
+        if (barcodeInput) barcodeInput.value = composedBarcode;
+    };
+
+    ['add-name', 'add-category', 'add-sub-category', 'add-brand'].forEach(fieldId => {
+        document.getElementById(fieldId)?.addEventListener('input', updateBarcodePreview);
+        document.getElementById(fieldId)?.addEventListener('change', updateBarcodePreview);
+    });
+    updateBarcodePreview();
+
     const submitBtn = document.getElementById('confirm-add-item');
     submitBtn?.addEventListener('click', () => {
         withButtonPending(submitBtn, 'Adding...', async () => {
         const name = document.getElementById('add-name').value.trim();
-        const category = (document.getElementById('add-category').value || 'Uncategorized').trim();
-        const manualSku = normalizeSkuToken(document.getElementById('add-sku').value);
-        const skuPrefixRaw = normalizeSkuToken(document.getElementById('add-sku-prefix')?.value || '');
+        const mainCategory = (document.getElementById('add-category').value || 'Uncategorized').trim();
+        const subCategory = (document.getElementById('add-sub-category')?.value || 'General').trim() || 'General';
+        const barcode = String(document.getElementById('add-sku').value || '').trim().toUpperCase();
         const partNumber = document.getElementById('add-part-number')?.value.trim() || '';
         const storageLocation = document.getElementById('add-storage-location')?.value.trim() || '';
         const brand = document.getElementById('add-brand')?.value.trim() || '';
@@ -10974,12 +11039,12 @@ async function openAddItemModal() {
             return;
         }
 
-        const derivedCategoryPrefix = normalizeSkuToken(category).slice(0, 2);
-        const prefix = (skuPrefixRaw || derivedCategoryPrefix || normalizeSkuToken(name).slice(0, 2) || 'IT').slice(0, 2);
-        const autoSku = `${prefix}-${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`;
-        const finalSku = manualSku || autoSku;
+        if (!barcode) {
+            showToast('Barcode could not be generated. Check the item details.', 'error');
+            return;
+        }
 
-        if (isSkuInUse(finalSku)) {
+        if (isSkuInUse(barcode)) {
             showToast('SKU/barcode already exists. Please use a unique value.', 'error');
             return;
         }
@@ -10987,8 +11052,10 @@ async function openAddItemModal() {
         const newItem = {
             id: generateId('ITM'),
             name,
-            category,
-            sku: finalSku,
+            main_category: mainCategory,
+            sub_category: subCategory,
+            category: mainCategory,
+            sku: barcode,
             stock,
             threshold,
             part_number: partNumber || null,
@@ -12705,7 +12772,7 @@ async function openEditItemModal(itemId) {
     if (!item) return;
 
     const categoryOptions = categories.map(c =>
-        `<option value="${c}" ${item.category === c ? 'selected' : ''}>${c}</option>`
+        `<option value="${c}" ${getInventoryMainCategory(item) === c ? 'selected' : ''}>${c}</option>`
     ).join('');
 
     const itemTagSet = new Set(item.visibilityTags || []);
@@ -12726,14 +12793,19 @@ async function openEditItemModal(itemId) {
                 <input type="text" id="edit-item-name" class="form-control" value="${item.name}">
             </div>
             <div class="form-group">
-                <label>Category</label>
+                <label>Main Category</label>
                 <select id="edit-item-category" class="form-control">
                     ${categoryOptions}
                 </select>
             </div>
             <div class="form-group">
-                <label>SKU</label>
-                <input type="text" id="edit-item-sku" class="form-control" value="${item.sku}">
+                <label>Sub Category</label>
+                <input type="text" id="edit-item-sub-category" class="form-control" value="${escapeHtml(getInventorySubCategory(item))}">
+            </div>
+            <div class="form-group">
+                <label>Barcode</label>
+                <input type="text" id="edit-item-sku" class="form-control" readonly value="${escapeHtml(getInventoryItemBarcode(item) || item.sku || '')}">
+                <small class="text-muted">Generated from Main Category, Sub Category, Brand, and Item Name.</small>
             </div>
             <div class="grid-2-col" style="gap:1rem">
                 <div class="form-group">
@@ -12802,6 +12874,23 @@ async function openEditItemModal(itemId) {
 
     openModal(html);
 
+    const updateEditBarcodePreview = () => {
+        const composedBarcode = composeInventoryBarcode({
+            mainCategory: document.getElementById('edit-item-category')?.value || 'Uncategorized',
+            subCategory: document.getElementById('edit-item-sub-category')?.value || 'General',
+            brand: document.getElementById('edit-item-brand')?.value || 'Unspecified',
+            itemName: document.getElementById('edit-item-name')?.value || ''
+        });
+        const barcodeInput = document.getElementById('edit-item-sku');
+        if (barcodeInput) barcodeInput.value = composedBarcode;
+    };
+
+    ['edit-item-name', 'edit-item-category', 'edit-item-sub-category', 'edit-item-brand'].forEach(fieldId => {
+        document.getElementById(fieldId)?.addEventListener('input', updateEditBarcodePreview);
+        document.getElementById(fieldId)?.addEventListener('change', updateEditBarcodePreview);
+    });
+    updateEditBarcodePreview();
+
     const editItemTypeSelect = document.getElementById('edit-item-type');
     setBundleComponentsSectionVisibility(editItemTypeSelect?.value || item.item_type || 'item');
     wireBundleComponentsEditor(item.id);
@@ -12811,8 +12900,9 @@ async function openEditItemModal(itemId) {
 
     document.getElementById('confirm-edit-item').addEventListener('click', async () => {
         const name = document.getElementById('edit-item-name').value.trim();
-        const category = document.getElementById('edit-item-category').value;
-        const sku = normalizeSkuToken(document.getElementById('edit-item-sku').value);
+        const mainCategory = document.getElementById('edit-item-category').value;
+        const subCategory = document.getElementById('edit-item-sub-category').value.trim() || 'General';
+        const sku = String(document.getElementById('edit-item-sku').value || '').trim().toUpperCase();
         const location = document.getElementById('edit-item-location').value.trim();
         const brand = document.getElementById('edit-item-brand').value.trim();
         const supplier = document.getElementById('edit-item-supplier').value.trim();
@@ -12843,7 +12933,9 @@ async function openEditItemModal(itemId) {
 
             const updated = await updateItemInSupabase(itemId, {
                 name,
-                category,
+                main_category: mainCategory,
+                sub_category: subCategory,
+                category: mainCategory,
                 sku,
                 location,
                 storageLocation: location,
@@ -12906,11 +12998,11 @@ document.getElementById('bulk-import-items-btn')?.addEventListener('click', asyn
             <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
         </div>
         <div class="modal-body">
-            <p class="text-secondary mb-4">Paste comma-separated item data in the format:<br><strong>Name,Category,SKU,Stock,Threshold</strong></p>
+            <p class="text-secondary mb-4">Paste comma-separated item data in the format:<br><strong>Name,Main Category,Sub Category,Brand,SKU,Stock,Threshold,Requires Door Unlock</strong></p>
             <div class="form-group">
-                <textarea id="bulk-items-data" class="form-control" rows="6" placeholder="Servo Motor,Electronics,SRV-001,20,5\nWire Kit,Hardware,WIR-001,100,20"></textarea>
+                <textarea id="bulk-items-data" class="form-control" rows="6" placeholder="Servo Motor,Electronics,Motors,Bosch,,20,5,true\nWire Kit,Hardware,Fasteners,Acme,,100,20,true"></textarea>
             </div>
-            <p class="text-sm text-muted">Categories must match existing categories. Use Manage Categories to add new ones first.</p>
+            <p class="text-sm text-muted">Main categories must match existing categories. Sub categories can be typed freely.</p>
         </div>
         <div class="modal-footer">
             <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
@@ -12953,21 +13045,31 @@ document.getElementById('bulk-import-items-btn')?.addEventListener('click', asyn
                 continue;
             }
 
+            if (maybeHeader[0] === 'name' && maybeHeader[1] === 'main category' && maybeHeader[2] === 'sub category') {
+                continue;
+            }
+
             const name = normalizeImportCell(parts[0]);
-            const category = normalizeImportCell(parts[1] || '') || 'Uncategorized';
-            const skuRaw = normalizeSkuToken(parts[2] || '');
-            const stock = Math.max(0, parseInt(parts[3], 10) || 0);
-            const parsedThreshold = parseInt(parts[4], 10);
+            const mainCategory = normalizeImportCell(parts[1] || '') || 'Uncategorized';
+            const subCategory = normalizeImportCell(parts[2] || '') || 'General';
+            const brand = normalizeImportCell(parts[3] || '') || '';
+            const skuRaw = String(parts[4] || '').trim().toUpperCase();
+            const stock = Math.max(0, parseInt(parts[5], 10) || 0);
+            const parsedThreshold = parseInt(parts[6], 10);
             const threshold = Math.max(0, Number.isFinite(parsedThreshold) ? parsedThreshold : 0);
-            const requiresDoorUnlock = parseImportBoolean(parts[5], true);
+            const requiresDoorUnlock = parseImportBoolean(parts[7], true);
 
             if (!name) {
                 invalidCount++;
                 continue;
             }
 
-            const defaultSkuPrefix = normalizeSkuToken(name).slice(0, 3) || 'ITM';
-            const generatedSku = `${defaultSkuPrefix}-${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`;
+            const generatedSku = composeInventoryBarcode({
+                mainCategory,
+                subCategory,
+                brand: brand || 'Unspecified',
+                itemName: name
+            });
             const sku = skuRaw || generatedSku;
             const normalizedSku = String(sku || '').trim().toUpperCase();
 
@@ -12979,7 +13081,10 @@ document.getElementById('bulk-import-items-btn')?.addEventListener('click', asyn
             const item = {
                 id: generateId('ITM'),
                 name,
-                category,
+                main_category: mainCategory,
+                sub_category: subCategory,
+                category: mainCategory,
+                brand: brand || null,
                 sku,
                 stock,
                 threshold,
@@ -14355,7 +14460,7 @@ async function showBarcodeLabelModal() {
         <div class="form-group" style="display:grid;grid-template-columns:1fr 100px;gap:1rem;align-items:center;padding:0.5rem;border-bottom:1px solid rgba(0,0,0,0.1)">
             <div>
                 <strong>${escapeHtml(item.name)}</strong>
-                <div style="font-size:0.85rem;color:#666">SKU: ${escapeHtml(item.sku || 'N/A')} | Stock: ${item.stock || 0}</div>
+                <div style="font-size:0.85rem;color:#666">Barcode: ${escapeHtml(getInventoryItemBarcode(item) || item.sku || 'N/A')} | Stock: ${item.stock || 0}</div>
             </div>
             <input type="number" class="barcode-qty-input form-control" data-item-id="${item.id}" value="1" min="1" max="20">
         </div>
@@ -14478,16 +14583,16 @@ function generateAndPrintBarcodeLabels(items, quantities) {
 
     items.forEach(item => {
         const qty = quantities[item.id] || 1;
-        const barcode = item.barcode || item.sku || item.id;
+        const barcode = getInventoryItemBarcode(item) || item.barcode || item.sku || item.id;
         const itemName = item.name || 'Unknown Item';
-        const itemSku = item.sku || 'N/A';
+        const itemSku = getInventoryItemBarcode(item) || item.sku || 'N/A';
 
         for (let i = 0; i < qty; i++) {
             labelHtmlArray.push(`
                 <div class="label">
                     <div class="label-name">${escapeHtml(itemName)}</div>
                     <div class="label-barcode">${escapeHtml(barcode)}</div>
-                    <div class="label-sku">SKU: ${escapeHtml(itemSku)}</div>
+                    <div class="label-sku">Barcode: ${escapeHtml(itemSku)}</div>
                 </div>
             `);
             labelCount++;

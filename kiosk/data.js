@@ -133,6 +133,39 @@ function createUuid() {
         return v.toString(16);
     });
 }
+
+function normalizeBarcodePart(value) {
+    return String(value || '')
+        .trim()
+        .replace(/\s+/g, ' ')
+        .replace(/\|/g, '')
+        .toUpperCase();
+}
+
+function composeInventoryBarcode({ mainCategory, subCategory, brand, itemName, name } = {}) {
+    const parts = [mainCategory, subCategory, brand, itemName ?? name].map(normalizeBarcodePart);
+    if (parts.some(part => !part)) return '';
+    return parts.join('|');
+}
+
+function getInventoryMainCategory(item) {
+    return String(item?.main_category ?? item?.mainCategory ?? item?.category ?? 'Uncategorized').trim() || 'Uncategorized';
+}
+
+function getInventorySubCategory(item) {
+    return String(item?.sub_category ?? item?.subCategory ?? 'General').trim() || 'General';
+}
+
+function getInventoryItemBarcode(item) {
+    if (!item) return '';
+    const composed = composeInventoryBarcode({
+        mainCategory: getInventoryMainCategory(item),
+        subCategory: getInventorySubCategory(item),
+        brand: item?.brand || 'Unspecified',
+        itemName: item?.name || 'Unnamed Item'
+    });
+    return composed || String(item?.sku || item?.barcode || '').trim().toUpperCase();
+}
 async function loginWithBarcode(barcode) {
     try {
         const rawBarcode = String(barcode || '').trim();
@@ -492,10 +525,14 @@ async function loadInventoryItems() {
     }
     inventoryItems = (data || []).map(row => ({
         ...row,
+        main_category: row.main_category ?? row.mainCategory ?? row.category ?? 'Uncategorized',
+        sub_category: row.sub_category ?? row.subCategory ?? 'General',
+        category: row.category ?? row.main_category ?? row.mainCategory ?? 'Uncategorized',
         storageLocation: row.storageLocation ?? row.storage_location ?? row.location ?? null,
         imageLink: row.imageLink ?? row.image_link ?? null,
         supplierListingLink: row.supplierListingLink ?? row.supplier_listing_link ?? null,
-        requiresDoorUnlock: row.requiresDoorUnlock ?? row.requires_door_unlock ?? true
+        requiresDoorUnlock: row.requiresDoorUnlock ?? row.requires_door_unlock ?? true,
+        sku: row.sku ?? row.barcode ?? getInventoryItemBarcode(row)
     }));
     console.log(`Loaded ${inventoryItems.length} inventory items`);
 }
@@ -1713,8 +1750,15 @@ async function addItemToSupabase(item) {
     const payload = {
         id: item.id,
         name: item.name,
-        category: item.category,
-        sku: item.sku,
+        main_category: item.main_category || item.mainCategory || item.category || 'Uncategorized',
+        sub_category: item.sub_category || item.subCategory || 'General',
+        category: item.category || item.main_category || item.mainCategory || 'Uncategorized',
+        sku: item.sku || composeInventoryBarcode({
+            mainCategory: item.main_category || item.mainCategory || item.category,
+            subCategory: item.sub_category || item.subCategory,
+            brand: item.brand,
+            itemName: item.name
+        }),
         stock: item.stock || 0,
         threshold: item.threshold || 5,
         status: item.status || 'Active',
@@ -1754,8 +1798,10 @@ async function addItemToSupabase(item) {
             {
                 id: item.id,
                 name: item.name,
-                category: item.category,
-                sku: item.sku,
+                main_category: payload.main_category,
+                sub_category: payload.sub_category,
+                category: payload.category,
+                sku: payload.sku,
                 stock: item.stock || 0,
                 threshold: item.threshold || 5,
                 status: item.status || 'Active',
@@ -1811,6 +1857,9 @@ async function updateItemInSupabase(itemId, updates) {
 
     if (error && isSchemaColumnError(error)) {
         const safeUpdates = { ...updates };
+        delete safeUpdates.main_category;
+        delete safeUpdates.sub_category;
+        delete safeUpdates.category;
         delete safeUpdates.location;
         delete safeUpdates.storageLocation;
         delete safeUpdates.brand;
