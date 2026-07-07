@@ -5487,9 +5487,7 @@ function renderInventory() {
                         ${thumbnailHtml}
                         <div class="inventory-item-title-copy">
                             <div class="font-bold">
-                                ${currentUser.role !== 'student'
-                                    ? `<button class="item-preview-btn" data-id="${safeItemId}" title="View Item Preview" style="background:none;border:none;color:inherit;padding:0;text-align:left;font:inherit;cursor:pointer;">${safeItemName}</button>`
-                                    : safeItemName}
+                                ${safeItemName}
                                 ${renderMissingMetadataIcon(item)}
                             </div>
                             ${safeItemSku ? `<small class="text-xs text-muted">Barcode: ${safeItemSku}</small>` : ''}
@@ -5501,7 +5499,7 @@ function renderInventory() {
                 <td class="text-muted font-mono" style="font-size:0.8rem">${safeItemSku}</td>
                 <td class="inventory-stock-status-cell">
                     <div class="inventory-stock-status-content">
-                        <span class="inventory-stock-value">${isConsumable ? 'Not tracked' : `${Math.max(0, parseInt(item?.stock, 10) || 0)} of ${getItemTotalQuantity(item)}`}</span>
+                        <span class="inventory-stock-value${isConsumable ? ' is-muted' : ''}">${isConsumable ? 'Not tracked' : `${Math.max(0, parseInt(item?.stock, 10) || 0)} of ${getItemTotalQuantity(item)}`}</span>
                         <span class="status-badge ${statusClass}">${currentStatus}</span>
                     </div>
                 </td>
@@ -5558,7 +5556,7 @@ function renderInventory() {
                             </div>
                             <div class="inventory-grid-card-meta-row">
                                 <span class="inventory-grid-card-meta-label">Stock</span>
-                                <span class="inventory-grid-card-meta-value">${isConsumable ? 'Not tracked' : `${stockValue} of ${totalQuantity}`}</span>
+                                <span class="inventory-grid-card-meta-value${isConsumable ? ' is-muted' : ''}">${isConsumable ? 'Not tracked' : `${stockValue} of ${totalQuantity}`}</span>
                             </div>
                             <div class="inventory-grid-card-meta-row">
                                 <span class="inventory-grid-card-meta-label">SKU</span>

@@ -1820,14 +1820,14 @@ function addToBasket(itemId) {
         return;
     }
 
-    if (item.stock <= 0) {
+    if (shouldTrackInventoryStock(item) && item.stock <= 0) {
         showToast('Item is out of stock.', 'error');
         return;
     }
 
     const existing = inventoryBasket.find(b => b.id === itemId);
     if (existing) {
-        if (existing.qty >= item.stock) {
+        if (shouldTrackInventoryStock(item) && existing.qty >= item.stock) {
             showToast('Cannot exceed available stock.', 'warning');
             return;
         }
@@ -1845,7 +1845,10 @@ function setBasketItemQuantity(itemId, requestedQty) {
     const item = inventoryItems.find(i => i.id === itemId);
     if (!basketEntry || !item) return;
 
-    const clampedQty = Math.max(1, Math.min(item.stock, parseInt(requestedQty, 10) || 1));
+    const parsedQty = parseInt(requestedQty, 10) || 1;
+    const clampedQty = shouldTrackInventoryStock(item)
+        ? Math.max(1, Math.min(item.stock, parsedQty))
+        : Math.max(1, parsedQty);
     basketEntry.qty = clampedQty;
     renderBasket();
 }
@@ -2969,28 +2972,30 @@ async function checkoutBasket() {
                 return;
             }
 
-            const nextStock = item.stock - basketItem.qty;
-            const stockUpdated = await updateItemInSupabase(item.id, { stock: nextStock });
-            if (!stockUpdated) {
-                if (savedSignout?.id) {
-                    await returnItemToSupabase(savedSignout.id);
-                } else {
-                    await returnItemByCompositeToSupabase({
-                        projectId: project.id,
-                        itemId: item.id,
-                        signoutDate: signoutData.signoutDate,
-                        quantity: signoutData.quantity
-                    });
+            if (shouldTrackInventoryStock(item)) {
+                const nextStock = item.stock - basketItem.qty;
+                const stockUpdated = await updateItemInSupabase(item.id, { stock: nextStock });
+                if (!stockUpdated) {
+                    if (savedSignout?.id) {
+                        await returnItemToSupabase(savedSignout.id);
+                    } else {
+                        await returnItemByCompositeToSupabase({
+                            projectId: project.id,
+                            itemId: item.id,
+                            signoutDate: signoutData.signoutDate,
+                            quantity: signoutData.quantity
+                        });
+                    }
+                    showToast(`Checkout failed while updating stock for ${item.name}. Sign-out was rolled back.`, 'error');
+                    await Promise.all([refreshProjectsFromSupabase(), refreshInventoryFromSupabase()]);
+                    renderInventory();
+                    renderDashboard();
+                    renderProjects();
+                    return;
                 }
-                showToast(`Checkout failed while updating stock for ${item.name}. Sign-out was rolled back.`, 'error');
-                await Promise.all([refreshProjectsFromSupabase(), refreshInventoryFromSupabase()]);
-                renderInventory();
-                renderDashboard();
-                renderProjects();
-                return;
-            }
 
-            item.stock = nextStock;
+                item.stock = nextStock;
+            }
             signoutData.id = savedSignout?.id || signoutData.id;
             project.itemsOut.push(signoutData);
             _trackItemSignout(item, basketItem.qty);
@@ -4887,6 +4892,10 @@ function isConsumableItemType(itemType = 'item') {
     return String(itemType || '').trim().toLowerCase() === 'consumable';
 }
 
+function shouldTrackInventoryStock(item) {
+    return !isConsumableItemType(item?.item_type);
+}
+
 function normalizeInventoryOptionValue(value, fallbackValue = '') {
     const normalized = String(value ?? '').trim();
     return normalized || String(fallbackValue || '').trim();
@@ -5148,7 +5157,7 @@ function renderInventory() {
                 <td class="text-muted font-mono" style="font-size:0.8rem">${safeItemSku}</td>
                 <td class="inventory-stock-status-cell">
                     <div class="inventory-stock-status-content">
-                        <span class="inventory-stock-value">${isConsumable ? 'Not tracked' : `${Math.max(0, parseInt(item?.stock, 10) || 0)} of ${getItemTotalQuantity(item)}`}</span>
+                        <span class="inventory-stock-value${isConsumable ? ' is-muted' : ''}">${isConsumable ? 'Not tracked' : `${Math.max(0, parseInt(item?.stock, 10) || 0)} of ${getItemTotalQuantity(item)}`}</span>
                         <span class="status-badge ${statusClass}">${currentStatus}</span>
                     </div>
                 </td>
@@ -5209,7 +5218,7 @@ function renderInventory() {
                             </div>
                             <div class="inventory-grid-card-meta-row">
                                 <span class="inventory-grid-card-meta-label">Stock</span>
-                                <span class="inventory-grid-card-meta-value">${isConsumable ? 'Not tracked' : `${stockValue} of ${totalQuantity}`}</span>
+                                <span class="inventory-grid-card-meta-value${isConsumable ? ' is-muted' : ''}">${isConsumable ? 'Not tracked' : `${stockValue} of ${totalQuantity}`}</span>
                             </div>
                             <div class="inventory-grid-card-meta-row">
                                 <span class="inventory-grid-card-meta-label">SKU</span>
@@ -6104,9 +6113,12 @@ async function signOutItemToPersonalProjectForUser(item, quantity, userId) {
     const ensured = await ensureProjectExistsInSupabase(personalProject);
     if (!ensured) return false;
 
-    const nextStock = item.stock - quantity;
-    const stockUpdated = await updateItemInSupabase(item.id, { stock: nextStock });
-    if (!stockUpdated) return false;
+    if (shouldTrackInventoryStock(item)) {
+        const nextStock = item.stock - quantity;
+        const stockUpdated = await updateItemInSupabase(item.id, { stock: nextStock });
+        if (!stockUpdated) return false;
+        item.stock = nextStock;
+    }
 
     const signoutData = {
         id: generateId('OUT'),
@@ -6933,7 +6945,7 @@ async function openSignOutModal(itemId) {
         }
     }
 
-    if (item.stock <= 0) {
+    if (shouldTrackInventoryStock(item) && item.stock <= 0) {
         showToast('Item out of stock!', 'error');
         return;
     }

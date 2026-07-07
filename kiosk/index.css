@@ -1482,8 +1482,14 @@ h6 {
 }
 
 .status-available {
-    background: rgba(16, 185, 129, 0.18);
-    color: var(--success);
+    background: rgba(16, 185, 129, 0.1);
+    color: #6ee7b7;
+    border: 1px solid rgba(16, 185, 129, 0.16);
+}
+
+.inventory-stock-value.is-muted {
+    color: var(--text-muted);
+    opacity: 0.8;
 }
 
 .status-critical {

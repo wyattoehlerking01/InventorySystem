@@ -169,8 +169,10 @@ function getInventoryItemBarcode(item) {
 }
 
 const INVENTORY_OPTION_LIST_STORAGE_KEY = 'manageInventoryOptionListsV1';
+const INVENTORY_BRAND_OPTIONS_TABLE = 'inventory_brand_options';
 const DEFAULT_INVENTORY_SUB_CATEGORIES = ['General'];
 const DEFAULT_INVENTORY_BRANDS = ['Unspecified'];
+let persistedBrandOptions = [];
 
 function normalizeInventoryOptionValue(value, fallbackValue) {
     const normalized = String(value || '').trim();
@@ -237,11 +239,54 @@ function hydrateInventoryOptionLists() {
 
     brands = uniqueInventoryOptionList([
         ...stored.brands,
+        ...persistedBrandOptions,
         ...derivedBrands,
         ...DEFAULT_INVENTORY_BRANDS
     ], 'Unspecified');
 
     writeInventoryOptionListsToStorage({ subCategories, brands });
+}
+
+async function loadBrandOptionsFromSupabase() {
+    if (!dbClient) return null;
+
+    const { data, error } = await dbClient
+        .from(INVENTORY_BRAND_OPTIONS_TABLE)
+        .select('options')
+        .eq('kind', 'brands')
+        .maybeSingle();
+
+    if (error) {
+        console.warn('Failed to load brand options from Supabase:', error);
+        return null;
+    }
+
+    const options = Array.isArray(data?.options) ? data.options : [];
+    return uniqueInventoryOptionList(options, 'Unspecified');
+}
+
+async function persistBrandOptionsToSupabase(options) {
+    if (!dbClient) return false;
+
+    const normalized = uniqueInventoryOptionList(options, 'Unspecified');
+    const { error } = await dbClient
+        .from(INVENTORY_BRAND_OPTIONS_TABLE)
+        .upsert([
+            {
+                kind: 'brands',
+                options: normalized,
+                updated_at: new Date().toISOString()
+            }
+        ], {
+            onConflict: 'kind'
+        });
+
+    if (error) {
+        console.warn('Failed to persist brand options to Supabase:', error);
+        return false;
+    }
+
+    return true;
 }
 
 function getInventoryOptionList(kind) {
@@ -284,6 +329,12 @@ async function addInventoryOptionValue(kind, value, fallbackValue) {
     }
 
     setInventoryOptionList(kind, [...current, normalized]);
+
+    if (kind === 'brands') {
+        persistedBrandOptions = [...brands];
+        await persistBrandOptionsToSupabase(brands);
+    }
+
     return { name: normalized };
 }
 
@@ -298,6 +349,12 @@ async function renameInventoryOptionValue(kind, oldValue, newValue, fieldName, f
     const nextValues = getInventoryOptionList(kind)
         .map(option => option.toLowerCase() === currentOld.toLowerCase() ? currentNew : option);
     setInventoryOptionList(kind, nextValues);
+
+    if (kind === 'brands') {
+        persistedBrandOptions = [...brands];
+        await persistBrandOptionsToSupabase(brands);
+    }
+
     return true;
 }
 
@@ -311,6 +368,12 @@ async function deleteInventoryOptionValue(kind, value, fieldName, fallbackValue)
 
     const nextValues = getInventoryOptionList(kind).filter(option => option.toLowerCase() !== currentValue.toLowerCase());
     setInventoryOptionList(kind, nextValues);
+
+    if (kind === 'brands') {
+        persistedBrandOptions = [...brands];
+        await persistBrandOptionsToSupabase(brands);
+    }
+
     return true;
 }
 
@@ -320,6 +383,11 @@ async function loadSubCategories() {
 }
 
 async function loadBrands() {
+    const brandOptions = await loadBrandOptionsFromSupabase();
+    if (brandOptions) {
+        persistedBrandOptions = brandOptions;
+    }
+
     hydrateInventoryOptionLists();
     console.log(`Loaded ${brands.length} brands`);
 }
@@ -349,6 +417,11 @@ async function deleteBrandFromSupabase(name) {
 }
 
 async function loadInventoryDropdownOptions() {
+    const brandOptions = await loadBrandOptionsFromSupabase();
+    if (brandOptions) {
+        persistedBrandOptions = brandOptions;
+    }
+
     hydrateInventoryOptionLists();
     console.log(`Loaded ${subCategories.length} sub categories and ${brands.length} brands`);
 }
@@ -879,7 +952,7 @@ async function loadInventoryItems() {
     }));
 
     hydrateInventoryItemBundles();
-    hydrateInventoryOptionLists();
+    await loadInventoryDropdownOptions();
     console.log(`Loaded ${inventoryItems.length} inventory items`);
 }
 
@@ -2448,6 +2521,27 @@ async function addItemToSupabase(item) {
                 item_type: item.item_type || 'item',
                 visibility_level: item.visibility_level || 'standard',
                 brand: item.brand || item.supplier || null
+            },
+            {
+                id: item.id,
+                name: item.name,
+                category: payload.category,
+                sku: payload.sku,
+                stock: item.stock || 0,
+                threshold: resolvedThreshold,
+                status: item.status || 'Active',
+                part_number: item.part_number || null,
+                brand: item.brand || item.supplier || null
+            },
+            {
+                id: item.id,
+                name: item.name,
+                category: payload.category,
+                sku: payload.sku,
+                stock: item.stock || 0,
+                threshold: resolvedThreshold,
+                status: item.status || 'Active',
+                part_number: item.part_number || null
             }
         ];
 
@@ -3436,7 +3530,6 @@ async function addProjectCollaboratorToSupabase(projectId, userId, memberRole = 
     const { data, error } = await dbClient.from('project_collaborators').insert([{
         project_id: projectId,
         user_id: userId,
-        member_role: memberRole || 'collaborator'
         member_role: 'collaborator'
     }]).select();
     

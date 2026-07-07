@@ -238,9 +238,6 @@
                                 <button class="btn btn-secondary inventory-toolbar-btn inventory-basket-btn" id="open-basket-btn">
                                     <i class="ph ph-shopping-cart"></i> Basket (<span id="basket-count">0</span>)
                                 </button>
-                                <button class="btn btn-primary inventory-toolbar-btn" id="add-item-btn">
-                                    <i class="ph ph-plus"></i> Add Item
-                                </button>
                             </div>
                             <div class="inventory-action-group inventory-action-group-admin">
                                 <button class="btn btn-secondary inventory-toolbar-btn" id="manage-categories-btn">
@@ -258,6 +255,21 @@
                                 <button class="btn btn-secondary inventory-toolbar-btn" id="generate-barcode-labels-btn">
                                     <i class="ph ph-barcode"></i> Barcode Labels
                                 </button>
+                                <div class="bulk-actions-menu-wrap inventory-add-item-wrap" id="add-item-actions-wrap">
+                                    <div class="inventory-add-item-split">
+                                        <button class="btn btn-primary inventory-toolbar-btn" id="add-item-btn" type="button">
+                                            <i class="ph ph-plus"></i> Add Item
+                                        </button>
+                                        <button class="btn btn-primary inventory-toolbar-btn inventory-add-item-toggle" id="add-item-menu-toggle" type="button" aria-haspopup="true" aria-expanded="false" aria-label="Add item options">
+                                            <i class="ph ph-caret-down"></i>
+                                        </button>
+                                    </div>
+                                    <div class="bulk-actions-menu hidden" id="add-item-actions-menu" role="menu" aria-label="Add item options">
+                                        <button class="btn btn-secondary bulk-action-item" id="add-bundle-btn" type="button">
+                                            <i class="ph ph-package"></i> Create Item Bundle
+                                        </button>
+                                    </div>
+                                </div>
                                 <button class="btn btn-danger inventory-toolbar-btn" id="bulk-delete-items-btn">
                                     <i class="ph ph-trash"></i> Bulk Delete
                                 </button>
