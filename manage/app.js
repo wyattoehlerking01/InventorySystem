@@ -2060,7 +2060,7 @@ function renderBasket() {
     }
 
     // Populate projects
-    const myProjects = projects.filter(p => (p.ownerId === currentUser.id || p.collaborators.includes(currentUser.id)) && !String(p.id || '').startsWith('PERS-'));
+    const myProjects = projects.filter(p => (p.ownerId === currentUser.id || (Array.isArray(p.collaborators) && p.collaborators.includes(currentUser.id))) && !String(p.id || '').startsWith('PERS-'));
     projSelect.innerHTML = '<option value="">My Items (Personal)</option>' +
         myProjects.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
 }
@@ -4656,7 +4656,7 @@ function loadDashboard() {
         if (tabbedWidget) tabbedWidget.parentElement.style.display = 'none';
         if (studentWidgets) studentWidgets.style.display = '';
 
-        const myProjects = projects.filter(p => p.ownerId === currentUser.id || p.collaborators.includes(currentUser.id));
+        const myProjects = projects.filter(p => p.ownerId === currentUser.id || (Array.isArray(p.collaborators) && p.collaborators.includes(currentUser.id)));
         let itemsOutCount = 0;
         let dueBackCount = 0;
         let myItemsOut = [];
@@ -5642,7 +5642,7 @@ function renderInventory() {
 
             if (confirm(`Return ${item.name} to inventory?`)) {
                 // Find the project and remove the item
-                const myProjects = projects.filter(p => p.ownerId === currentUser.id || p.collaborators.includes(currentUser.id));
+                const myProjects = projects.filter(p => p.ownerId === currentUser.id || (Array.isArray(p.collaborators) && p.collaborators.includes(currentUser.id)));
                 myProjects.forEach(p => {
                     const outIdx = p.itemsOut.findIndex(io => io.itemId === itemId);
                     if (outIdx > -1) {
@@ -7296,7 +7296,7 @@ function renderProjects() {
     // Teachers/Devs see ALL projects (past and active)
     let visibleProjects = projects;
     if (currentUser.role === 'student') {
-        visibleProjects = projects.filter(p => p.ownerId === currentUser.id || p.collaborators.includes(currentUser.id));
+        visibleProjects = projects.filter(p => p.ownerId === currentUser.id || (Array.isArray(p.collaborators) && p.collaborators.includes(currentUser.id)));
     } else {
         visibleProjects = projects.filter(p => {
             if (!String(p.id || '').startsWith('PERS-')) return true;
@@ -9321,8 +9321,9 @@ function renderUsers() {
 
         const safeUserId = escapeHtml(String(user.id || ''));
         const safeUserName = escapeHtml(String(user.name || 'Unknown User'));
-        const safeUserRole = escapeHtml(String(user.role || 'unknown'));
         const safeGradeLabel = escapeHtml(String(gradeLabel || 'N/A'));
+        const showRoleBadge = ['teacher', 'developer'].includes(String(user.role || '').toLowerCase());
+        const safeUserRole = escapeHtml(String(user.role || 'unknown'));
 
         return `
             <tr class="${isSuspended ? 'opacity-60' : ''}">
@@ -9344,9 +9345,7 @@ function renderUsers() {
                 </td>
                 <td>
                     <div class="flex flex-col items-start gap-1">
-                        <span class="badge" style="color:${user.role === 'developer' ? '#8b5cf6' : user.role === 'teacher' ? '#f59e0b' : '#94a3b8'}">
-                            ${safeUserRole}
-                        </span>
+                        ${showRoleBadge ? `<span class="badge" style="color:${user.role === 'developer' ? '#8b5cf6' : '#f59e0b'}">${safeUserRole}</span>` : ''}
                         ${isSuspended ? `<span class="badge" style="background: rgba(239, 68, 68, 0.15); color: var(--danger); font-size: 0.7rem; border: 1px solid rgba(239,68,68,0.2)">SUSPENDED</span>` : ''}
                         ${suspensionBypassed ? `<span class="badge" style="background: rgba(16,185,129,0.18); color: var(--success); font-size: 0.7rem; border: 1px solid rgba(16,185,129,0.28)">ALWAYS ACTIVE</span>` : ''}
                     </div>
