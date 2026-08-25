@@ -1,0 +1,813 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Barcode Scanner Cart</title>
+  <script src="https://unpkg.com/@zxing/library@latest"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <style>
+    :root {
+      --bg: #f4f4f9;
+      --card-bg: #ffffff;
+      --text: #333333;
+      --subtext: #666666;
+      --accent: #007bff;
+      --danger: #dc3545;
+      --success: #28a745;
+      --border: #eeeeee;
+      --qty-btn-bg: #e9ecef;
+      --qty-btn-text: #333333;
+      --modal-overlay: rgba(0, 0, 0, 0.6);
+      --modal-sku-bg: #eee;
+      --toggle-bg: rgba(0, 0, 0, 0.08);
+      --toggle-border: rgba(0, 0, 0, 0.15);
+      --toggle-color: #333333;
+      --torch-active-bg: #6c757d;
+      --torch-active-text: #ffffff;
+    }
+
+    [data-theme="dark"] {
+      --bg: #121212;
+      --card-bg: #1e1e1e;
+      --text: #e0e0e0;
+      --subtext: #aaaaaa;
+      --accent: #375a7f;
+      --danger: #d9534f;
+      --success: #4bbf73;
+      --border: #2c2c2c;
+      --qty-btn-bg: #2c2c2c;
+      --qty-btn-text: #e0e0e0;
+      --modal-overlay: rgba(0, 0, 0, 0.8);
+      --modal-sku-bg: #2c2c2c;
+      --toggle-bg: rgba(255, 255, 255, 0.1);
+      --toggle-border: rgba(255, 255, 255, 0.2);
+      --toggle-color: #ffffff;
+      --torch-active-bg: #495057;
+      --torch-active-text: #ffffff;
+    }
+    
+    html, body {
+      min-height: 100vh;
+      margin: 0;
+    }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      padding: 16px;
+      padding-bottom: 56px;
+      background-color: var(--bg);
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      box-sizing: border-box;
+      transition: background-color 0.2s ease, color 0.2s ease;
+    }
+
+    .max-brightness {
+      filter: brightness(1.5) contrast(1.1);
+    }
+
+    .container {
+      width: 100%;
+      max-width: 420px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      flex: 1;
+    }
+
+    .scanner-card, .qr-card, .list-card {
+      background: var(--card-bg);
+      border-radius: 12px;
+      padding: 16px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+      box-sizing: border-box;
+      transition: background 0.2s ease;
+    }
+
+    .theme-icon-btn {
+      position: fixed;
+      bottom: 12px;
+      left: 12px;
+      z-index: 100;
+      width: 38px;
+      height: 38px;
+      padding: 0;
+      border-radius: 50%;
+      background: var(--toggle-bg);
+      border: 1px solid var(--toggle-border);
+      color: var(--toggle-color);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      backdrop-filter: blur(8px);
+      transition: background-color 0.2s ease, transform 0.1s ease;
+    }
+
+    .theme-icon-btn:active {
+      transform: scale(0.92);
+    }
+
+    .theme-icon-btn svg {
+      width: 20px;
+      height: 20px;
+      fill: currentColor;
+    }
+
+    .viewport {
+      position: relative;
+      width: 100%;
+      height: 180px;
+      border-radius: 8px;
+      overflow: hidden;
+      background: #000;
+    }
+
+    video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .scan-region {
+      position: absolute;
+      top: 20%; left: 10%; right: 10%; bottom: 20%;
+      border: 2px dashed #00ff88;
+      border-radius: 6px;
+      box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.4);
+      pointer-events: none;
+      overflow: hidden;
+    }
+
+    .laser-line {
+      display: none;
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 2px;
+      background: #00ff88;
+      box-shadow: 0 0 8px #00ff88, 0 0 12px #00ff88;
+      animation: laserScan 3.5s infinite ease-in-out;
+    }
+
+    .scanner-active .laser-line {
+      display: block;
+    }
+
+    @keyframes laserScan {
+      0% { top: 0%; opacity: 0.8; }
+      50% { top: 98%; opacity: 1; }
+      100% { top: 0%; opacity: 0.8; }
+    }
+
+    .controls {
+      margin-top: 12px;
+      display: flex;
+      gap: 8px;
+    }
+
+    button {
+      width: 100%;
+      padding: 12px;
+      font-size: 15px;
+      font-weight: 600;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      background-color: var(--accent);
+      color: white;
+      box-sizing: border-box;
+    }
+
+    button:disabled { background-color: #ccc; cursor: not-allowed; }
+    button.btn-danger { background-color: var(--danger); }
+    button.btn-success { background-color: var(--success); }
+
+    .torch-btn {
+      display: none;
+      width: 48px;
+      flex-shrink: 0;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      background-color: var(--qty-btn-bg);
+      color: var(--qty-btn-text);
+      border: 1px solid var(--border);
+    }
+
+    .scanner-active-controls .torch-btn {
+      display: flex;
+    }
+
+    .torch-btn.active {
+      background-color: var(--torch-active-bg);
+      color: var(--torch-active-text);
+    }
+
+    .qr-container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 12px;
+    }
+
+    .qr-label {
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 12px;
+      color: var(--text);
+      text-align: center;
+    }
+
+    #qrcode img {
+      margin: 0 auto;
+      border: 8px solid white;
+      border-radius: 4px;
+    }
+
+    ul {
+      list-style: none;
+      padding: 0;
+      margin: 8px 0 0 0;
+      max-height: 240px;
+      overflow-y: auto;
+    }
+
+    li {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .item-info {
+      font-family: monospace;
+      font-size: 13px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .item-actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .qty-btn {
+      width: 32px;
+      height: 32px;
+      padding: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      font-weight: bold;
+      background-color: var(--qty-btn-bg);
+      color: var(--qty-btn-text);
+      border-radius: 50%;
+      border: 1px solid var(--border);
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .qty-btn:active {
+      transform: scale(0.95);
+    }
+
+    .remove-btn {
+      width: auto;
+      padding: 6px 10px;
+      font-size: 11px;
+      background-color: var(--danger);
+      color: white;
+      border-radius: 6px;
+      margin-left: 4px;
+    }
+
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: var(--modal-overlay);
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .modal-overlay.active {
+      display: flex;
+    }
+
+    .modal {
+      background: var(--card-bg);
+      color: var(--text);
+      border-radius: 12px;
+      padding: 20px;
+      width: 85%;
+      max-width: 320px;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.3);
+      text-align: center;
+    }
+
+    .modal h3 { margin-top: 0; }
+
+    .modal-sku {
+      font-family: monospace;
+      font-size: 16px;
+      background: var(--modal-sku-bg);
+      padding: 8px;
+      border-radius: 4px;
+      word-break: break-all;
+      margin: 12px 0;
+    }
+
+    .modal-qty-picker {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      margin: 16px 0;
+    }
+
+    .modal-qty-val {
+      font-size: 18px;
+      font-weight: bold;
+      min-width: 32px;
+      text-align: center;
+    }
+
+    .modal-actions {
+      display: flex;
+      gap: 8px;
+    }
+
+    .modal-actions button {
+      flex: 1;
+    }
+
+    .footer {
+      margin-top: auto;
+      padding-top: 24px;
+      padding-bottom: 8px;
+      font-size: 13px;
+      color: var(--subtext);
+      text-align: center;
+      width: 100%;
+    }
+  </style>
+</head>
+<body>
+
+<button id="themeIconBtn" class="theme-icon-btn" title="Toggle Theme">
+  <svg id="iconSystem" viewBox="0 0 24 24"><path d="M4 6h16v10H4V6zm16-2H4c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h5l-1 2v1h8v-1l-1-2h5c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2z"/></svg>
+  <svg id="iconSun" viewBox="0 0 24 24" style="display:none;"><path d="M12 7c-2.76 0-5 2.24-5 5s2.24 5 5 5 5-2.24 5-5-2.24-5-5-5zM2 13h2c.55 0 1-.45 1-1s-.45-1-1-1H2c-.55 0-1 .45-1 1s.45 1 1 1zm18 0h2c.55 0 1-.45 1-1s-.45-1-1-1h-2c-.55 0-1 .45-1 1s.45 1 1 1zM11 2v2c0 .55.45 1 1 1s1-.45 1-1V2c0-.55-.45-1-1-1s-1 .45-1 1zm0 18v2c0 .55.45 1 1 1s1-.45 1-1v-2c0-.55-.45-1-1-1s-1 .45-1 1zM5.99 4.58c-.39-.39-1.03-.39-1.41 0s-.39 1.03 0 1.41l1.06 1.06c.39.39 1.03.39 1.41 0s.39-1.03 0-1.41L5.99 4.58zm12.37 12.37c-.39-.39-1.03-.39-1.41 0s.39 1.03 0 1.41l1.06 1.06c.39.39 1.03.39 1.41 0s.39-1.03 0-1.41l-1.06-1.06zm1.06-10.96c.39-.39.39-1.03 0-1.41s-1.03-.39-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41s1.03.39 1.41 0l1.06-1.06zM7.05 18.36c.39-.39.39-1.03 0-1.41s-1.03-.39-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41s1.03.39 1.41 0l1.06-1.06z"/></svg>
+  <svg id="iconMoon" viewBox="0 0 24 24" style="display:none;"><path d="M12.3 2a10 10 0 0 0 9.7 12.8 10 10 0 1 1-11.5-12.6c.6-.1 1.2-.2 1.8-.2z"/></svg>
+</button>
+
+<div class="container" id="app">
+  <div class="scanner-card">
+    <div class="viewport" id="viewport">
+      <video id="video" autoplay playsinline muted></video>
+      <div class="scan-region">
+        <div class="laser-line"></div>
+      </div>
+    </div>
+    <div class="controls" id="controls">
+      <button id="toggleBtn">Start Scanning</button>
+      <button id="torchBtn" class="torch-btn" disabled title="Toggle Flashlight">⚡</button>
+    </div>
+  </div>
+
+  <div class="qr-card">
+    <div class="qr-container">
+      <div class="qr-label">Scan me at the kiosk</div>
+      <div id="qrcode"></div>
+    </div>
+  </div>
+
+  <div class="list-card">
+    <div style="display: flex; justify-content: space-between; align-items: center;">
+      <strong style="font-size: 14px;">Scanned Items (<span id="itemCount">0</span>)</strong>
+      <button id="clearBtn" class="btn-danger" style="width: auto; padding: 6px 12px;">Reset</button>
+    </div>
+    <ul id="itemList"></ul>
+  </div>
+
+  <footer class="footer">
+    © 2026 W. Oehlerking
+  </footer>
+</div>
+
+<div class="modal-overlay" id="confirmModal">
+  <div class="modal">
+    <h3>Scanned Item</h3>
+    <div class="modal-sku" id="modalSku">---</div>
+    <div class="modal-qty-picker">
+      <button id="modalMinusBtn" class="qty-btn">-</button>
+      <span class="modal-qty-val" id="modalQty">1</span>
+      <button id="modalPlusBtn" class="qty-btn">+</button>
+    </div>
+    <div class="modal-actions">
+      <button id="modalCancelBtn" class="btn-danger">Cancel</button>
+      <button id="modalAddBtn" class="btn-success">Add to Batch</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  function triggerHaptic(pattern = 30) {
+    if ('vibrate' in navigator) {
+      try {
+        navigator.vibrate(pattern);
+      } catch (e) {}
+    }
+  }
+
+  const themeIconBtn = document.getElementById('themeIconBtn');
+  const iconSystem = document.getElementById('iconSystem');
+  const iconSun = document.getElementById('iconSun');
+  const iconMoon = document.getElementById('iconMoon');
+  const systemMediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+
+  const themeModes = ['system', 'light', 'dark'];
+  let currentThemeIndex = 0;
+
+  function updateIcons(mode) {
+    iconSystem.style.display = mode === 'system' ? 'block' : 'none';
+    iconSun.style.display = mode === 'light' ? 'block' : 'none';
+    iconMoon.style.display = mode === 'dark' ? 'block' : 'none';
+  }
+
+  function applyTheme(mode) {
+    if (mode === 'system') {
+      const isDark = systemMediaQuery.matches;
+      document.documentElement.setAttribute('data-theme', isDark ? 'dark' : 'light');
+    } else {
+      document.documentElement.setAttribute('data-theme', mode);
+    }
+    updateIcons(mode);
+  }
+
+  themeIconBtn.addEventListener('click', () => {
+    triggerHaptic(20);
+    currentThemeIndex = (currentThemeIndex + 1) % themeModes.length;
+    applyTheme(themeModes[currentThemeIndex]);
+  });
+
+  systemMediaQuery.addEventListener('change', () => {
+    if (themeModes[currentThemeIndex] === 'system') {
+      applyTheme('system');
+    }
+  });
+
+  applyTheme('system');
+
+  const STORAGE_KEY = 'barcode_cart_items';
+
+  const State = {
+    items: [],
+    lastScanned: null,
+
+    init() {
+      try {
+        const stored = localStorage.getItem(STORAGE_KEY);
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (Array.isArray(parsed)) {
+            this.items = parsed;
+          }
+        }
+      } catch (err) {
+        console.warn('Failed to load items from localStorage:', err);
+      }
+    },
+
+    save() {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(this.items));
+      } catch (err) {
+        console.warn('Failed to save items to localStorage:', err);
+      }
+    },
+
+    addItems(sku, qty) {
+      for (let i = 0; i < qty; i++) {
+        this.items.push(sku);
+      }
+      this.lastScanned = sku;
+      this.save();
+    },
+
+    updateQuantity(sku, delta) {
+      if (delta > 0) {
+        this.items.push(sku);
+      } else if (delta < 0) {
+        const index = this.items.lastIndexOf(sku);
+        if (index !== -1) {
+          this.items.splice(index, 1);
+        }
+      }
+      this.save();
+    },
+
+    removeItemCompletely(sku) {
+      this.items = this.items.filter(item => item !== sku);
+      this.save();
+    },
+    
+    clear() {
+      this.items = [];
+      this.lastScanned = null;
+      try {
+        localStorage.removeItem(STORAGE_KEY);
+      } catch (err) {
+        console.warn('Failed to clear localStorage:', err);
+      }
+    },
+    
+    getPayload() {
+      const skus = this.items.join(',');
+      return `BATCH|${skus}|${this.items.length}`;
+    },
+
+    getGroupedItems() {
+      const groups = {};
+      this.items.forEach(sku => {
+        groups[sku] = (groups[sku] || 0) + 1;
+      });
+      return groups;
+    }
+  };
+
+  State.init();
+
+  let wakeLock = null;
+
+  async function setMaxBrightness(enable) {
+    if (enable) {
+      document.body.classList.add('max-brightness');
+      try {
+        if ('wakeLock' in navigator) {
+          wakeLock = await navigator.wakeLock.request('screen');
+        }
+      } catch (err) {
+        console.warn('Wake Lock request failed:', err);
+      }
+    } else {
+      document.body.classList.remove('max-brightness');
+      if (wakeLock) {
+        wakeLock.release().then(() => wakeLock = null);
+      }
+    }
+  }
+
+  const qrContainer = document.getElementById('qrcode');
+  const itemCount = document.getElementById('itemCount');
+  const itemList = document.getElementById('itemList');
+  
+  const qrCodeGenerator = new QRCode(qrContainer, {
+    text: "BATCH||0",
+    width: 160,
+    height: 160,
+    correctLevel: QRCode.CorrectLevel.M
+  });
+
+  let debounceTimer = null;
+
+  function updateUI() {
+    const total = State.items.length;
+    itemCount.textContent = total;
+    
+    const grouped = State.getGroupedItems();
+    itemList.innerHTML = Object.entries(grouped).map(([sku, qty]) => `
+      <li>
+        <div class="item-info">
+          <span><strong>${sku}</strong></span>
+        </div>
+        <div class="item-actions">
+          <button class="qty-btn" onclick="handleUpdateQty('${sku}', -1)">-</button>
+          <span><strong>${qty}</strong></span>
+          <button class="qty-btn" onclick="handleUpdateQty('${sku}', 1)">+</button>
+          <button class="remove-btn" onclick="handleRemoveItem('${sku}')">Remove</button>
+        </div>
+      </li>
+    `).reverse().join('');
+
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      const payload = State.getPayload();
+      qrCodeGenerator.makeCode(payload);
+    }, 400);
+  }
+
+  function handleUpdateQty(sku, delta) {
+    triggerHaptic(30);
+    State.updateQuantity(sku, delta);
+    updateUI();
+  }
+
+  function handleRemoveItem(sku) {
+    triggerHaptic(50);
+    State.removeItemCompletely(sku);
+    updateUI();
+  }
+
+  updateUI();
+
+  const confirmModal = document.getElementById('confirmModal');
+  const modalSku = document.getElementById('modalSku');
+  const modalQty = document.getElementById('modalQty');
+  const modalMinusBtn = document.getElementById('modalMinusBtn');
+  const modalPlusBtn = document.getElementById('modalPlusBtn');
+  const modalCancelBtn = document.getElementById('modalCancelBtn');
+  const modalAddBtn = document.getElementById('modalAddBtn');
+
+  let currentScannedSku = null;
+  let currentModalQty = 1;
+  let isModalOpen = false;
+
+  function openModal(sku) {
+    isModalOpen = true;
+    currentScannedSku = sku;
+    currentModalQty = 1;
+    modalSku.textContent = sku;
+    modalQty.textContent = currentModalQty;
+    confirmModal.classList.add('active');
+  }
+
+  function closeModal() {
+    isModalOpen = false;
+    currentScannedSku = null;
+    confirmModal.classList.remove('active');
+  }
+
+  modalMinusBtn.addEventListener('click', () => {
+    if (currentModalQty > 1) {
+      triggerHaptic(30);
+      currentModalQty--;
+      modalQty.textContent = currentModalQty;
+    }
+  });
+
+  modalPlusBtn.addEventListener('click', () => {
+    triggerHaptic(30);
+    currentModalQty++;
+    modalQty.textContent = currentModalQty;
+  });
+
+  modalCancelBtn.addEventListener('click', () => {
+    triggerHaptic(30);
+    closeModal();
+  });
+
+  modalAddBtn.addEventListener('click', () => {
+    triggerHaptic(40);
+    if (currentScannedSku) {
+      State.addItems(currentScannedSku, currentModalQty);
+      updateUI();
+    }
+    closeModal();
+  });
+
+  const codeReader = new ZXing.BrowserMultiFormatReader();
+  const toggleBtn = document.getElementById('toggleBtn');
+  const torchBtn = document.getElementById('torchBtn');
+  const clearBtn = document.getElementById('clearBtn');
+  const videoElem = document.getElementById('video');
+  const viewportElem = document.getElementById('viewport');
+  const controlsElem = document.getElementById('controls');
+  let isScanning = false;
+  let activeVideoTrack = null;
+  let isTorchOn = false;
+
+  async function checkAndEnableTorchSupport(track) {
+    activeVideoTrack = track;
+    try {
+      const capabilities = track.getCapabilities ? track.getCapabilities() : {};
+      if (capabilities.torch) {
+        torchBtn.disabled = false;
+      } else {
+        torchBtn.disabled = true;
+      }
+    } catch (e) {
+      torchBtn.disabled = true;
+    }
+  }
+
+  async function toggleTorch() {
+    if (!activeVideoTrack) return;
+    triggerHaptic(30);
+    try {
+      isTorchOn = !isTorchOn;
+      
+      await activeVideoTrack.applyConstraints({
+        advanced: [{ torch: isTorchOn }]
+      });
+      
+      torchBtn.classList.toggle('active', isTorchOn);
+    } catch (err) {
+      console.warn("Failed to toggle flashlight:", err);
+      isTorchOn = false;
+      torchBtn.classList.remove('active');
+    }
+  }
+
+  torchBtn.addEventListener('click', toggleTorch);
+
+  async function startScanning() {
+    try {
+      isScanning = true;
+      toggleBtn.textContent = 'Stop Scanning';
+      toggleBtn.classList.add('btn-danger');
+      viewportElem.classList.add('scanner-active');
+      controlsElem.classList.add('scanner-active-controls');
+
+      await codeReader.decodeFromVideoDevice(undefined, 'video', (result, err) => {
+        if (!activeVideoTrack && videoElem.srcObject) {
+          const stream = videoElem.srcObject;
+          const tracks = stream.getVideoTracks();
+          if (tracks.length > 0) {
+            checkAndEnableTorchSupport(tracks[0]);
+          }
+        }
+
+        if (result && !isModalOpen) {
+          const sku = result.getText().trim();
+          
+          if (State.lastScanned === sku) return;
+
+          triggerHaptic([100, 50, 100]);
+          openModal(sku);
+        }
+      });
+
+      setMaxBrightness(true);
+    } catch (err) {
+      console.error("Camera access failed:", err);
+      alert("Unable to access camera.");
+      stopScanning();
+    }
+  }
+
+  function stopScanning() {
+    codeReader.reset();
+
+    if (activeVideoTrack && isTorchOn) {
+      activeVideoTrack.applyConstraints({ advanced: [{ torch: false }] }).catch(() => {});
+    }
+
+    const stream = videoElem.srcObject;
+    if (stream) {
+      const tracks = stream.getTracks();
+      tracks.forEach(track => {
+        track.stop();
+        stream.removeTrack(track);
+      });
+      videoElem.srcObject = null;
+      videoElem.removeAttribute('src');
+      videoElem.load();
+    }
+
+    setTimeout(() => {
+      if (videoElem.srcObject) {
+        const lingeringStream = videoElem.srcObject;
+        lingeringStream.getTracks().forEach(track => track.stop());
+        videoElem.srcObject = null;
+      }
+    }, 50);
+
+    isScanning = false;
+    activeVideoTrack = null;
+    isTorchOn = false;
+    torchBtn.disabled = true;
+    torchBtn.classList.remove('active');
+    viewportElem.classList.remove('scanner-active');
+    controlsElem.classList.remove('scanner-active-controls');
+    toggleBtn.textContent = 'Start Scanning';
+    toggleBtn.classList.remove('btn-danger');
+    setMaxBrightness(false);
+  }
+
+  toggleBtn.addEventListener('click', () => {
+    triggerHaptic(50);
+    if (isScanning) {
+      stopScanning();
+    } else {
+      startScanning();
+    }
+  });
+
+  clearBtn.addEventListener('click', () => {
+    triggerHaptic([40, 40, 40]);
+    State.clear();
+    updateUI();
+  });
+</script>
+</body>
+</html>
