@@ -3,7 +3,17 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Barcode Scanner Cart</title>
+  <title>Inventory Barcode Scanner</title>
+
+  <!-- Favicon for Browsers -->
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' height='24' viewBox='0 0 24 24' width='24' fill='%23e3e3e3'%3E%3Cpath d='M2 4h2v16H2V4zm4 0h1v16H6V4zm3 0h2v16H9V4zm4 0h1v16h-1V4zm3 0h2v16h-2V4zm3 0h1v16h-1V4z'/%3E%3C/svg%3E">
+
+  <!-- Apple iOS Home Screen Icon -->
+  <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' height='180' viewBox='0 0 24 24' width='180' fill='%23e3e3e3'%3E%3Crect width='100%25' height='100%25' fill='%23121212'/%3E%3Cpath d='M2 4h2v16H2V4zm4 0h1v16H6V4zm3 0h2v16H9V4zm4 0h1v16h-1V4zm3 0h2v16h-2V4zm3 0h1v16h-1V4z' transform='scale(0.7) translate(5, 5)'/%3E%3C/svg%3E">
+
+  <!-- Web App Manifest for Android PWA / Home Screen -->
+  <link rel="manifest" href="data:application/json,%7B%22name%22%3A%22Inventory%20Barcode%20Scanner%22%2C%22short_name%22%3A%22Scanner%22%2C%22start_url%22%3A%22.%22%2C%22display%22%3A%22standalone%22%2C%22background_color%22%3A%22%23121212%22%2C%22theme_color%22%3A%22%23121212%22%2C%22icons%22%3A%5B%7B%22src%22%3A%22data%3Aimage%2Fsvg%2Bxml%2C%253Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20height%3D%27192%27%20viewBox%3D%270%200%2024%2024%27%20width%3D%27192%27%20fill%3D%27%2523e3e3e3%27%253E%253Crect%20width%3D%27100%2525%27%20height%3D%27100%2525%27%20fill%3D%27%2523121212%27%2F%253E%253Cpath%20d%3D%27M2%204h2v16H2V4zm4%200h1v16H6V4zm3%200h2v16H9V4zm4%200h1v16h-1V4zm3%200h2v16h-2V4zm3%200h1v16h-1V4z%27%20transform%3D%27scale(0.7)%20translate(5%2C%205)%27%2F%253E%253C%2Fsvg%253E%22%2C%22sizes%22%3A%22192x192%22%2C%22type%22%3A%22image%2Fsvg%2Bxml%22%7D%5D%7D">
+
   <script src="https://unpkg.com/@zxing/library@latest"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
   <style>
