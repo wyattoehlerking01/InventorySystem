@@ -202,3 +202,112 @@ test('addProjectItemOutBatchToSupabase rolls back inserted rows on failure', asy
   assert.equal(result, null);
   assert.equal(mockClient.rows.length, 0);
 });
+
+test('sortAlphanumericNatural sorts numerically and alphabetically (0,1,2,3... A-Z)', () => {
+  const context = loadDataContext({ withSupabase: false });
+  const unsorted = ['Tag 10', 'Tag 2', 'Tag 1', 'Tag 0', 'Beta', 'Alpha', '0', '1', '2', '10', '20'];
+  const sorted = context.sortAlphanumericNatural(unsorted);
+
+  assert.deepEqual(sorted, [
+    '0',
+    '1',
+    '2',
+    '10',
+    '20',
+    'Alpha',
+    'Beta',
+    'Tag 0',
+    'Tag 1',
+    'Tag 2',
+    'Tag 10'
+  ]);
+});
+
+test('loadCategories and loadVisibilityTags sort rows naturally on load', async () => {
+  const mockClient = {
+    from(table) {
+      if (table === 'categories') {
+        return {
+          select: async () => ({
+            data: [
+              { name: 'Woodworking' },
+              { name: '3D Printing' },
+              { name: '10mm Tools' },
+              { name: '2mm Tools' },
+              { name: '0 Setup' },
+              { name: 'Electronics' }
+            ],
+            error: null
+          })
+        };
+      }
+      if (table === 'visibility_tags') {
+        return {
+          select: async () => ({
+            data: [
+              { name: 'Period 10' },
+              { name: 'Period 2' },
+              { name: 'Period 1' },
+              { name: 'All Grades' },
+              { name: '0-Intro' }
+            ],
+            error: null
+          })
+        };
+      }
+      return { select: async () => ({ data: [], error: null }) };
+    }
+  };
+
+  const context = loadDataContext({ withSupabase: true, supabaseClient: mockClient });
+
+  await context.loadCategories();
+  const loadedCategories = vm.runInContext('categories', context);
+  assert.deepEqual(loadedCategories, [
+    '0 Setup',
+    '2mm Tools',
+    '3D Printing',
+    '10mm Tools',
+    'Electronics',
+    'Woodworking'
+  ]);
+
+  await context.loadVisibilityTags();
+  const loadedVisibilityTags = vm.runInContext('visibilityTags', context);
+  assert.deepEqual(loadedVisibilityTags, [
+    '0-Intro',
+    'All Grades',
+    'Period 1',
+    'Period 2',
+    'Period 10'
+  ]);
+});
+
+test('renderItemVisibilityTagsHtml formats 1 tag as tag and >1 tags as summary button', () => {
+  const manageAppSource = fs.readFileSync(path.join(__dirname, '..', 'manage', 'app.js'), 'utf8');
+  assert.match(manageAppSource, /function renderItemVisibilityTagsHtml/);
+
+  // Extract the function using regex or execute in a minimal sandbox
+  const escapeHtml = str => String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const sandbox = { escapeHtml };
+  vm.createContext(sandbox);
+  const fnCode = manageAppSource.match(/function renderItemVisibilityTagsHtml\(item\) \{[\s\S]*?\n\}/)[0];
+  vm.runInContext(fnCode, sandbox);
+
+  // 0 tags
+  assert.equal(sandbox.renderItemVisibilityTagsHtml({ id: 'item-1', visibilityTags: [] }), '');
+
+  // 1 tag
+  const singleTagHtml = sandbox.renderItemVisibilityTagsHtml({ id: 'item-2', visibilityTags: ['Woodshop'] });
+  assert.ok(singleTagHtml.includes('visibility-tag'));
+  assert.ok(singleTagHtml.includes('Woodshop'));
+  assert.ok(!singleTagHtml.includes('visibility-tag-summary-btn'));
+
+  // Multiple tags (>1 tags)
+  const multiTagHtml = sandbox.renderItemVisibilityTagsHtml({ id: 'item-3', visibilityTags: ['Woodshop', 'Laser', '3D Print'] });
+  assert.ok(multiTagHtml.includes('visibility-tag-summary-btn'));
+  assert.ok(multiTagHtml.includes('3 tags'));
+  assert.ok(multiTagHtml.includes('data-id="item-3"'));
+});
+
+

@@ -1,0 +1,10 @@
+{
+  "name": "LCHS Inventory System",
+  "description": "LCHS Inventory System and Management Kiosk",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

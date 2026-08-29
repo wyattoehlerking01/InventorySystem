@@ -96,8 +96,7 @@
                 <i class="ph ph-barcode"></i>
                 <p>Waiting for Barcode Scan...</p>
                 <!-- Hidden input that captures the barcode scanner keystrokes -->
-                <input type="password" id="barcode-input" class="hidden-input" autocomplete="off" autofocus
-                    placeholder="Scan Barcode">
+                <input type="password" id="barcode-input" class="hidden-input" autocomplete="off" autofocus>
             </div>
 
             <button class="btn btn-secondary mt-4 w-full" id="show-help-btn" style="margin-top: 2rem;">
@@ -166,11 +165,14 @@
             </div>
 
             <nav class="sidebar-nav">
+                <button class="nav-btn active" data-target="projects">
+                    <i class="ph ph-folder-open"></i> Projects
+                </button>
                 <button class="nav-btn" data-target="inventory">
                     <i class="ph ph-package"></i> Inventory
                 </button>
-                <button class="nav-btn active" data-target="projects">
-                    <i class="ph ph-folder-open"></i> Projects
+                <button class="nav-btn" id="nav-knowledge-base" data-target="knowledge-base">
+                    <i class="ph ph-book-open-text"></i> Knowledge Base
                 </button>
                 <button class="nav-btn" id="nav-class-display" data-target="class-display">
                     <i class="ph ph-monitor-play"></i> Class Display
@@ -248,12 +250,19 @@
                                 </button>
                             </div>
                             <div class="inventory-action-group inventory-action-group-admin">
-                                <button class="btn btn-secondary inventory-toolbar-btn" id="manage-categories-btn">
-                                    <i class="ph ph-tag"></i> Manage Categories
-                                </button>
-                                <button class="btn btn-secondary inventory-toolbar-btn" id="manage-visibility-tags-btn">
-                                    <i class="ph ph-eye"></i> Visibility Tags
-                                </button>
+                                <div class="bulk-actions-menu-wrap" id="inventory-edit-actions-wrap">
+                                    <button class="btn btn-secondary inventory-toolbar-btn" id="inventory-edit-menu-toggle" type="button" aria-haspopup="true" aria-expanded="false">
+                                        <i class="ph ph-pencil-simple"></i> Edit <i class="ph ph-caret-down"></i>
+                                    </button>
+                                    <div class="bulk-actions-menu hidden" id="inventory-edit-actions-menu" role="menu" aria-label="Edit options">
+                                        <button class="btn btn-secondary bulk-action-item" id="manage-categories-btn" type="button">
+                                            <i class="ph ph-tag"></i> Manage Categories
+                                        </button>
+                                        <button class="btn btn-secondary bulk-action-item" id="manage-visibility-tags-btn" type="button">
+                                            <i class="ph ph-eye"></i> Visibility Tags
+                                        </button>
+                                    </div>
+                                </div>
                                 <button class="btn btn-secondary inventory-toolbar-btn" id="bulk-manage-items-btn">
                                     <i class="ph ph-stack"></i> Bulk Tags/Categories
                                 </button>
@@ -271,7 +280,7 @@
                         <table class="data-table">
                             <thead>
                                 <tr>
-                                    <th>Item Name</th>
+                                    <th></th>
                                     <th>Category</th>
                                     <th>Barcode</th>
                                     <th>Stock Status</th>
@@ -287,11 +296,30 @@
 
                 <!-- Projects Page -->
                 <div id="page-projects" class="page hidden">
-                    <div class="action-bar">
-                        <h3>Active Projects</h3>
-                        <button class="btn btn-primary" id="create-project-btn">
-                            <i class="ph ph-folder-plus"></i> New Project
-                        </button>
+                    <div class="projects-control-bar glass-panel">
+                        <div class="projects-bar-left">
+                            <div class="projects-search-box">
+                                <i class="ph ph-magnifying-glass search-icon"></i>
+                                <input type="text" id="projects-search-input" class="projects-search-input" placeholder="Search projects, members, classes, or tools..." autocomplete="off">
+                                <button type="button" class="projects-search-clear hidden" id="projects-search-clear" title="Clear search"><i class="ph ph-x"></i></button>
+                            </div>
+                            <div class="projects-filter-pills" id="projects-filter-pills">
+                                <button type="button" class="proj-filter-pill active" data-filter="all">All</button>
+                                <button type="button" class="proj-filter-pill" data-filter="active">Active</button>
+                                <button type="button" class="proj-filter-pill" data-filter="items-out">Has Items Out</button>
+                                <button type="button" class="proj-filter-pill" data-filter="mine">My Projects</button>
+                                <button type="button" class="proj-filter-pill" data-filter="completed">Completed</button>
+                            </div>
+                        </div>
+                        <div class="projects-bar-right">
+                            <div class="projects-metrics-badge" id="projects-summary-stats">
+                                <span class="metric-pill active-metric"><i class="ph ph-folder-open"></i> <span id="projects-count-active">0</span> Active</span>
+                                <span class="metric-pill items-metric"><i class="ph ph-toolbox"></i> <span id="projects-count-items">0</span> Items Out</span>
+                            </div>
+                            <button class="btn btn-primary" id="create-project-btn">
+                                <i class="ph ph-folder-plus"></i> New Project
+                            </button>
+                        </div>
                     </div>
 
                     <div class="projects-grid" id="projects-container">
@@ -637,6 +665,53 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- Knowledge Base Page -->
+                <div id="page-knowledge-base" class="page hidden">
+                    <div class="kb-header-container glass-panel">
+                        <div class="kb-header-top">
+                            <div class="kb-header-title-block">
+                                <div class="kb-header-icon"><i class="ph ph-book-open-text"></i></div>
+                                <div>
+                                    <h2>Student Resource & Knowledge Hub</h2>
+                                    <p class="text-muted">Explore robotics wiring guides, drivetrain physics, machining charts, 3D printing settings, and engineering calculators.</p>
+                                </div>
+                            </div>
+                            <div class="kb-header-actions">
+                                <button class="btn btn-secondary" id="kb-pinned-filter-btn" title="View Pinned Guides">
+                                    <i class="ph ph-bookmark-simple"></i>
+                                    <span>Pinned</span>
+                                    <span class="badge" id="kb-pinned-count" style="margin-left: 0.35rem;">0</span>
+                                </button>
+                                <button class="btn btn-secondary" id="kb-calculators-btn" title="Interactive Engineering Calculators">
+                                    <i class="ph ph-calculator"></i>
+                                    <span>Calculators</span>
+                                </button>
+                                <button class="btn btn-primary hidden" id="kb-add-guide-btn">
+                                    <i class="ph ph-plus-circle"></i>
+                                    <span>Add Resource</span>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="kb-search-bar-wrap">
+                            <div class="kb-search-input-box">
+                                <i class="ph ph-magnifying-glass"></i>
+                                <input type="text" id="kb-search-input" class="form-control" placeholder="Search guides, mechanisms, formulas, fasteners, wire gauges (e.g. Swerve, 10-32, CAN bus)..." autocomplete="off">
+                                <button id="kb-search-clear-btn" class="kb-search-clear hidden" aria-label="Clear Search"><i class="ph ph-x"></i></button>
+                            </div>
+                        </div>
+
+                        <div class="kb-category-pills-wrap" id="kb-category-pills">
+                            <!-- Category pills injected via JS -->
+                        </div>
+                    </div>
+
+                    <!-- Content / Grid Area -->
+                    <div id="kb-content-container" class="kb-content-container">
+                        <!-- Injected via JS -->
+                    </div>
+                </div>
             </div>
         </main>
     </div>
@@ -653,6 +728,7 @@
     <script src="env.js"></script>
     <script src="../door-urls.js"></script>
     <script src="data.js"></script>
+    <script src="knowledge-base.js"></script>
     <script src="app.js"></script>
 </body>
 

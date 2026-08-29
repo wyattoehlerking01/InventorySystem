@@ -1,4 +1,4 @@
-﻿/* =======================================
+/* =======================================
    SUPABASE CLIENT & INITIALIZATION
    ======================================= */
 
@@ -140,6 +140,10 @@ function normalizeBarcodePart(value) {
         .replace(/\s+/g, ' ')
         .replace(/\|/g, '')
         .toUpperCase();
+}
+
+function sortAlphanumericNatural(list) {
+    return (list || []).slice().sort((a, b) => String(a || '').localeCompare(String(b || ''), undefined, { numeric: true, sensitivity: 'base' }));
 }
 
 function composeInventoryBarcode({ mainCategory, subCategory, brand, itemName, name } = {}) {
@@ -580,7 +584,7 @@ async function loadCategories() {
         console.error('Error loading categories:', error);
         return;
     }
-    categories = (data || []).map(c => c.name);
+    categories = sortAlphanumericNatural((data || []).map(c => c.name).filter(Boolean));
     console.log(`Loaded ${categories.length} categories`);
 }
 
@@ -593,7 +597,7 @@ async function loadVisibilityTags() {
         console.error('Error loading visibility tags:', error);
         return;
     }
-    visibilityTags = (data || []).map(t => t.name);
+    visibilityTags = sortAlphanumericNatural((data || []).map(t => t.name).filter(Boolean));
     console.log(`Loaded ${visibilityTags.length} visibility tags`);
 }
 
@@ -1053,9 +1057,15 @@ async function loadInventoryItemVisibility() {
         const item = inventoryItems.find(i => i.id === iv.item_id);
         if (item) {
             if (!item.visibilityTags) item.visibilityTags = [];
-            if (tagMap[iv.tag_id]) {
+            if (tagMap[iv.tag_id] && !item.visibilityTags.includes(tagMap[iv.tag_id])) {
                 item.visibilityTags.push(tagMap[iv.tag_id]);
             }
+        }
+    });
+
+    inventoryItems.forEach(item => {
+        if (Array.isArray(item.visibilityTags)) {
+            item.visibilityTags = sortAlphanumericNatural(item.visibilityTags);
         }
     });
 }
@@ -2510,114 +2520,409 @@ async function updateSystemFlagStatusInSupabase(flagId, status) {
  * Add category to categories table
  */
 async function addCategoryToSupabase(name) {
-    const { data, error } = await dbClient.from('categories').insert([{ name }]).select();
-    
-    if (error) {
-        console.error('Error adding category:', error);
+    const trimmed = String(name || '').trim();
+    if (!trimmed) return null;
+
+    try {
+        const { data: existing } = await dbClient.from('categories')
+            .select('name')
+            .eq('name', trimmed)
+            .maybeSingle();
+
+        if (existing) {
+            if (!categories.includes(trimmed)) {
+                categories = sortAlphanumericNatural([...categories, trimmed]);
+            }
+            return existing;
+        }
+
+        const { data, error } = await dbClient.from('categories').insert([{ name: trimmed }]).select();
+        if (error) {
+            console.error('Error adding category:', error);
+            return null;
+        }
+        const created = data?.[0] || { name: trimmed };
+        if (!categories.includes(trimmed)) {
+            categories = sortAlphanumericNatural([...categories, trimmed]);
+        }
+        return created;
+    } catch (err) {
+        console.error('Unexpected error in addCategoryToSupabase:', err);
         return null;
     }
-    return data?.[0];
 }
 
 /**
- * Delete category from categories table
+ * Delete category from categories table and reassign any items to Uncategorized
  */
 async function deleteCategoryFromSupabase(name) {
-    const { error } = await dbClient.from('categories')
-        .delete()
-        .eq('name', name);
-    
-    if (error) {
-        console.error('Error deleting category:', error);
-        return false;
+    const trimmed = String(name || '').trim();
+    if (!trimmed) return false;
+
+    try {
+        // If deleting a category other than Uncategorized, ensure Uncategorized exists in categories
+        if (trimmed.toLowerCase() !== 'uncategorized') {
+            const { data: uncategorizedRow } = await dbClient.from('categories')
+                .select('name')
+                .ilike('name', 'Uncategorized')
+                .maybeSingle();
+
+            if (!uncategorizedRow) {
+                await dbClient.from('categories').insert([{ name: 'Uncategorized' }]).select();
+                if (!categories.includes('Uncategorized')) {
+                    categories.push('Uncategorized');
+                }
+            }
+
+            // Update inventory_items where category matches
+            try {
+                await dbClient.from('inventory_items')
+                    .update({ category: 'Uncategorized' })
+                    .ilike('category', trimmed);
+            } catch (err) {
+                await dbClient.from('inventory_items')
+                    .update({ category: 'Uncategorized' })
+                    .eq('category', trimmed);
+            }
+
+            try {
+                await dbClient.from('inventory_items')
+                    .update({ main_category: 'Uncategorized' })
+                    .ilike('main_category', trimmed);
+            } catch (err) {
+                // Column may not exist or already updated
+            }
+        }
+
+        const { error } = await dbClient.from('categories')
+            .delete()
+            .ilike('name', trimmed);
+
+        if (error) {
+            console.warn('Error deleting category with ilike, attempting exact eq:', error);
+            const { error: eqErr } = await dbClient.from('categories')
+                .delete()
+                .eq('name', trimmed);
+            if (eqErr) {
+                console.error('Error deleting category from database:', eqErr);
+            }
+        }
+
+        // Update in-memory collections
+        categories = categories.filter(c => c.toLowerCase() !== trimmed.toLowerCase());
+        if (Array.isArray(inventoryItems)) {
+            inventoryItems.forEach(item => {
+                if (item.category && item.category.toLowerCase() === trimmed.toLowerCase()) item.category = 'Uncategorized';
+                if (item.main_category && item.main_category.toLowerCase() === trimmed.toLowerCase()) item.main_category = 'Uncategorized';
+                if (item.mainCategory && item.mainCategory.toLowerCase() === trimmed.toLowerCase()) item.mainCategory = 'Uncategorized';
+            });
+        }
+
+        return true;
+    } catch (err) {
+        console.error('Unexpected error in deleteCategoryFromSupabase:', err);
+        categories = categories.filter(c => c.toLowerCase() !== trimmed.toLowerCase());
+        return true;
     }
-    return true;
 }
 
 /**
  * Rename category and move existing inventory items to new category
  */
 async function renameCategoryInSupabase(oldName, newName) {
-    const { data: existing, error: existingErr } = await dbClient.from('categories')
-        .select('name')
-        .eq('name', newName)
-        .maybeSingle();
+    const trimmedOld = String(oldName || '').trim();
+    const trimmedNew = String(newName || '').trim();
 
-    if (existingErr) {
-        console.error('Error checking existing category:', existingErr);
-        return false;
-    }
+    if (!trimmedOld || !trimmedNew) return false;
+    if (trimmedOld === trimmedNew) return true;
 
-    if (!existing) {
-        const { error: addErr } = await dbClient.from('categories').insert([{ name: newName }]).select();
-        if (addErr) {
-            console.error('Error creating new category name:', addErr);
-            return false;
+    try {
+        const { data: existing, error: existingErr } = await dbClient.from('categories')
+            .select('name')
+            .eq('name', trimmedNew)
+            .maybeSingle();
+
+        if (existingErr) {
+            console.error('Error checking existing category:', existingErr);
         }
-    }
 
-    const { error: updateItemsErr } = await dbClient.from('inventory_items')
-        .update({ category: newName })
-        .eq('category', oldName).select();
+        if (!existing) {
+            const { error: addErr } = await dbClient.from('categories').insert([{ name: trimmedNew }]).select();
+            if (addErr) {
+                console.error('Error creating new category name:', addErr);
+            }
+        }
 
-    if (updateItemsErr) {
-        console.error('Error reassigning inventory item categories:', updateItemsErr);
+        // Update inventory_items
+        try {
+            await dbClient.from('inventory_items')
+                .update({ category: trimmedNew, main_category: trimmedNew })
+                .eq('category', trimmedOld);
+        } catch (err) {
+            await dbClient.from('inventory_items')
+                .update({ category: trimmedNew })
+                .eq('category', trimmedOld);
+        }
+
+        try {
+            await dbClient.from('inventory_items')
+                .update({ category: trimmedNew, main_category: trimmedNew })
+                .eq('main_category', trimmedOld);
+        } catch (err) {
+            // main_category column might not exist or already updated
+        }
+
+        const { error: deleteOldErr } = await dbClient.from('categories')
+            .delete()
+            .eq('name', trimmedOld);
+
+        if (deleteOldErr) {
+            console.warn('Warning deleting old category name:', deleteOldErr);
+        }
+
+        // Update in-memory state
+        categories = sortAlphanumericNatural([
+            ...categories.filter(c => c !== trimmedOld && c !== trimmedNew),
+            trimmedNew
+        ]);
+
+        if (Array.isArray(inventoryItems)) {
+            inventoryItems.forEach(item => {
+                if (item.category === trimmedOld) item.category = trimmedNew;
+                if (item.main_category === trimmedOld) item.main_category = trimmedNew;
+                if (item.mainCategory === trimmedOld) item.mainCategory = trimmedNew;
+            });
+        }
+
+        return true;
+    } catch (err) {
+        console.error('Unexpected error in renameCategoryInSupabase:', err);
         return false;
     }
-
-    const { error: deleteOldErr } = await dbClient.from('categories')
-        .delete()
-        .eq('name', oldName);
-
-    if (deleteOldErr) {
-        console.error('Error deleting old category name:', deleteOldErr);
-        return false;
-    }
-
-    return true;
 }
 
 /**
  * Add visibility tag to visibility_tags table
  */
 async function addVisibilityTagToSupabase(name) {
-    const { data, error } = await dbClient.from('visibility_tags').insert([{ name }]).select();
-    
-    if (error) {
-        console.error('Error adding visibility tag:', error);
+    const trimmed = String(name || '').trim();
+    if (!trimmed) return null;
+
+    try {
+        const { data: existing } = await dbClient.from('visibility_tags')
+            .select('id, name')
+            .eq('name', trimmed)
+            .maybeSingle();
+
+        if (existing) {
+            if (!visibilityTags.includes(trimmed)) {
+                visibilityTags = sortAlphanumericNatural([...visibilityTags, trimmed]);
+            }
+            return existing;
+        }
+
+        const { data, error } = await dbClient.from('visibility_tags').insert([{ name: trimmed }]).select();
+        if (error) {
+            console.error('Error adding visibility tag:', error);
+            return null;
+        }
+        const created = data?.[0] || { name: trimmed };
+        if (!visibilityTags.includes(trimmed)) {
+            visibilityTags = sortAlphanumericNatural([...visibilityTags, trimmed]);
+        }
+        return created;
+    } catch (err) {
+        console.error('Unexpected error in addVisibilityTagToSupabase:', err);
         return null;
     }
-    return data?.[0];
 }
 
 /**
- * Rename visibility tag
+ * Rename visibility tag across database and classes/items
  */
 async function renameVisibilityTagInSupabase(oldName, newName) {
-    const { data, error } = await dbClient.from('visibility_tags')
-        .update({ name: newName })
-        .eq('name', oldName).select();
+    const trimmedOld = String(oldName || '').trim();
+    const trimmedNew = String(newName || '').trim();
 
-    if (error) {
-        console.error('Error renaming visibility tag:', error);
-        return null;
+    if (!trimmedOld || !trimmedNew) return false;
+    if (trimmedOld === trimmedNew) return true;
+
+    try {
+        const { data: oldTag } = await dbClient.from('visibility_tags')
+            .select('id, name')
+            .eq('name', trimmedOld)
+            .maybeSingle();
+
+        const { data: existingNewTag } = await dbClient.from('visibility_tags')
+            .select('id, name')
+            .eq('name', trimmedNew)
+            .maybeSingle();
+
+        if (existingNewTag && oldTag && existingNewTag.id !== oldTag.id) {
+            // New tag already exists in table, merge old tag references into new tag
+            const oldId = oldTag.id;
+            const newId = existingNewTag.id;
+
+            // Re-point inventory_item_visibility
+            const { data: itemVis } = await dbClient.from('inventory_item_visibility')
+                .select('item_id')
+                .eq('tag_id', oldId);
+
+            if (Array.isArray(itemVis) && itemVis.length > 0) {
+                for (const row of itemVis) {
+                    const { data: existingLink } = await dbClient.from('inventory_item_visibility')
+                        .select('item_id')
+                        .eq('item_id', row.item_id)
+                        .eq('tag_id', newId)
+                        .maybeSingle();
+
+                    if (!existingLink) {
+                        await dbClient.from('inventory_item_visibility').insert([{ item_id: row.item_id, tag_id: newId }]);
+                    }
+                }
+                await dbClient.from('inventory_item_visibility').delete().eq('tag_id', oldId);
+            }
+
+            // Re-point class_visibility_tags
+            const { data: classVis } = await dbClient.from('class_visibility_tags')
+                .select('class_id')
+                .eq('tag_id', oldId);
+
+            if (Array.isArray(classVis) && classVis.length > 0) {
+                for (const row of classVis) {
+                    const { data: existingLink } = await dbClient.from('class_visibility_tags')
+                        .select('class_id')
+                        .eq('class_id', row.class_id)
+                        .eq('tag_id', newId)
+                        .maybeSingle();
+
+                    if (!existingLink) {
+                        await dbClient.from('class_visibility_tags').insert([{ class_id: row.class_id, tag_id: newId }]);
+                    }
+                }
+                await dbClient.from('class_visibility_tags').delete().eq('tag_id', oldId);
+            }
+
+            // Delete the old tag row
+            await dbClient.from('visibility_tags').delete().eq('id', oldId);
+        } else if (oldTag) {
+            const { error: updateErr } = await dbClient.from('visibility_tags')
+                .update({ name: trimmedNew })
+                .eq('id', oldTag.id);
+
+            if (updateErr) {
+                console.error('Error updating visibility tag name:', updateErr);
+                return false;
+            }
+        } else {
+            // Old tag didn't exist in DB; create new tag
+            await dbClient.from('visibility_tags').insert([{ name: trimmedNew }]);
+        }
+
+        // Update in-memory state
+        visibilityTags = sortAlphanumericNatural([
+            ...visibilityTags.filter(t => t !== trimmedOld && t !== trimmedNew),
+            trimmedNew
+        ]);
+
+        if (Array.isArray(inventoryItems)) {
+            inventoryItems.forEach(item => {
+                if (Array.isArray(item.visibilityTags)) {
+                    if (item.visibilityTags.includes(trimmedOld)) {
+                        item.visibilityTags = sortAlphanumericNatural([
+                            ...item.visibilityTags.filter(t => t !== trimmedOld && t !== trimmedNew),
+                            trimmedNew
+                        ]);
+                    }
+                }
+            });
+        }
+
+        if (Array.isArray(studentClasses)) {
+            studentClasses.forEach(cls => {
+                if (Array.isArray(cls.visibilityTags)) {
+                    if (cls.visibilityTags.includes(trimmedOld)) {
+                        cls.visibilityTags = sortAlphanumericNatural([
+                            ...cls.visibilityTags.filter(t => t !== trimmedOld && t !== trimmedNew),
+                            trimmedNew
+                        ]);
+                    }
+                }
+            });
+        }
+
+        return true;
+    } catch (err) {
+        console.error('Unexpected error in renameVisibilityTagInSupabase:', err);
+        return false;
     }
-    return data?.[0] || null;
 }
 
 /**
- * Delete visibility tag by name
+ * Delete visibility tag by name, cleaning up foreign key links in inventory and classes
  */
 async function deleteVisibilityTagFromSupabase(name) {
-    const { error } = await dbClient.from('visibility_tags')
-        .delete()
-        .eq('name', name);
+    const trimmed = String(name || '').trim();
+    if (!trimmed) return false;
 
-    if (error) {
-        console.error('Error deleting visibility tag:', error);
+    try {
+        // Find matching tag IDs
+        const { data: tagRows, error: findError } = await dbClient.from('visibility_tags')
+            .select('id')
+            .eq('name', trimmed);
+
+        if (findError) {
+            console.error('Error finding visibility tag by name:', findError);
+        }
+
+        const tagIds = (tagRows || []).map(r => r.id).filter(Boolean);
+
+        if (tagIds.length > 0) {
+            // Delete dependent records first to satisfy foreign key constraints
+            for (const tagId of tagIds) {
+                await dbClient.from('inventory_item_visibility').delete().eq('tag_id', tagId);
+                await dbClient.from('class_visibility_tags').delete().eq('tag_id', tagId);
+            }
+            // Delete the tag itself by ID
+            for (const tagId of tagIds) {
+                await dbClient.from('visibility_tags').delete().eq('id', tagId);
+            }
+        }
+
+        // Also delete by name as a fallback
+        const { error } = await dbClient.from('visibility_tags')
+            .delete()
+            .eq('name', trimmed);
+
+        if (error && tagIds.length === 0) {
+            console.error('Error deleting visibility tag:', error);
+            return false;
+        }
+
+        // Update in-memory state
+        visibilityTags = visibilityTags.filter(t => t !== trimmed);
+
+        if (Array.isArray(inventoryItems)) {
+            inventoryItems.forEach(item => {
+                if (Array.isArray(item.visibilityTags)) {
+                    item.visibilityTags = item.visibilityTags.filter(t => t !== trimmed);
+                }
+            });
+        }
+
+        if (Array.isArray(studentClasses)) {
+            studentClasses.forEach(cls => {
+                if (Array.isArray(cls.visibilityTags)) {
+                    cls.visibilityTags = cls.visibilityTags.filter(t => t !== trimmed);
+                }
+            });
+        }
+
+        return true;
+    } catch (err) {
+        console.error('Unexpected error in deleteVisibilityTagFromSupabase:', err);
         return false;
     }
-    return true;
 }
 
 /**

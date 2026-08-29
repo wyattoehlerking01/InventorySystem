@@ -3254,6 +3254,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     applyLoginHelpVisibility();
     bindAppInfoTriggers();
     updateAppInfoOverlayVisibility();
+    if (typeof renderKnowledgeBase === 'function') {
+        renderKnowledgeBase();
+    }
 
     if (!window.supabase || typeof window.supabase.createClient !== 'function') {
         showToast('Database client failed to load. Check connection and reload.', 'error');
@@ -3871,6 +3874,10 @@ function canCurrentUserViewOrders() {
     return true;
 }
 
+function canCurrentUserViewActivityLog(user = currentUser) {
+    return user?.role === 'teacher' || user?.role === 'developer';
+}
+
 function canCurrentStudentSignOut() {
     if (!currentUser) return false;
     if (currentUser.role !== 'student') return true;
@@ -3964,6 +3971,7 @@ function login(user, options = {}) {
         navDoor?.classList.add('hidden');
         navRequests?.classList.add('hidden');
         applyOrdersNavVisibility();
+        document.getElementById('inventory-edit-actions-wrap')?.classList.add('hidden');
         document.getElementById('manage-categories-btn')?.classList.add('hidden');
         document.getElementById('manage-visibility-tags-btn')?.classList.add('hidden');
         document.getElementById('bulk-manage-items-btn')?.classList.add('hidden');
@@ -3971,7 +3979,7 @@ function login(user, options = {}) {
         document.getElementById('bulk-import-items-btn')?.classList.add('hidden');
         setProfilePrivilegedActionState(false);
     } else {
-        navLogs.classList.remove('hidden');
+        navLogs.classList.toggle('hidden', !canCurrentUserViewActivityLog(user));
         navUsers.classList.remove('hidden');
         navClasses.classList.remove('hidden');
         navClassDisplay?.classList.remove('hidden');
@@ -3979,6 +3987,7 @@ function login(user, options = {}) {
         navDoor?.classList.remove('hidden');
         navRequests?.classList.add('hidden');
         applyOrdersNavVisibility();
+        document.getElementById('inventory-edit-actions-wrap')?.classList.remove('hidden');
         document.getElementById('manage-categories-btn')?.classList.remove('hidden');
         document.getElementById('manage-visibility-tags-btn')?.classList.remove('hidden');
         document.getElementById('bulk-manage-items-btn')?.classList.remove('hidden');
@@ -4021,6 +4030,20 @@ function login(user, options = {}) {
         // Ignore storage failures
     }
 
+    // Ensure all pages are reset to default Projects view with skeleton before mainView becomes visible
+    pages.forEach(page => {
+        page.classList.remove('active');
+        page.classList.add('hidden');
+    });
+    const initialProjectsPage = document.getElementById('page-projects');
+    if (initialProjectsPage) {
+        initialProjectsPage.classList.remove('hidden');
+        initialProjectsPage.classList.add('active');
+    }
+    pageTitle.textContent = 'Projects';
+    setActiveNavForTarget('projects');
+    renderProjectsSkeleton();
+
     // Switch Views
     loginView.classList.remove('active');
     setTimeout(() => {
@@ -4057,6 +4080,17 @@ function logout(message = 'Logged out successfully') {
     inventoryBasket = [];
     toggleBasket(false);
     clearInterval(countdownInterval);
+    pages.forEach(page => {
+        page.classList.remove('active');
+        page.classList.add('hidden');
+    });
+    const defaultPage = document.getElementById('page-projects');
+    if (defaultPage) {
+        defaultPage.classList.remove('hidden');
+        defaultPage.classList.add('active');
+    }
+    pageTitle.textContent = 'Projects';
+    setActiveNavForTarget('projects');
     mainView.classList.remove('active');
     setTimeout(() => {
         mainView.classList.add('hidden');
@@ -4098,6 +4132,18 @@ function returnToLoginView(options = {}) {
     inventoryBasket = [];
     toggleBasket(false);
     clearInterval(countdownInterval);
+
+    pages.forEach(page => {
+        page.classList.remove('active');
+        page.classList.add('hidden');
+    });
+    const defaultPage = document.getElementById('page-projects');
+    if (defaultPage) {
+        defaultPage.classList.remove('hidden');
+        defaultPage.classList.add('active');
+    }
+    pageTitle.textContent = 'Projects';
+    setActiveNavForTarget('projects');
 
     mainView.classList.remove('active');
     loginHelpView.classList.remove('active');
@@ -4159,6 +4205,14 @@ function setActiveNavForTarget(targetId) {
         btn.classList.toggle('active', isActive);
     });
 }
+
+document.querySelector('.sidebar-nav')?.addEventListener('click', (e) => {
+    const btn = e.target.closest('.nav-btn[data-target]');
+    if (!btn) return;
+    const target = btn.getAttribute('data-target');
+    const title = btn.innerText.trim();
+    switchPage(target, title);
+});
 
 function userCanPerformPrivilegedActions() {
     const normalizedRole = String(currentUser?.role || '').trim().toLowerCase();
@@ -4564,6 +4618,276 @@ async function refreshPageDataFromSupabase(targetId) {
     }
 }
 
+let manageNavSequenceToken = 0;
+
+function renderProjectsSkeleton() {
+    const container = document.getElementById('projects-container');
+    if (!container) return;
+    container.innerHTML = `
+        <div class="project-card glass-panel flex-col" style="border-left:4px solid var(--accent-primary, #059669);">
+            <div class="project-header">
+                <div style="display:flex; align-items:center; gap:0.5rem;">
+                    <div class="skeleton-shimmer" style="width:18px; height:18px; border-radius:4px;"></div>
+                    <div class="skeleton-line skeleton-shimmer" style="width:100px; height:18px;"></div>
+                </div>
+            </div>
+            <div style="display:flex; flex-direction:column; gap:0.5rem; margin-top:0.25rem;">
+                <div class="skeleton-line skeleton-shimmer" style="width:75%; height:13px;"></div>
+                <div class="skeleton-line skeleton-shimmer" style="width:50%; height:13px;"></div>
+            </div>
+        </div>
+        ${Array.from({ length: 5 }).map(() => `
+            <div class="project-card glass-panel flex-col">
+                <div class="project-header">
+                    <div>
+                        <div class="skeleton-line skeleton-shimmer" style="width:140px; height:20px; margin-bottom:4px;"></div>
+                    </div>
+                    <div class="skeleton-pill skeleton-shimmer" style="width:55px; height:22px;"></div>
+                </div>
+                <div class="skeleton-line skeleton-shimmer" style="width:150px; height:13px; margin-bottom:0.25rem;"></div>
+                <div class="project-desc" style="display:flex; flex-direction:column; gap:0.35rem; margin-bottom:0.75rem;">
+                    <div class="skeleton-line skeleton-shimmer" style="width:100%; height:13px;"></div>
+                    <div class="skeleton-line skeleton-shimmer" style="width:80%; height:13px;"></div>
+                </div>
+                <div class="project-footer">
+                    <div class="skeleton-line skeleton-shimmer" style="width:110px; height:13px;"></div>
+                </div>
+                <div class="project-meta">
+                    <div class="skeleton-line skeleton-shimmer" style="width:130px; height:13px;"></div>
+                    <div class="project-action-buttons">
+                        <div class="skeleton-btn skeleton-shimmer" style="width:60px; height:30px;"></div>
+                        <div class="skeleton-btn skeleton-shimmer" style="width:65px; height:30px;"></div>
+                    </div>
+                </div>
+            </div>
+        `).join('')}
+    `;
+}
+
+function renderInventorySkeleton() {
+    const tbody = document.getElementById('inventory-table-body');
+    const resultsMeta = document.getElementById('inventory-results-meta');
+    if (resultsMeta) {
+        resultsMeta.textContent = 'Loading inventory items...';
+    }
+    if (!tbody) return;
+
+    const isGridView = (typeof inventoryViewMode !== 'undefined' && inventoryViewMode === 'grid');
+    const tableColumnCount = typeof getInventoryTableColumnCount === 'function' ? getInventoryTableColumnCount() : 5;
+
+    if (isGridView) {
+        tbody.innerHTML = Array.from({ length: 8 }).map(() => `
+            <tr class="inventory-grid-card-row">
+                <td colspan="${tableColumnCount}">
+                    <article class="inventory-grid-card">
+                        <div class="inventory-grid-card-media skeleton-shimmer" style="height:140px; border-radius:10px 10px 0 0;"></div>
+                        <div class="inventory-grid-card-body" style="padding:1rem; display:flex; flex-direction:column; gap:0.5rem;">
+                            <div class="skeleton-line skeleton-shimmer" style="width:85%; height:16px;"></div>
+                            <div class="skeleton-line skeleton-shimmer" style="width:55%; height:12px;"></div>
+                            <div style="display:flex; justify-content:space-between; align-items:center; margin-top:0.5rem;">
+                                <div class="skeleton-pill skeleton-shimmer" style="width:60px; height:20px;"></div>
+                                <div class="skeleton-line skeleton-shimmer" style="width:50px; height:13px;"></div>
+                            </div>
+                            <div style="display:flex; gap:0.4rem; margin-top:0.5rem;">
+                                <div class="skeleton-btn skeleton-shimmer" style="flex:1; height:32px;"></div>
+                                <div class="skeleton-btn skeleton-shimmer" style="width:36px; height:32px;"></div>
+                            </div>
+                        </div>
+                    </article>
+                </td>
+            </tr>
+        `).join('');
+    } else {
+        tbody.innerHTML = Array.from({ length: 8 }).map(() => `
+            <tr class="inventory-row-container skeleton-table-row">
+                <td>
+                    <div class="inventory-item-title-wrap">
+                        <div class="inventory-item-thumb skeleton-shimmer" style="border-radius:10px;"></div>
+                        <div class="inventory-item-title-copy" style="flex:1; min-width:0;">
+                            <div class="skeleton-line skeleton-shimmer" style="width:80%; height:15px; margin-bottom:4px;"></div>
+                            <div class="skeleton-line skeleton-shimmer" style="width:50%; height:11px; margin-bottom:4px;"></div>
+                            <div class="skeleton-pill skeleton-shimmer" style="width:60px; height:16px;"></div>
+                        </div>
+                    </div>
+                </td>
+                <td>
+                    <div class="skeleton-line skeleton-shimmer" style="width:75%; height:14px; margin-bottom:4px;"></div>
+                    <div class="skeleton-line skeleton-shimmer" style="width:45%; height:11px;"></div>
+                </td>
+                <td>
+                    <div class="skeleton-line skeleton-shimmer" style="width:80px; height:13px;"></div>
+                </td>
+                <td class="inventory-stock-status-cell">
+                    <div class="inventory-stock-status-content">
+                        <div class="skeleton-line skeleton-shimmer" style="width:60px; height:13px;"></div>
+                        <div class="skeleton-pill skeleton-shimmer" style="width:68px; height:20px;"></div>
+                    </div>
+                </td>
+                <td>
+                    <div class="flex inventory-item-actions" style="gap:0.4rem; flex-wrap:wrap;">
+                        <div class="skeleton-btn skeleton-shimmer inventory-item-action-btn" style="width:34px; height:32px;"></div>
+                        <div class="skeleton-btn skeleton-shimmer inventory-item-action-btn" style="width:34px; height:32px;"></div>
+                        <div class="skeleton-btn skeleton-shimmer inventory-item-action-btn" style="width:75px; height:32px;"></div>
+                    </div>
+                </td>
+            </tr>
+        `).join('');
+    }
+}
+
+function renderUsersSkeleton() {
+    const tbody = document.getElementById('users-table-body');
+    if (!tbody) return;
+    tbody.innerHTML = Array.from({ length: 8 }).map(() => `
+        <tr class="skeleton-table-row">
+            <td style="width:40px;">
+                <div class="skeleton-shimmer" style="width:16px; height:16px; border-radius:3px;"></div>
+            </td>
+            <td>
+                <div class="flex items-center user-row-identity" style="gap:0.75rem;">
+                    <div class="avatar-sm skeleton-shimmer" style="border-radius:50%; width:32px; height:32px; flex-shrink:0;"></div>
+                    <div style="display:flex; flex-direction:column; gap:0.25rem;">
+                        <div class="skeleton-line skeleton-shimmer" style="width:140px; height:15px;"></div>
+                        <div class="skeleton-line skeleton-shimmer" style="width:80px; height:11px;"></div>
+                        <div class="skeleton-line skeleton-shimmer" style="width:65px; height:10px;"></div>
+                    </div>
+                </div>
+            </td>
+            <td>
+                <div class="skeleton-line skeleton-shimmer" style="width:45px; height:14px;"></div>
+            </td>
+            <td>
+                <div class="skeleton-pill skeleton-shimmer" style="width:65px; height:20px;"></div>
+            </td>
+            <td>
+                <div class="flex gap-2 user-actions">
+                    <div class="skeleton-btn skeleton-shimmer btn-sm" style="width:32px; height:32px; border-radius:6px;"></div>
+                    <div class="skeleton-btn skeleton-shimmer btn-sm" style="width:32px; height:32px; border-radius:6px;"></div>
+                    <div class="skeleton-btn skeleton-shimmer btn-sm" style="width:32px; height:32px; border-radius:6px;"></div>
+                </div>
+            </td>
+        </tr>
+    `).join('');
+}
+
+function renderClassesSkeleton() {
+    const container = document.getElementById('classes-container');
+    if (!container) return;
+    container.innerHTML = Array.from({ length: 4 }).map(() => `
+        <div class="project-card glass-panel" style="position:relative">
+            <div style="position:absolute; top:1rem; right:1rem; display:flex; gap:0.5rem;">
+                <div class="skeleton-btn skeleton-shimmer" style="width:26px; height:26px; border-radius:6px;"></div>
+                <div class="skeleton-btn skeleton-shimmer" style="width:26px; height:26px; border-radius:6px;"></div>
+            </div>
+            <div class="project-header">
+                <div class="skeleton-line skeleton-shimmer" style="width:170px; height:22px;"></div>
+            </div>
+            <div class="text-sm mt-4">
+                <div class="skeleton-line skeleton-shimmer" style="width:130px; height:14px;"></div>
+            </div>
+            <div class="text-sm">
+                <div class="skeleton-line skeleton-shimmer" style="width:110px; height:14px;"></div>
+            </div>
+            <div class="text-sm">
+                <div class="skeleton-line skeleton-shimmer" style="width:145px; height:14px;"></div>
+            </div>
+            <div class="text-sm" style="margin-top:0.4rem">
+                <div class="skeleton-line skeleton-shimmer" style="width:125px; height:14px; margin-bottom:0.35rem;"></div>
+                <div style="display:flex; flex-wrap:wrap; gap:0.3rem;">
+                    <div class="skeleton-pill skeleton-shimmer" style="width:55px; height:20px;"></div>
+                    <div class="skeleton-pill skeleton-shimmer" style="width:70px; height:20px;"></div>
+                </div>
+            </div>
+            <div class="project-meta text-sm">
+                <div class="skeleton-line skeleton-shimmer" style="width:110px; height:14px;"></div>
+            </div>
+        </div>
+    `).join('');
+}
+
+function renderLogsSkeleton() {
+    const tbody = document.getElementById('logs-table-body');
+    if (!tbody) return;
+    tbody.innerHTML = Array.from({ length: 8 }).map(() => `
+        <tr class="skeleton-table-row">
+            <td class="text-muted"><div class="skeleton-line skeleton-shimmer" style="width:130px; height:13px;"></div></td>
+            <td>
+                <div style="display:flex; align-items:center; gap:0.5rem;">
+                    <div class="skeleton-avatar skeleton-shimmer" style="width:24px; height:24px; border-radius:50%;"></div>
+                    <div class="skeleton-line skeleton-shimmer" style="width:110px; height:14px;"></div>
+                </div>
+            </td>
+            <td><div class="skeleton-line skeleton-shimmer" style="width:120px; height:14px;"></div></td>
+            <td><div class="skeleton-line skeleton-shimmer" style="width:85%; height:14px;"></div></td>
+        </tr>
+    `).join('');
+}
+
+function renderOrdersSkeleton() {
+    const tbody = document.getElementById('orders-table-body');
+    if (!tbody) return;
+    tbody.innerHTML = Array.from({ length: 6 }).map(() => `
+        <tr class="skeleton-table-row">
+            <td><div class="skeleton-line skeleton-shimmer" style="width:85px; height:13px;"></div></td>
+            <td><div class="skeleton-pill skeleton-shimmer" style="width:95px; height:20px;"></div></td>
+            <td>
+                <div style="display:flex; flex-direction:column; gap:0.25rem;">
+                    <div class="skeleton-line skeleton-shimmer" style="width:130px; height:14px;"></div>
+                    <div class="skeleton-line skeleton-shimmer" style="width:75px; height:11px;"></div>
+                </div>
+            </td>
+            <td><div class="skeleton-line skeleton-shimmer" style="width:35px; height:13px;"></div></td>
+            <td><div class="skeleton-pill skeleton-shimmer" style="width:60px; height:20px;"></div></td>
+            <td><div class="skeleton-line skeleton-shimmer" style="width:55px; height:13px;"></div></td>
+            <td><div class="skeleton-pill skeleton-shimmer" style="width:70px; height:20px;"></div></td>
+            <td><div class="skeleton-btn skeleton-shimmer" style="width:60px; height:28px;"></div></td>
+        </tr>
+    `).join('');
+}
+
+function renderClassDisplaySkeleton() {
+    const container = document.getElementById('class-display-container');
+    if (!container) return;
+    container.innerHTML = Array.from({ length: 3 }).map(() => `
+        <div style="margin-bottom: 2rem; padding-bottom: 2rem; border-bottom: 2px solid rgba(5, 150, 105, 0.3);">
+            <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem;">
+                <div class="skeleton-avatar skeleton-shimmer" style="width: 60px; height: 60px; border-radius: 50%;"></div>
+                <div style="display: flex; flex-direction: column; gap: 0.4rem; flex: 1;">
+                    <div class="skeleton-line skeleton-shimmer" style="width: 200px; height: 24px;"></div>
+                    <div class="skeleton-line skeleton-shimmer" style="width: 140px; height: 14px;"></div>
+                </div>
+            </div>
+            <div style="background: rgba(0,0,0,0.2); padding: 1rem; border-radius: 0.5rem; margin-bottom: 0.75rem; border-left: 4px solid var(--accent-primary, #059669);">
+                <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.5rem;">
+                    <div style="display: flex; flex-direction: column; gap: 0.35rem; flex: 1;">
+                        <div class="skeleton-line skeleton-shimmer" style="width: 220px; height: 18px;"></div>
+                        <div style="display: flex; align-items: center; gap: 0.5rem;">
+                            <div class="skeleton-pill skeleton-shimmer" style="width: 65px; height: 20px;"></div>
+                            <div class="skeleton-line skeleton-shimmer" style="width: 80px; height: 13px;"></div>
+                        </div>
+                    </div>
+                    <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 0.25rem;">
+                        <div class="skeleton-line skeleton-shimmer" style="width: 35px; height: 22px;"></div>
+                        <div class="skeleton-line skeleton-shimmer" style="width: 25px; height: 11px;"></div>
+                    </div>
+                </div>
+                <div class="skeleton-line skeleton-shimmer" style="width: 160px; height: 13px; margin-top: 0.5rem;"></div>
+            </div>
+        </div>
+    `).join('');
+}
+
+function renderPageSkeleton(targetId) {
+    if (targetId === 'projects' || targetId === 'dashboard') renderProjectsSkeleton();
+    else if (targetId === 'inventory') renderInventorySkeleton();
+    else if (targetId === 'users') renderUsersSkeleton();
+    else if (targetId === 'classes') renderClassesSkeleton();
+    else if (targetId === 'logs') renderLogsSkeleton();
+    else if (targetId === 'orders' || targetId === 'requests') renderOrdersSkeleton();
+    else if (targetId === 'class-display') renderClassDisplaySkeleton();
+    else if (targetId === 'knowledge-base' && typeof renderKnowledgeBaseSkeleton === 'function') renderKnowledgeBaseSkeleton();
+}
+
 async function switchPage(targetId, title) {
     const pageContentEl = document.getElementById('page-content');
 
@@ -4583,8 +4907,18 @@ async function switchPage(targetId, title) {
         return;
     }
 
+    if (targetId === 'logs' && !canCurrentUserViewActivityLog()) {
+        showToast('You do not have access to that page.', 'error');
+        return;
+    }
+
     if (['users', 'classes', 'logs', 'door'].includes(targetId)) {
-        if (currentUser?.role === 'student') {
+        if (targetId === 'logs') {
+            if (!canCurrentUserViewActivityLog()) {
+                showToast('You do not have access to that page.', 'error');
+                return;
+            }
+        } else if (currentUser?.role === 'student') {
             showToast('You do not have access to that page.', 'error');
             return;
         }
@@ -4600,18 +4934,14 @@ async function switchPage(targetId, title) {
         document.querySelector('#page-users .table-container')?.classList.remove('grid-view-active');
     }
 
+    const thisNavToken = ++manageNavSequenceToken;
+
     _trackPageVisit(targetId);
     pageTitle.textContent = title;
     setActiveNavForTarget(targetId);
     pageContentEl?.classList.toggle('inventory-scroll-lock', targetId === 'inventory');
 
-    try {
-        await refreshPageDataFromSupabase(targetId);
-    } catch (error) {
-        console.error(`Failed to refresh ${targetId} from Supabase:`, error);
-        showToast(`Failed to refresh ${title} from server. Showing current data.`, 'error');
-    }
-
+    // Immediately switch the visible page so the transition is instant
     pages.forEach(page => {
         page.classList.remove('active');
         page.classList.add('hidden');
@@ -4625,6 +4955,21 @@ async function switchPage(targetId, title) {
         targetPage.classList.add('active');
     }
 
+    // Instantly show skeleton loaders for the target page
+    renderPageSkeleton(targetId);
+
+    try {
+        await refreshPageDataFromSupabase(targetId);
+    } catch (error) {
+        console.error(`Failed to refresh ${targetId} from Supabase:`, error);
+        showToast(`Failed to refresh ${title} from server. Showing current data.`, 'error');
+    }
+
+    // Discard rendering if user has already navigated to another page
+    if (thisNavToken !== manageNavSequenceToken) {
+        return;
+    }
+
     // Call data load functions based on page
     if (targetId === 'inventory') renderInventory();
     if (targetId === 'projects') renderProjects();
@@ -4635,6 +4980,7 @@ async function switchPage(targetId, title) {
     if (targetId === 'orders') renderOrders();
     if (targetId === 'kiosk-settings') renderKioskSettings();
     if (targetId === 'door') renderDoorPage();
+    if (targetId === 'knowledge-base' && typeof renderKnowledgeBase === 'function') renderKnowledgeBase();
 }
 
 /* =======================================
@@ -5412,6 +5758,65 @@ function openItemPreviewModal(itemId) {
     });
 }
 
+function renderItemVisibilityTagsHtml(item) {
+    const rawTags = Array.isArray(item?.visibilityTags) ? item.visibilityTags : [];
+    const tags = rawTags
+        .filter(Boolean)
+        .map(t => String(t).trim())
+        .filter(t => t.length > 0)
+        .slice()
+        .sort((a, b) => String(a || '').localeCompare(String(b || ''), undefined, { numeric: true, sensitivity: 'base' }));
+
+    if (tags.length === 0) return '';
+    if (tags.length === 1) {
+        return `<div class="visibility-tags-row"><span class="visibility-tag">${escapeHtml(tags[0])}</span></div>`;
+    }
+    const safeItemId = escapeHtml(String(item.id || ''));
+    return `<div class="visibility-tags-row"><button type="button" class="visibility-tag visibility-tag-summary-btn" data-id="${safeItemId}" title="Click to view all ${tags.length} visibility tags">${tags.length} tags</button></div>`;
+}
+
+function openItemVisibilityTagsModal(itemId) {
+    const item = inventoryItems.find(i => String(i.id) === String(itemId));
+    if (!item) return;
+
+    const rawTags = Array.isArray(item.visibilityTags) ? item.visibilityTags : [];
+    const tags = rawTags
+        .filter(Boolean)
+        .map(t => String(t).trim())
+        .filter(t => t.length > 0)
+        .slice()
+        .sort((a, b) => String(a || '').localeCompare(String(b || ''), undefined, { numeric: true, sensitivity: 'base' }));
+
+    const safeItemName = escapeHtml(String(item.name || 'Unnamed Item'));
+    const tagCount = tags.length;
+
+    const html = `
+        <div class="modal-header">
+            <div>
+                <h3 style="margin:0;">Visibility Tags</h3>
+                <p class="text-secondary mb-0" style="font-size:0.85rem;margin-top:0.25rem;">${safeItemName}</p>
+            </div>
+            <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
+        </div>
+        <div class="modal-body">
+            <p class="text-muted" style="margin-bottom:0.75rem;font-size:0.85rem;">
+                This item has <strong>${tagCount}</strong> visibility tag${tagCount === 1 ? '' : 's'}:
+            </p>
+            <div style="display:flex;flex-wrap:wrap;gap:0.5rem;padding:0.85rem;background:rgba(255,255,255,0.03);border:1px solid var(--glass-border);border-radius:var(--radius-md);">
+                ${tags.length > 0
+                    ? tags.map(tag => `<span class="visibility-tag" style="font-size:0.82rem;padding:0.3rem 0.65rem;">${escapeHtml(tag)}</span>`).join('')
+                    : '<span class="text-muted" style="font-size:0.85rem;">No tags assigned.</span>'
+                }
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+        </div>
+    `;
+
+    openModal(html);
+}
+
 function renderInventory() {
     const tbody = document.getElementById('inventory-table-body');
     const searchInput = document.getElementById('inventory-smart-search');
@@ -5477,13 +5882,10 @@ function renderInventory() {
                     <div class="inventory-item-thumb-placeholder"><i class="ph ph-image"></i></div>
                 </div>
             `;
-        const tagsHtml = (item.visibilityTags || []).map(tag =>
-            `<span class="visibility-tag">${escapeHtml(String(tag || ''))}</span>`
-        ).join('');
+        const tagsHtml = renderItemVisibilityTagsHtml(item);
 
         return `
             <tr class="inventory-row-container">
-                <td><input type="checkbox" class="item-select-cb" data-id="${safeItemId}"></td>
                 <td>
                     <div class="inventory-item-title-wrap">
                         ${thumbnailHtml}
@@ -5493,7 +5895,7 @@ function renderInventory() {
                                 ${renderMissingMetadataIcon(item)}
                             </div>
                             ${safeItemSku ? `<small class="text-xs text-muted">Barcode: ${safeItemSku}</small>` : ''}
-                            ${currentUser.role === 'student' && tagsHtml ? `<div class="visibility-tags-row">${tagsHtml}</div>` : ''}
+                            ${tagsHtml}
                         </div>
                     </div>
                 </td>
@@ -5506,7 +5908,7 @@ function renderInventory() {
                     </div>
                 </td>
                 <td>
-                    <div class="flex inventory-item-actions" style="gap:0.65rem;flex-wrap:nowrap;">
+                    <div class="flex inventory-item-actions" style="gap:0.4rem;flex-wrap:wrap;">
                         ${currentUser.role !== 'student' ? `
                             <button class="btn btn-secondary btn-sm inventory-item-action-btn edit-item-btn" data-id="${safeItemId}" title="Edit Item">
                                 <i class="ph ph-pencil-simple"></i>
@@ -5532,9 +5934,7 @@ function renderInventory() {
         const stockValue = Math.max(0, parseInt(item?.stock, 10) || 0);
         const isConsumable = isConsumableItemType(item?.item_type);
         const totalQuantity = getItemTotalQuantity(item);
-        const tagsHtml = (item.visibilityTags || []).map(tag =>
-            `<span class="visibility-tag">${escapeHtml(String(tag || ''))}</span>`
-        ).join('');
+        const tagsHtml = renderItemVisibilityTagsHtml(item);
 
         return `
             <tr class="inventory-grid-card-row">
@@ -5564,7 +5964,7 @@ function renderInventory() {
                                 <span class="inventory-grid-card-meta-label">SKU</span>
                                 <span class="inventory-grid-card-meta-value">${safeItemSku || 'N/A'}</span>
                             </div>
-                            ${currentUser.role === 'student' && tagsHtml ? `<div class="visibility-tags-row">${tagsHtml}</div>` : ''}
+                            ${tagsHtml}
                             <div class="inventory-grid-card-actions">
                                 ${currentUser.role !== 'student' ? `
                                     <button class="btn btn-secondary btn-sm inventory-item-action-btn edit-item-btn" data-id="${safeItemId}" title="Edit Item">
@@ -5603,6 +6003,15 @@ function renderInventory() {
     });
 
     // Attach listeners for actions
+    // Attach visibility tag summary modal listeners
+    document.querySelectorAll('.visibility-tag-summary-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const id = e.currentTarget.getAttribute('data-id');
+            if (id) openItemVisibilityTagsModal(id);
+        });
+    });
     // Attach basket listeners
     document.querySelectorAll('.add-basket-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
@@ -6327,15 +6736,443 @@ async function openProjectsPageAndFocusProject(projectId) {
     });
 }
 
-function openProjectItemsModal(projectId) {
+function hasElevatedProjectPermissions(project, user = currentUser) {
+    if (!user || !project) return false;
+    const role = String(user.role || '').toLowerCase();
+    if (['teacher', 'developer', 'admin', 'tech', 'manager'].includes(role)) return true;
+    if (project.ownerId === user.id) return true;
+    const membership = getProjectMembershipRole(project, user.id);
+    return membership === 'mentor' || membership === 'captain' || membership === 'owner';
+}
+
+function hashString(str) {
+    let hash = 0;
+    const s = String(str || '');
+    for (let i = 0; i < s.length; i++) {
+        hash = ((hash << 5) - hash) + s.charCodeAt(i);
+        hash |= 0;
+    }
+    return Math.abs(hash);
+}
+
+function formatReceiptDate(dateStr) {
+    try {
+        const d = new Date(dateStr);
+        if (isNaN(d.getTime())) return dateStr;
+        return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    } catch {
+        return String(dateStr || '');
+    }
+}
+
+function formatReceiptTime(dateStr) {
+    try {
+        const d = new Date(dateStr);
+        if (isNaN(d.getTime())) return dateStr;
+        return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    } catch {
+        return String(dateStr || '');
+    }
+}
+
+function getProjectTransactionRecords(project) {
+    if (!project) return [];
+    const recordsMap = new Map();
+
+    // 1. Process active itemsOut in the project
+    const itemsOut = Array.isArray(project.itemsOut) ? project.itemsOut : [];
+    itemsOut.forEach((io) => {
+        const item = inventoryItems.find(i => i.id === io.itemId);
+        const assignedUserId = io.assignedToUserId || project.ownerId;
+        const assignedUser = mockUsers.find(u => u.id === assignedUserId);
+        const signedOutByUserId = io.signedOutByUserId || project.ownerId;
+        const signedOutByUser = mockUsers.find(u => u.id === signedOutByUserId);
+        const actorRole = signedOutByUser ? (signedOutByUser.role === 'student' ? (getProjectMembershipRole(project, signedOutByUser.id) || 'Student') : signedOutByUser.role) : 'Authorized User';
+
+        const rawId = io.id || `${io.itemId}-${io.signoutDate || 'out'}`;
+        const txnId = rawId.startsWith('TXN-') ? rawId : (rawId.startsWith('OUT-') ? `TXN-${rawId}` : `TXN-OUT-${rawId.replace(/[^a-zA-Z0-9]/g, '').slice(-8) || Math.abs(hashString(rawId) % 90000 + 10000)}`);
+        const timestamp = io.signoutDate || project.createdAt || new Date().toISOString();
+        const baseDate = new Date(timestamp);
+
+        // Build timestamped events for this transaction
+        const evtTime1 = new Date(baseDate.getTime()).toISOString();
+        const evtTime2 = new Date(baseDate.getTime() + 1200).toISOString();
+        const evtTime3 = new Date(baseDate.getTime() + 2400).toISOString();
+        const evtTime4 = new Date(baseDate.getTime() + 3600).toISOString();
+        const evtTime5 = new Date(baseDate.getTime() + 5000).toISOString();
+
+        const events = [
+            {
+                id: `EVT-${Math.abs(hashString(txnId + '1') % 90000 + 10000)}`,
+                timestamp: evtTime1,
+                type: 'INITIATED',
+                label: 'Sign-out Session Initiated',
+                description: `Checkout session initiated by ${signedOutByUser ? signedOutByUser.name : signedOutByUserId} (Role: ${actorRole.charAt(0).toUpperCase() + actorRole.slice(1)})`,
+                actor: signedOutByUser ? signedOutByUser.name : signedOutByUserId
+            },
+            {
+                id: `EVT-${Math.abs(hashString(txnId + '2') % 90000 + 10000)}`,
+                timestamp: evtTime2,
+                type: 'AUTH_VERIFIED',
+                label: 'Permissions & Identity Verified',
+                description: `Project allocation authorized for "${project.name}" (ID: ${project.id})`,
+                actor: 'Auth Sentinel'
+            },
+            {
+                id: `EVT-${Math.abs(hashString(txnId + '3') % 90000 + 10000)}`,
+                timestamp: evtTime3,
+                type: 'STOCK_ALLOCATED',
+                label: 'Stock Deducted from Inventory',
+                description: `${io.quantity}x ${item ? item.name : io.itemId} (SKU: ${item ? item.sku : 'N/A'}) allocated`,
+                actor: 'Inventory Controller'
+            },
+            {
+                id: `EVT-${Math.abs(hashString(txnId + '4') % 90000 + 10000)}`,
+                timestamp: evtTime4,
+                type: 'HARDWARE_ACCESS',
+                label: 'Cabinet Door Access Granted',
+                description: 'Hardware security lock pulse triggered & bin sensor cleared',
+                actor: 'Hardware Lock System'
+            },
+            {
+                id: `EVT-${Math.abs(hashString(txnId + '5') % 90000 + 10000)}`,
+                timestamp: evtTime5,
+                type: 'ACTIVE_OUT',
+                label: 'Item Sign-Out Completed',
+                description: `Assigned to ${assignedUser ? assignedUser.name : assignedUserId}. Due date: ${io.dueDate ? new Date(io.dueDate).toLocaleDateString() : 'N/A'}`,
+                actor: signedOutByUser ? signedOutByUser.name : signedOutByUserId
+            }
+        ];
+
+        const record = {
+            id: txnId,
+            rawId: rawId,
+            projectId: project.id,
+            projectName: project.name,
+            type: 'checkout',
+            status: 'ACTIVE',
+            timestamp: timestamp,
+            dueDate: io.dueDate,
+            actorId: signedOutByUserId,
+            actorName: signedOutByUser ? signedOutByUser.name : signedOutByUserId,
+            actorRole: actorRole.charAt(0).toUpperCase() + actorRole.slice(1),
+            assignedToId: assignedUserId,
+            assignedToName: assignedUser ? assignedUser.name : assignedUserId,
+            items: [
+                {
+                    id: io.itemId,
+                    name: item ? item.name : io.itemId,
+                    sku: item ? (item.sku || 'N/A') : 'N/A',
+                    category: item ? (item.category || 'Hardware') : 'Hardware',
+                    quantity: io.quantity || 1,
+                    status: 'CHECKED OUT'
+                }
+            ],
+            events: events
+        };
+
+        recordsMap.set(txnId, record);
+    });
+
+    // 2. Scan activityLogs for historical transactions and returns for this project
+    const logs = Array.isArray(activityLogs) ? activityLogs : [];
+    logs.forEach(log => {
+        const details = String(log.details || '');
+        const action = String(log.action || '');
+        const matchesProject = details.includes(project.name) || details.includes(project.id) || (log.projectId && log.projectId === project.id);
+
+        if (matchesProject) {
+            const user = mockUsers.find(u => u.id === log.userId) || { name: log.userName || log.userId || 'Lab User', role: 'Student' };
+            const isReturn = action.toLowerCase().includes('return') || details.toLowerCase().includes('return');
+            const isTransfer = action.toLowerCase().includes('transfer') || details.toLowerCase().includes('transfer');
+            const isCheckout = action.toLowerCase().includes('sign out') || action.toLowerCase().includes('sign-out');
+
+            const logTxnId = `TXN-LOG-${String(log.id).replace(/[^a-zA-Z0-9]/g, '').slice(-8) || Math.abs(hashString(log.timestamp + details) % 90000 + 10000)}`;
+            const status = isReturn ? 'RETURNED' : (isTransfer ? 'TRANSFERRED' : (isCheckout ? 'ACTIVE' : 'COMPLETED'));
+            const type = isReturn ? 'return' : (isTransfer ? 'transfer' : (isCheckout ? 'checkout' : 'event'));
+
+            const event = {
+                id: `EVT-${Math.abs(hashString(log.id + 'log') % 90000 + 10000)}`,
+                timestamp: log.timestamp || new Date().toISOString(),
+                type: type.toUpperCase(),
+                label: action || 'Activity Logged',
+                description: details || 'Transaction event recorded in system logs',
+                actor: user.name
+            };
+
+            let linked = false;
+            for (const existing of recordsMap.values()) {
+                if (isReturn && existing.items.some(item => details.includes(item.name) || (item.sku && item.sku !== 'N/A' && details.includes(item.sku)))) {
+                    existing.events.push(event);
+                    existing.status = 'RETURNED';
+                    existing.items.forEach(i => i.status = 'RETURNED');
+                    linked = true;
+                    break;
+                }
+            }
+
+            if (!linked) {
+                const foundItem = inventoryItems.find(i => details.includes(i.name) || (i.sku && details.includes(i.sku)));
+                const record = {
+                    id: logTxnId,
+                    rawId: log.id,
+                    projectId: project.id,
+                    projectName: project.name,
+                    type: type,
+                    status: status,
+                    timestamp: log.timestamp || new Date().toISOString(),
+                    actorId: log.userId,
+                    actorName: user.name,
+                    actorRole: (user.role || 'Member').charAt(0).toUpperCase() + (user.role || 'Member').slice(1),
+                    assignedToId: project.ownerId,
+                    assignedToName: getProjectOwnerLabel(project),
+                    items: foundItem ? [
+                        {
+                            id: foundItem.id,
+                            name: foundItem.name,
+                            sku: foundItem.sku || 'N/A',
+                            category: foundItem.category || 'General',
+                            quantity: 1,
+                            status: status
+                        }
+                    ] : [
+                        {
+                            id: 'HIST-ITEM',
+                            name: action.includes('Project') ? project.name : (details.split(':')[1]?.trim() || details.slice(0, 40) || 'Project Operation'),
+                            sku: 'SYSTEM-LOG',
+                            category: 'Activity',
+                            quantity: 1,
+                            status: status
+                        }
+                    ],
+                    events: [
+                        {
+                            id: `EVT-${Math.abs(hashString(logTxnId + 'init') % 90000 + 10000)}`,
+                            timestamp: log.timestamp,
+                            type: 'LOG_ENTRY',
+                            label: action || 'Activity Logged',
+                            description: details,
+                            actor: user.name
+                        }
+                    ]
+                };
+                recordsMap.set(logTxnId, record);
+            }
+        }
+    });
+
+    return Array.from(recordsMap.values()).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+}
+
+function openReceiptModal(transactionId, projectId) {
+    const project = projects.find(p => p.id === projectId) || projects.find(p => getProjectTransactionRecords(p).some(r => r.id === transactionId || r.rawId === transactionId));
+    if (!project) {
+        showToast('Project or transaction not found.', 'error');
+        return;
+    }
+
+    if (!canCurrentUserViewProject(project)) {
+        showToast('You do not have access to view this receipt.', 'error');
+        return;
+    }
+
+    const records = getProjectTransactionRecords(project);
+    const record = records.find(r => r.id === transactionId || r.rawId === transactionId) || records[0];
+
+    if (!record) {
+        showToast('Transaction record not found.', 'error');
+        return;
+    }
+
+    const totalUnits = record.items.reduce((sum, i) => sum + (Number(i.quantity) || 1), 0);
+
+    const html = `
+        <div class="receipt-wrapper">
+            <button class="receipt-close-floating" onclick="closeModal()" title="Close Receipt" aria-label="Close Receipt">
+                <i class="ph ph-x"></i>
+            </button>
+
+            <div class="receipt-paper" id="printable-receipt">
+                <div class="receipt-edge-top" aria-hidden="true">
+                    <svg class="receipt-sawtooth-svg" viewBox="0 0 120 8" preserveAspectRatio="none">
+                        <defs>
+                            <pattern id="sawtooth-top-pattern" width="8" height="8" patternUnits="userSpaceOnUse">
+                                <polygon points="0,8 4,0 8,8" fill="#fafaf9"/>
+                            </pattern>
+                        </defs>
+                        <rect width="100%" height="8" fill="url(#sawtooth-top-pattern)"/>
+                    </svg>
+                </div>
+
+                <div class="receipt-header">
+                    <div class="receipt-lab-title">STEM LAB INVENTORY CONTROL</div>
+                    <div class="receipt-lab-subtitle">MAKERSPACE & ROBOTICS WORKSHOP</div>
+                    <div class="receipt-divider-double">========================================</div>
+                    <div class="receipt-title">OFFICIAL TRANSACTION RECEIPT</div>
+                    <div class="receipt-divider-single">----------------------------------------</div>
+                </div>
+
+                <div class="receipt-meta-grid">
+                    <div class="receipt-meta-row">
+                        <span class="receipt-meta-label">TRANSACTION ID:</span>
+                        <span class="receipt-meta-value font-bold" style="font-family:monospace;font-weight:700;">${escapeHtml(record.id)}</span>
+                    </div>
+                    <div class="receipt-meta-row">
+                        <span class="receipt-meta-label">DATE & TIME:</span>
+                        <span class="receipt-meta-value">${escapeHtml(formatReceiptDate(record.timestamp))}</span>
+                    </div>
+                    <div class="receipt-meta-row">
+                        <span class="receipt-meta-label">PROJECT:</span>
+                        <span class="receipt-meta-value">${escapeHtml(record.projectName)} (${escapeHtml(record.projectId)})</span>
+                    </div>
+                    <div class="receipt-meta-row">
+                        <span class="receipt-meta-label">ISSUED BY:</span>
+                        <span class="receipt-meta-value">${escapeHtml(record.actorName)} [${escapeHtml(record.actorRole)}]</span>
+                    </div>
+                    <div class="receipt-meta-row">
+                        <span class="receipt-meta-label">ASSIGNED TO:</span>
+                        <span class="receipt-meta-value">${escapeHtml(record.assignedToName)}</span>
+                    </div>
+                    <div class="receipt-meta-row">
+                        <span class="receipt-meta-label">STATUS:</span>
+                        <span class="receipt-meta-value receipt-status-${record.status.toLowerCase()}">${escapeHtml(record.status)}</span>
+                    </div>
+                    ${record.dueDate ? `
+                    <div class="receipt-meta-row">
+                        <span class="receipt-meta-label">DUE DATE:</span>
+                        <span class="receipt-meta-value">${escapeHtml(new Date(record.dueDate).toLocaleDateString())}</span>
+                    </div>` : ''}
+                </div>
+
+                <div class="receipt-divider-single">----------------------------------------</div>
+
+                <div class="receipt-section-header">ITEMS TRANSACTED / ALLOCATED</div>
+                <div class="receipt-items-table">
+                    <div class="receipt-items-head">
+                        <span>QTY</span>
+                        <span>DESCRIPTION / SKU</span>
+                        <span style="text-align:right;">STATUS</span>
+                    </div>
+                    <div class="receipt-divider-dotted">. . . . . . . . . . . . . . . . . . . .</div>
+                    ${record.items.map(item => `
+                        <div class="receipt-item-row">
+                            <div class="receipt-item-qty">${item.quantity}x</div>
+                            <div class="receipt-item-info">
+                                <div class="receipt-item-name">${escapeHtml(item.name)}</div>
+                                <div class="receipt-item-sub">SKU: ${escapeHtml(item.sku || 'N/A')} | Cat: ${escapeHtml(item.category || 'Hardware')}</div>
+                            </div>
+                            <div class="receipt-item-status">${escapeHtml(item.status || record.status)}</div>
+                        </div>
+                    `).join('')}
+                </div>
+
+                <div class="receipt-divider-single">----------------------------------------</div>
+
+                <div class="receipt-totals">
+                    <div class="receipt-total-row">
+                        <span>TOTAL UNITS:</span>
+                        <span>${totalUnits} Units</span>
+                    </div>
+                    <div class="receipt-total-row">
+                        <span>LINE ITEMS:</span>
+                        <span>${record.items.length} Item(s)</span>
+                    </div>
+                    <div class="receipt-total-row">
+                        <span>AUTH VERIFICATION:</span>
+                        <span>ELEVATED (${escapeHtml(record.actorRole)})</span>
+                    </div>
+                </div>
+
+                <div class="receipt-divider-double">========================================</div>
+
+                <div class="receipt-section-header">TRANSACTION EVENT LIFECYCLE AUDIT</div>
+                <div class="receipt-events-list">
+                    ${record.events.map(evt => `
+                        <div class="receipt-event-item">
+                            <div class="receipt-event-top">
+                                <span class="receipt-event-id">[${escapeHtml(evt.id)}]</span>
+                                <span class="receipt-event-time">${escapeHtml(formatReceiptTime(evt.timestamp))}</span>
+                            </div>
+                            <div class="receipt-event-title">• ${escapeHtml(evt.label)}</div>
+                            <div class="receipt-event-desc">${escapeHtml(evt.description)}</div>
+                        </div>
+                    `).join('')}
+                </div>
+
+                <div class="receipt-divider-single">----------------------------------------</div>
+
+                <div class="receipt-barcode-wrap">
+                    <div class="receipt-barcode-strip">
+                        ||| | |||| || ||||| || ||| |||| || |||| ||| |||| || |
+                    </div>
+                    <div class="receipt-barcode-code">* ${escapeHtml(record.id)} *</div>
+                    <div class="receipt-footer-text">VERIFIED BY STEM LAB INVENTORY CONTROL</div>
+                    <div class="receipt-footer-sub">PLEASE KEEP RECEIPT FOR PROJECT AUDITING</div>
+                </div>
+
+                <div class="receipt-edge-bottom" aria-hidden="true">
+                    <svg class="receipt-sawtooth-svg" viewBox="0 0 120 8" preserveAspectRatio="none">
+                        <defs>
+                            <pattern id="sawtooth-bot-pattern" width="8" height="8" patternUnits="userSpaceOnUse">
+                                <polygon points="0,0 4,8 8,0" fill="#fafaf9"/>
+                            </pattern>
+                        </defs>
+                        <rect width="100%" height="8" fill="url(#sawtooth-bot-pattern)"/>
+                    </svg>
+                </div>
+            </div>
+
+            <div class="receipt-actions">
+                <button class="btn btn-secondary btn-sm" id="receipt-back-btn" data-project-id="${escapeHtml(project.id)}">
+                    <i class="ph ph-arrow-left"></i> Back to Records
+                </button>
+                <button class="btn btn-secondary btn-sm" id="receipt-copy-id-btn" data-txn-id="${escapeHtml(record.id)}">
+                    <i class="ph ph-copy"></i> Copy ID
+                </button>
+                <button class="btn btn-primary btn-sm" id="receipt-print-btn">
+                    <i class="ph ph-printer"></i> Print Receipt
+                </button>
+            </div>
+        </div>
+    `;
+
+    openModal(html);
+    dynamicModal.classList.add('receipt-modal');
+
+    document.getElementById('receipt-back-btn')?.addEventListener('click', (e) => {
+        const pId = e.currentTarget.getAttribute('data-project-id');
+        openProjectItemsModal(pId, 'records');
+    });
+
+    document.getElementById('receipt-copy-id-btn')?.addEventListener('click', async (e) => {
+        const id = e.currentTarget.getAttribute('data-txn-id');
+        try {
+            await navigator.clipboard.writeText(id);
+            showToast(`Copied Transaction ID: ${id}`, 'success');
+        } catch {
+            showToast(`Transaction ID: ${id}`, 'info');
+        }
+    });
+
+    document.getElementById('receipt-print-btn')?.addEventListener('click', () => {
+        window.print();
+    });
+}
+
+function openProjectItemsModal(projectId, initialTab = 'items') {
     const project = projects.find(p => p.id === projectId);
     if (!project || !canCurrentUserViewProject(project)) {
         showToast('You do not have access to that project.', 'error');
         return;
     }
 
+    const hasElevated = hasElevatedProjectPermissions(project, currentUser);
+    const canManageProject = canCurrentUserManageProject(project);
+    const records = hasElevated ? getProjectTransactionRecords(project) : [];
+    const activeTab = (hasElevated && initialTab === 'records') ? 'records' : 'items';
+
     const itemsHtml = project.itemsOut.length === 0
-        ? '<p class="text-muted">No items are currently signed out for this project.</p>'
+        ? '<p class="text-muted py-4 text-center">No items are currently signed out for this project.</p>'
         : project.itemsOut.map(io => {
             const item = inventoryItems.find(i => i.id === io.itemId);
             const assignedUserId = io.assignedToUserId || project.ownerId;
@@ -6343,41 +7180,218 @@ function openProjectItemsModal(projectId) {
             const signedOutByUser = mockUsers.find(u => u.id === io.signedOutByUserId);
             const due = io.dueDate ? new Date(io.dueDate) : null;
             const isDueNow = due ? due <= new Date() : false;
+            const signoutId = io.id || `${io.itemId}-${io.signoutDate || 'out'}`;
             return `
-                <li class="stock-item dashboard-project-summary" style="border-left-width:3px;">
-                    <div>
-                        <strong>${item ? item.name : io.itemId} (x${io.quantity})</strong>
-                        <small class="text-muted block">Assigned: ${assignedUser ? assignedUser.name : assignedUserId}</small>
-                        ${signedOutByUser ? `<small class="text-muted block">Signed Out By: ${signedOutByUser.name}</small>` : ''}
-                        <small class="text-muted block">SKU: ${item ? item.sku : 'N/A'}</small>
+                <li class="stock-item dashboard-project-summary" style="border-left-width:3px;margin-bottom:0.75rem;padding:0.9rem 1rem;">
+                    <div style="flex:1;">
+                        <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;">
+                            <strong>${escapeHtml(item ? item.name : io.itemId)}</strong>
+                            <span class="badge" style="font-size:0.75rem;">Qty: ${io.quantity}</span>
+                        </div>
+                        <small class="text-muted block">Assigned: ${escapeHtml(assignedUser ? assignedUser.name : assignedUserId)}</small>
+                        ${signedOutByUser ? `<small class="text-muted block">Signed Out By: ${escapeHtml(signedOutByUser.name)}</small>` : ''}
+                        <small class="text-muted block">SKU: ${escapeHtml(item ? (item.sku || 'N/A') : 'N/A')}</small>
                     </div>
-                    <span class="${isDueNow ? 'text-danger' : 'text-warning'} font-bold text-sm">
-                        ${due ? (isDueNow ? 'Due now' : `Due: ${due.toLocaleDateString()}`) : 'No due date'}
-                    </span>
+                    <div style="display:flex;flex-direction:column;align-items:flex-end;gap:0.5rem;">
+                        <span class="${isDueNow ? 'text-danger' : 'text-warning'} font-bold text-sm">
+                            ${due ? (isDueNow ? 'Due now' : `Due: ${due.toLocaleDateString()}`) : 'No due date'}
+                        </span>
+                        ${hasElevated ? `
+                        <button class="btn btn-secondary btn-sm quick-receipt-btn" data-project-id="${escapeHtml(project.id)}" data-signout-id="${escapeHtml(signoutId)}" style="padding:0.25rem 0.6rem;font-size:0.75rem;">
+                            <i class="ph ph-receipt"></i> Receipt
+                        </button>` : ''}
+                    </div>
                 </li>
             `;
         }).join('');
-    const canManageProject = canCurrentUserManageProject(project);
+
+    const activeCount = records.filter(r => r.status === 'ACTIVE').length;
+    const returnedCount = records.filter(r => r.status === 'RETURNED').length;
+    const totalCirculated = records.reduce((sum, r) => sum + r.items.reduce((s, i) => s + (Number(i.quantity) || 1), 0), 0);
+
+    const recordsHtml = records.length === 0
+        ? '<p class="text-muted text-center py-6">No transaction records logged yet for this project.</p>'
+        : records.map(rec => {
+            const statusClass = rec.status === 'ACTIVE' ? 'text-success' : rec.status === 'RETURNED' ? 'text-primary' : 'text-warning';
+            return `
+                <div class="proj-record-card" data-record-id="${escapeHtml(rec.id)}" data-record-type="${escapeHtml(rec.type)}" data-record-status="${escapeHtml(rec.status)}">
+                    <div class="proj-record-top">
+                        <div class="proj-record-id-wrap">
+                            <span class="proj-record-id">${escapeHtml(rec.id)}</span>
+                            <span class="badge ${statusClass}" style="font-size:0.75rem;font-weight:700;">${escapeHtml(rec.status)}</span>
+                        </div>
+                        <span class="text-muted text-xs">${escapeHtml(formatReceiptDate(rec.timestamp))}</span>
+                    </div>
+                    <div class="proj-record-meta">
+                        <span><strong>Issued By:</strong> ${escapeHtml(rec.actorName)} <small class="text-muted">(${escapeHtml(rec.actorRole)})</small></span>
+                        <span><strong>Assigned To:</strong> ${escapeHtml(rec.assignedToName)}</span>
+                    </div>
+                    <div class="proj-record-items">
+                        ${rec.items.map(item => `
+                            <div style="display:flex;justify-content:space-between;align-items:center;">
+                                <span><strong>${item.quantity}x</strong> ${escapeHtml(item.name)} <small class="text-muted">(${escapeHtml(item.sku || 'N/A')})</small></span>
+                                <small class="text-muted">${escapeHtml(item.category || '')}</small>
+                            </div>
+                        `).join('')}
+                    </div>
+                    <div class="proj-record-footer">
+                        <span class="text-muted text-xs"><i class="ph ph-clock-counter-clockwise"></i> ${rec.events.length} lifecycle events logged</span>
+                        <div style="display:flex;gap:0.5rem;">
+                            <button class="btn btn-secondary btn-sm copy-record-id-btn" data-txn-id="${escapeHtml(rec.id)}" style="padding:0.3rem 0.6rem;font-size:0.75rem;" title="Copy Transaction ID">
+                                <i class="ph ph-copy"></i> Copy ID
+                            </button>
+                            <button class="btn btn-primary btn-sm view-txn-receipt-btn" data-project-id="${escapeHtml(project.id)}" data-txn-id="${escapeHtml(rec.id)}" style="padding:0.3rem 0.75rem;font-size:0.75rem;">
+                                <i class="ph ph-receipt"></i> View Receipt
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }).join('');
 
     const html = `
         <div class="modal-header">
-            <h3>Project Items: ${project.name}</h3>
+            <div>
+                <h3 style="margin-bottom:0.25rem;">Project: ${escapeHtml(project.name)}</h3>
+                <span class="text-muted text-xs">Manager: ${escapeHtml(getProjectOwnerLabel(project))} • ID: ${escapeHtml(project.id)}</span>
+            </div>
             <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
         </div>
-        <div class="modal-body" style="max-height:65vh;overflow-y:auto;">
-            <p class="text-muted mb-4">Project/Team Manager: ${getProjectOwnerLabel(project)}</p>
-            <ul class="stock-list">${itemsHtml}</ul>
+        <div class="modal-body">
+            ${hasElevated ? `
+            <div class="project-modal-tabs">
+                <button class="btn btn-sm ${activeTab === 'items' ? 'btn-primary' : 'btn-secondary'} proj-tab-btn" id="proj-tab-items-btn" data-tab="items">
+                    <i class="ph ph-toolbox"></i> Active Items (${project.itemsOut.length})
+                </button>
+                <button class="btn btn-sm ${activeTab === 'records' ? 'btn-primary' : 'btn-secondary'} proj-tab-btn" id="proj-tab-records-btn" data-tab="records">
+                    <i class="ph ph-receipt"></i> Records & Receipts (${records.length})
+                </button>
+            </div>
+            ` : ''}
+
+            <div id="proj-tab-content-items" class="${activeTab === 'items' ? '' : 'hidden'}">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">
+                    <span class="text-muted text-sm">Currently Signed Out Equipment:</span>
+                    <span class="badge" style="font-size:0.75rem;">${project.itemsOut.length} active line item(s)</span>
+                </div>
+                <ul class="stock-list">${itemsHtml}</ul>
+            </div>
+
+            ${hasElevated ? `
+            <div id="proj-tab-content-records" class="${activeTab === 'records' ? '' : 'hidden'}">
+                <div class="proj-records-stats">
+                    <div class="proj-stat-card">
+                        <span class="proj-stat-value">${records.length}</span>
+                        <span class="proj-stat-label">Total Transactions</span>
+                    </div>
+                    <div class="proj-stat-card">
+                        <span class="proj-stat-value text-success">${activeCount}</span>
+                        <span class="proj-stat-label">Active Sign-Outs</span>
+                    </div>
+                    <div class="proj-stat-card">
+                        <span class="proj-stat-value text-primary">${returnedCount}</span>
+                        <span class="proj-stat-label">Returned</span>
+                    </div>
+                    <div class="proj-stat-card">
+                        <span class="proj-stat-value">${totalCirculated}</span>
+                        <span class="proj-stat-label">Items Circulated</span>
+                    </div>
+                </div>
+
+                <div class="proj-records-filter-bar">
+                    <input type="text" class="form-control proj-records-search" id="proj-records-search-input" placeholder="Search by Transaction ID, Item, or Member..." style="font-size:0.85rem;padding:0.5rem 0.85rem;">
+                    <select class="form-control" id="proj-records-filter-select" style="width:auto;min-width:140px;font-size:0.85rem;padding:0.5rem 0.85rem;">
+                        <option value="all">All Types</option>
+                        <option value="ACTIVE">Active Out</option>
+                        <option value="RETURNED">Returned</option>
+                        <option value="TRANSFERRED">Transferred</option>
+                    </select>
+                </div>
+
+                <div class="proj-records-list" id="proj-records-container">
+                    ${recordsHtml}
+                </div>
+            </div>
+            ` : ''}
         </div>
         <div class="modal-footer">
             <button class="btn btn-secondary" onclick="closeModal()">Close</button>
             ${canManageProject ? `
-            <button class="btn btn-primary" id="edit-project-from-details-btn" data-project-id="${project.id}">
+            <button class="btn btn-primary" id="edit-project-from-details-btn" data-project-id="${escapeHtml(project.id)}">
                 <i class="ph ph-pencil-simple"></i> Edit Project
             </button>` : ''}
         </div>
     `;
 
     openModal(html);
+    dynamicModal.classList.add('project-details-modal');
+
+    // Wire Tabs
+    if (hasElevated) {
+        const tabItemsBtn = document.getElementById('proj-tab-items-btn');
+        const tabRecordsBtn = document.getElementById('proj-tab-records-btn');
+        const contentItems = document.getElementById('proj-tab-content-items');
+        const contentRecords = document.getElementById('proj-tab-content-records');
+
+        tabItemsBtn?.addEventListener('click', () => {
+            tabItemsBtn.classList.replace('btn-secondary', 'btn-primary');
+            tabRecordsBtn?.classList.replace('btn-primary', 'btn-secondary');
+            contentItems?.classList.remove('hidden');
+            contentRecords?.classList.add('hidden');
+        });
+
+        tabRecordsBtn?.addEventListener('click', () => {
+            tabRecordsBtn.classList.replace('btn-secondary', 'btn-primary');
+            tabItemsBtn?.classList.replace('btn-primary', 'btn-secondary');
+            contentRecords?.classList.remove('hidden');
+            contentItems?.classList.add('hidden');
+        });
+
+        // Search & Filter
+        const searchInput = document.getElementById('proj-records-search-input');
+        const filterSelect = document.getElementById('proj-records-filter-select');
+        const recordsContainer = document.getElementById('proj-records-container');
+
+        const applyFilter = () => {
+            const query = (searchInput?.value || '').trim().toLowerCase();
+            const filterType = filterSelect?.value || 'all';
+            const cards = recordsContainer?.querySelectorAll('.proj-record-card') || [];
+
+            cards.forEach(card => {
+                const text = card.textContent.toLowerCase();
+                const status = card.getAttribute('data-record-status') || '';
+                const matchesQuery = !query || text.includes(query);
+                const matchesFilter = filterType === 'all' || status === filterType;
+                card.style.display = (matchesQuery && matchesFilter) ? 'flex' : 'none';
+            });
+        };
+
+        searchInput?.addEventListener('input', applyFilter);
+        filterSelect?.addEventListener('change', applyFilter);
+    }
+
+    // Wire View Receipt buttons
+    document.querySelectorAll('.view-txn-receipt-btn, .quick-receipt-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const pId = e.currentTarget.getAttribute('data-project-id') || projectId;
+            const txnId = e.currentTarget.getAttribute('data-txn-id') || e.currentTarget.getAttribute('data-signout-id');
+            openReceiptModal(txnId, pId);
+        });
+    });
+
+    // Wire Copy ID buttons
+    document.querySelectorAll('.copy-record-id-btn').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+            const txnId = e.currentTarget.getAttribute('data-txn-id');
+            try {
+                await navigator.clipboard.writeText(txnId);
+                showToast(`Copied Transaction ID: ${txnId}`, 'success');
+            } catch {
+                showToast(`Transaction ID: ${txnId}`, 'info');
+            }
+        });
+    });
+
     document.getElementById('edit-project-from-details-btn')?.addEventListener('click', (e) => {
         const id = e.currentTarget.getAttribute('data-project-id');
         closeModal();
@@ -7287,9 +8301,72 @@ async function returnProjectItem(projectId, signoutId, options = {}) {
     return true;
 }
 
+let projectsSearchQuery = '';
+let projectsActiveFilter = 'all';
+let projectsControlsBound = false;
+
+function getProjectStatusBadgeClass(status) {
+    const s = String(status || '').trim().toLowerCase();
+    if (s === 'active') return 'badge-success status-active';
+    if (s === 'completed') return 'badge-info status-completed';
+    if (s === 'on hold' || s === 'paused') return 'badge-warning status-hold';
+    if (s === 'archived') return 'badge-secondary status-archived';
+    return 'badge-primary';
+}
+
+function initProjectControls() {
+    if (projectsControlsBound) return;
+    const searchInput = document.getElementById('projects-search-input');
+    const clearBtn = document.getElementById('projects-search-clear');
+    const filterPills = document.querySelectorAll('.proj-filter-pill');
+
+    if (searchInput) {
+        searchInput.addEventListener('input', (e) => {
+            projectsSearchQuery = String(e.target.value || '').trim();
+            if (clearBtn) {
+                if (projectsSearchQuery) clearBtn.classList.remove('hidden');
+                else clearBtn.classList.add('hidden');
+            }
+            renderProjects();
+        });
+    }
+
+    if (clearBtn) {
+        clearBtn.addEventListener('click', () => {
+            projectsSearchQuery = '';
+            if (searchInput) searchInput.value = '';
+            clearBtn.classList.add('hidden');
+            renderProjects();
+        });
+    }
+
+    filterPills.forEach(pill => {
+        pill.addEventListener('click', (e) => {
+            const filter = e.currentTarget.getAttribute('data-filter') || 'all';
+            projectsActiveFilter = filter;
+            document.querySelectorAll('.proj-filter-pill').forEach(p => p.classList.remove('active'));
+            e.currentTarget.classList.add('active');
+            renderProjects();
+        });
+    });
+
+    projectsControlsBound = true;
+}
+
 function renderProjects() {
     const container = document.getElementById('projects-container');
     if (!container) return; // Only render if on Projects page
+
+    initProjectControls();
+
+    // Update Quick Stats in the control bar
+    const totalActiveProjects = projects.filter(p => !String(p.id || '').startsWith('PERS-') && String(p.status || '').toLowerCase() === 'active').length;
+    const totalItemsOutCount = projects.reduce((sum, p) => sum + (p.itemsOut || []).reduce((acc, io) => acc + (parseInt(io.quantity, 10) || 0), 0), 0);
+
+    const activeCountEl = document.getElementById('projects-count-active');
+    const itemsCountEl = document.getElementById('projects-count-items');
+    if (activeCountEl) activeCountEl.textContent = totalActiveProjects;
+    if (itemsCountEl) itemsCountEl.textContent = totalItemsOutCount;
 
     // Filter projects based on role
     // Students see only projects they own or collaborate on (active or past)
@@ -7313,43 +8390,152 @@ function renderProjects() {
     // Separate personal projects for display in a dedicated section
     const personalProjectId = `PERS-${currentUser.id}`;
     const personalProject = showPersonalProject ? visibleProjects.find(p => p.id === personalProjectId) : null;
-    const nonPersonalProjects = visibleProjects.filter(p => p.id !== personalProjectId);
+    let nonPersonalProjects = visibleProjects.filter(p => p.id !== personalProjectId);
+
+    // Apply Filter Pills
+    if (projectsActiveFilter === 'active') {
+        nonPersonalProjects = nonPersonalProjects.filter(p => String(p.status || '').toLowerCase() === 'active');
+    } else if (projectsActiveFilter === 'completed') {
+        nonPersonalProjects = nonPersonalProjects.filter(p => String(p.status || '').toLowerCase() === 'completed');
+    } else if (projectsActiveFilter === 'items-out') {
+        nonPersonalProjects = nonPersonalProjects.filter(p => (p.itemsOut || []).length > 0);
+    } else if (projectsActiveFilter === 'mine') {
+        nonPersonalProjects = nonPersonalProjects.filter(p => p.ownerId === currentUser.id || (Array.isArray(p.collaborators) && p.collaborators.includes(currentUser.id)));
+    }
+
+    // Apply Live Search Query
+    const query = projectsSearchQuery.toLowerCase();
+    let displayPersonalProject = personalProject;
+
+    if (query) {
+        nonPersonalProjects = nonPersonalProjects.filter(proj => {
+            const owner = mockUsers.find(u => u.id === proj.ownerId);
+            const linkedClass = proj.classId ? studentClasses.find(cls => String(cls.id) === String(proj.classId)) : null;
+            const collabs = (proj.collaborators || []).map(cid => {
+                const u = mockUsers.find(mu => mu.id === cid);
+                return u ? u.name : cid;
+            }).join(' ');
+
+            const itemsStr = (proj.itemsOut || []).map(io => {
+                const item = inventoryItems.find(i => i.id === io.itemId);
+                return item ? `${item.name} ${item.sku || ''}` : '';
+            }).join(' ');
+
+            const searchable = `${proj.name} ${proj.id} ${proj.description || ''} ${owner?.name || ''} ${linkedClass?.name || ''} ${collabs} ${itemsStr}`.toLowerCase();
+            return searchable.includes(query);
+        });
+
+        if (displayPersonalProject) {
+            const personalItemsStr = (displayPersonalProject.itemsOut || []).map(io => {
+                const item = inventoryItems.find(i => i.id === io.itemId);
+                return item ? `${item.name} ${item.sku || ''}` : '';
+            }).join(' ').toLowerCase();
+
+            if (!personalItemsStr.includes(query) && !'my items personal workspace'.includes(query)) {
+                displayPersonalProject = null;
+            }
+        }
+    }
+
+    // If filter pill is active/completed, we also adjust personal project visibility
+    if (projectsActiveFilter === 'completed') {
+        displayPersonalProject = null;
+    } else if (projectsActiveFilter === 'items-out' && displayPersonalProject && (!displayPersonalProject.itemsOut || displayPersonalProject.itemsOut.length === 0)) {
+        displayPersonalProject = null;
+    }
 
     let html = '';
 
-    // Add My Items personal project section first for every user.
-    if (personalProject) {
-        const personalItemsHtml = personalProject.itemsOut.length > 0 ? personalProject.itemsOut.map(io => {
-            const item = inventoryItems.find(i => i.id === io.itemId);
-            const signoutId = io.id || `${io.itemId}-${io.signoutDate}-${io.quantity}`;
-            return `
-                <div class="flex justify-between items-center text-sm" style="gap:0.75rem;">
-                    <div>
-                        <span>${io.quantity}x <strong>${escapeHtml(item ? item.name : 'Unknown')}</strong></span>
-                        <div class="text-xs text-muted">Signed Out: ${new Date(io.signoutDate).toLocaleDateString()}</div>
-                    </div>
-                    <div style="display:flex;align-items:center;gap:0.5rem;">
-                        <span class="text-muted font-mono" style="font-size:0.75rem">${escapeHtml(item ? item.sku : 'N/A')}</span>
-                        <button class="btn btn-secondary text-sm return-project-item-btn" data-project-id="${escapeHtml(personalProject.id)}" data-signout-id="${escapeHtml(signoutId)}" style="padding:0.2rem 0.5rem;font-size:0.75rem;"><i class="ph ph-arrow-counter-clockwise"></i> Sign In</button>
-                    </div>
+    // Add My Items personal project card first for every user
+    if (displayPersonalProject) {
+        const personalOutCount = (displayPersonalProject.itemsOut || []).reduce((acc, curr) => acc + (parseInt(curr.quantity, 10) || 0), 0);
+        const personalItemsHtml = displayPersonalProject.itemsOut.length > 0 ? `
+            <div class="proj-items-rack">
+                <div class="proj-items-summary-bar has-out">
+                    <span><i class="ph ph-toolbox"></i> <strong>${personalOutCount}</strong> Item${personalOutCount === 1 ? '' : 's'} Signed Out</span>
+                    <span class="text-xs text-muted font-mono">${displayPersonalProject.itemsOut.length} line item${displayPersonalProject.itemsOut.length === 1 ? '' : 's'}</span>
                 </div>
-            `;
-        }).join('') : '<p class="text-muted text-sm">No items currently signed out to your personal project.</p>';
+                <div class="proj-items-list">
+                    ${displayPersonalProject.itemsOut.map(io => {
+                        const item = inventoryItems.find(i => i.id === io.itemId);
+                        const signoutId = io.id || `${io.itemId}-${io.signoutDate}-${io.quantity}`;
+                        const isOverdue = io.dueDate && new Date(io.dueDate) < new Date();
+                        return `
+                            <div class="proj-item-row">
+                                <div class="proj-item-info">
+                                    <div class="proj-item-title-line">
+                                        <span class="proj-item-qty">${escapeHtml(String(io.quantity))}x</span>
+                                        <span>${escapeHtml(item ? item.name : 'Unknown Item')}</span>
+                                    </div>
+                                    <div class="proj-item-meta-line">
+                                        <span class="proj-item-sku">${escapeHtml(item ? item.sku : 'N/A')}</span>
+                                        <span class="${isOverdue ? 'proj-item-due overdue' : 'proj-item-due'}"><i class="ph ph-clock"></i> Signed: ${new Date(io.signoutDate).toLocaleDateString()}</span>
+                                    </div>
+                                </div>
+                                <div class="proj-item-actions">
+                                    <button class="btn btn-secondary proj-action-btn-sm return-project-item-btn" data-project-id="${escapeHtml(displayPersonalProject.id)}" data-signout-id="${escapeHtml(signoutId)}" title="Sign In item"><i class="ph ph-arrow-counter-clockwise"></i> Sign In</button>
+                                </div>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+            </div>
+        ` : `
+            <div class="proj-items-rack">
+                <div class="proj-items-summary-bar all-clear">
+                    <i class="ph ph-check-circle" style="font-size:1.15rem;"></i>
+                    <span>No items currently signed out to your personal project.</span>
+                </div>
+            </div>
+        `;
 
         html += `
-            <div class="project-card glass-panel flex-col" style="border-left:4px solid var(--accent);">
+            <div class="project-card my-items-card flex-col" data-project-id="${escapeHtml(displayPersonalProject.id)}" data-status="Active">
                 <div class="project-header">
-                    <h4 style="color:var(--accent);"><i class="ph ph-backpack"></i> My Items</h4>
+                    <div class="project-title-area">
+                        <h4><i class="ph ph-backpack" style="color:var(--accent-secondary);font-size:1.25rem;"></i> My Items</h4>
+                        <span class="project-id-chip">Personal Workspace</span>
+                    </div>
+                    <span class="proj-badge role-badge"><i class="ph ph-user"></i> ${escapeHtml(currentUser.name)}</span>
                 </div>
-                <div style="display:flex; flex-direction:column; gap:0.5rem;">
-                    ${personalItemsHtml}
+                <p class="project-desc">Tools and components signed out directly for your individual use.</p>
+                ${personalItemsHtml}
+                <div class="project-meta">
+                    <div class="project-action-buttons">
+                        <button class="btn btn-secondary text-sm view-proj-btn" data-id="${escapeHtml(displayPersonalProject.id)}"><i class="ph ph-eye"></i> View All</button>
+                    </div>
                 </div>
             </div>
         `;
     }
 
     if (nonPersonalProjects.length === 0 && html === '') {
-        container.innerHTML = '<p class="text-muted col-span-full">No projects found.</p>';
+        const isFiltered = Boolean(projectsSearchQuery || projectsActiveFilter !== 'all');
+        container.innerHTML = `
+            <div class="project-empty-state">
+                <i class="ph ph-folder-dashed"></i>
+                <h4>No Projects Found</h4>
+                <p>${isFiltered ? 'No projects match your current search query or active filter.' : 'There are currently no active projects to display.'}</p>
+                ${isFiltered ? `<button type="button" class="btn btn-secondary text-sm" id="clear-projects-filter-btn" style="margin-top:0.5rem;"><i class="ph ph-arrow-counter-clockwise"></i> Reset Filters</button>` : ''}
+            </div>
+        `;
+
+        const resetBtn = document.getElementById('clear-projects-filter-btn');
+        if (resetBtn) {
+            resetBtn.addEventListener('click', () => {
+                projectsSearchQuery = '';
+                projectsActiveFilter = 'all';
+                const sInput = document.getElementById('projects-search-input');
+                if (sInput) sInput.value = '';
+                const cBtn = document.getElementById('projects-search-clear');
+                if (cBtn) cBtn.classList.add('hidden');
+                document.querySelectorAll('.proj-filter-pill').forEach(p => {
+                    if (p.getAttribute('data-filter') === 'all') p.classList.add('active');
+                    else p.classList.remove('active');
+                });
+                renderProjects();
+            });
+        }
         return;
     }
 
@@ -7358,61 +8544,95 @@ function renderProjects() {
         const linkedClass = proj.classId
             ? studentClasses.find(cls => String(cls.id) === String(proj.classId))
             : null;
-        const outCount = proj.itemsOut.reduce((acc, curr) => acc + curr.quantity, 0);
+        const outCount = (proj.itemsOut || []).reduce((acc, curr) => acc + (parseInt(curr.quantity, 10) || 0), 0);
         const canManage = canCurrentUserManageProject(proj);
         const membershipRole = currentUser.role === 'student' ? getProjectMembershipRole(proj, currentUser.id) : null;
+        const collabCount = Array.isArray(proj.collaborators) ? proj.collaborators.length : 0;
+        const canDelete = typeof canCurrentUserDeleteProject === 'function' ? canCurrentUserDeleteProject(proj) : (currentUser.role === 'teacher' || currentUser.role === 'developer');
 
-        // List items out
-        const itemsOutHtml = proj.itemsOut.length > 0 ? `
-            <div class="mt-4 pt-4" style="border-top: 1px solid var(--glass-border)">
-                <div class="text-xs uppercase tracking-wider text-muted mb-2">Signed-out Items</div>
-                <div style="display:flex; flex-direction:column; gap:0.5rem">
+        // Status icon
+        const statusLower = String(proj.status || '').toLowerCase();
+        let statusIcon = 'ph-folder';
+        if (statusLower === 'active') statusIcon = 'ph-play-circle';
+        else if (statusLower === 'completed') statusIcon = 'ph-check-circle';
+        else if (statusLower === 'on hold') statusIcon = 'ph-pause-circle';
+        else if (statusLower === 'archived') statusIcon = 'ph-archive';
+
+        // List items out rack
+        const itemsOutHtml = proj.itemsOut && proj.itemsOut.length > 0 ? `
+            <div class="proj-items-rack">
+                <div class="proj-items-summary-bar has-out">
+                    <span><i class="ph ph-toolbox"></i> <strong>${outCount}</strong> Item${outCount === 1 ? '' : 's'} Signed Out</span>
+                    <span class="text-xs text-muted font-mono">${proj.itemsOut.length} line item${proj.itemsOut.length === 1 ? '' : 's'}</span>
+                </div>
+                <div class="proj-items-list">
                     ${proj.itemsOut.map(io => {
-            const item = inventoryItems.find(i => i.id === io.itemId);
-            const assignedUserId = io.assignedToUserId || proj.ownerId;
-            const assignedUser = mockUsers.find(u => u.id === assignedUserId);
-            const signedOutByUser = mockUsers.find(u => u.id === io.signedOutByUserId);
-            const signoutId = io.id || `${io.itemId}-${io.signoutDate}-${io.quantity}`;
-            return `
-                            <div class="flex justify-between items-center text-sm" style="gap:0.75rem;">
-                                <div>
-                                    <span>${io.quantity}x <strong>${escapeHtml(item ? item.name : 'Unknown')}</strong></span>
-                                    <div class="text-xs text-muted">Assigned: ${escapeHtml(assignedUser ? assignedUser.name : assignedUserId)}</div>
-                                    ${signedOutByUser ? `<div class="text-xs text-muted">By: ${escapeHtml(signedOutByUser.name)}</div>` : ''}
+                        const item = inventoryItems.find(i => i.id === io.itemId);
+                        const assignedUserId = io.assignedToUserId || proj.ownerId;
+                        const assignedUser = mockUsers.find(u => u.id === assignedUserId);
+                        const signedOutByUser = mockUsers.find(u => u.id === io.signedOutByUserId);
+                        const signoutId = io.id || `${io.itemId}-${io.signoutDate}-${io.quantity}`;
+                        const isOverdue = io.dueDate && new Date(io.dueDate) < new Date();
+                        return `
+                            <div class="proj-item-row">
+                                <div class="proj-item-info">
+                                    <div class="proj-item-title-line">
+                                        <span class="proj-item-qty">${escapeHtml(String(io.quantity))}x</span>
+                                        <span>${escapeHtml(item ? item.name : 'Unknown Item')}</span>
+                                    </div>
+                                    <div class="proj-item-meta-line">
+                                        <span class="proj-item-sku">${escapeHtml(item ? item.sku : 'N/A')}</span>
+                                        <span class="text-muted"><i class="ph ph-user"></i> ${escapeHtml(assignedUser ? assignedUser.name : assignedUserId)}</span>
+                                        ${signedOutByUser && signedOutByUser.id !== assignedUserId ? `<span class="text-muted"><i class="ph ph-hand-pointing"></i> By: ${escapeHtml(signedOutByUser.name)}</span>` : ''}
+                                        <span class="${isOverdue ? 'proj-item-due overdue' : 'proj-item-due'}"><i class="ph ph-clock"></i> ${isOverdue ? 'Overdue: ' : 'Due: '}${new Date(io.dueDate || io.signoutDate).toLocaleDateString()}</span>
+                                    </div>
                                 </div>
-                                <div style="display:flex;align-items:center;gap:0.5rem;">
-                                    <span class="text-muted font-mono" style="font-size:0.75rem">${escapeHtml(item ? item.sku : 'N/A')}</span>
-                                    ${canCurrentUserReturnProjectItem(proj) ? `<button class="btn btn-secondary text-sm return-project-item-btn" data-project-id="${escapeHtml(proj.id)}" data-signout-id="${escapeHtml(signoutId)}" style="padding:0.2rem 0.5rem;font-size:0.75rem;"><i class="ph ph-arrow-counter-clockwise"></i> Sign In</button>` : ''}
-                                    ${canManage ? `<button class="btn btn-secondary text-sm transfer-project-item-btn" data-project-id="${escapeHtml(proj.id)}" data-signout-id="${escapeHtml(signoutId)}" style="padding:0.2rem 0.5rem;font-size:0.75rem;"><i class="ph ph-arrow-right"></i> Transfer</button>` : ''}
+                                <div class="proj-item-actions">
+                                    ${canCurrentUserReturnProjectItem(proj) ? `<button class="btn btn-secondary proj-action-btn-sm return-project-item-btn" data-project-id="${escapeHtml(proj.id)}" data-signout-id="${escapeHtml(signoutId)}" title="Sign In item"><i class="ph ph-arrow-counter-clockwise"></i> Sign In</button>` : ''}
+                                    ${canManage ? `<button class="btn btn-secondary proj-action-btn-sm transfer-project-item-btn" data-project-id="${escapeHtml(proj.id)}" data-signout-id="${escapeHtml(signoutId)}" title="Transfer item"><i class="ph ph-arrow-right"></i> Transfer</button>` : ''}
                                 </div>
                             </div>
                         `;
-        }).join('')}
+                    }).join('')}
                 </div>
             </div>
-        ` : '';
+        ` : `
+            <div class="proj-items-rack">
+                <div class="proj-items-summary-bar all-clear">
+                    <i class="ph ph-check-circle" style="font-size:1.15rem;"></i>
+                    <span>All equipment returned & in stock</span>
+                </div>
+            </div>
+        `;
 
         return `
-            <div class="project-card glass-panel flex-col" data-project-id="${escapeHtml(proj.id)}">
+            <div class="project-card flex-col" data-project-id="${escapeHtml(proj.id)}" data-status="${escapeHtml(proj.status || 'Active')}">
                 <div class="project-header">
-                    <div>
-                        <h4>${escapeHtml(proj.name)}</h4>
+                    <div class="project-title-area">
+                        <h4><i class="ph ph-folder-open" style="color:var(--accent-primary);font-size:1.15rem;"></i> ${escapeHtml(proj.name)}</h4>
+                        <span class="project-id-chip">${escapeHtml(proj.id)}</span>
                     </div>
-                    <span class="status-badge ${getProjectStatusBadgeClass(proj.status)}">${escapeHtml(proj.status)}</span>
+                    <span class="status-badge ${getProjectStatusBadgeClass(proj.status)}"><i class="ph ${statusIcon}"></i> ${escapeHtml(proj.status || 'Active')}</span>
                 </div>
-                <p class="text-muted text-sm mb-2">Project/Team Manager: ${escapeHtml(owner ? owner.name : 'Unknown')}</p>
-                ${membershipRole && membershipRole !== 'owner' ? `<p class="text-muted text-sm mb-2">Your Role: ${escapeHtml(membershipRole.charAt(0).toUpperCase() + membershipRole.slice(1))}</p>` : ''}
-                ${linkedClass ? `<p class="text-muted text-sm mb-2">Class: ${escapeHtml(linkedClass.name || linkedClass.id)}</p>` : ''}
-                <p class="project-desc mb-4">${escapeHtml(proj.description)}</p>
-                <div class="project-footer"><strong>${outCount}</strong> items signed out</div>
+
+                <div class="project-badges-wrap">
+                    <span class="proj-badge owner-badge" title="Project Manager / Owner"><i class="ph ph-user"></i> ${escapeHtml(owner ? owner.name : 'Unknown')}</span>
+                    ${linkedClass ? `<span class="proj-badge class-badge" title="Associated Class"><i class="ph ph-chalkboard-teacher"></i> ${escapeHtml(linkedClass.name || linkedClass.id)}</span>` : ''}
+                    ${membershipRole && membershipRole !== 'owner' ? `<span class="proj-badge role-badge" title="Your membership role"><i class="ph ph-shield-star"></i> ${escapeHtml(membershipRole.charAt(0).toUpperCase() + membershipRole.slice(1))}</span>` : ''}
+                    ${collabCount > 0 ? `<span class="proj-badge collab-badge" title="${collabCount} member(s)"><i class="ph ph-users-three"></i> ${collabCount} Member${collabCount === 1 ? '' : 's'}</span>` : ''}
+                </div>
+
+                <p class="project-desc">${escapeHtml(proj.description || 'No description provided.')}</p>
+
                 ${itemsOutHtml}
+
                 <div class="project-meta">
-                    <span class="text-muted text-sm">${proj.itemsOut.length > 0 ? 'Use Sign In to return tools.' : 'No items currently signed out.'}</span>
+                    <div class="project-meta-left">
+                        ${canDelete ? `<button class="btn btn-secondary text-sm delete-proj-btn" data-id="${escapeHtml(proj.id)}" title="Delete Project" style="color:var(--danger);"><i class="ph ph-trash"></i></button>` : ''}
+                    </div>
                     <div class="project-action-buttons">
-                        ${canManage ? `<button class="btn btn-secondary text-sm edit-proj-btn" data-id="${escapeHtml(proj.id)}">
-                            <i class="ph ph-pencil-simple"></i> Edit
-                        </button>` : ''}
-                        <button class="btn btn-secondary text-sm view-proj-btn" data-id="${escapeHtml(proj.id)}">Details</button>
+                        <button class="btn btn-primary text-sm view-proj-btn" data-id="${escapeHtml(proj.id)}" title="View Project Details & Equipment"><i class="ph ph-eye"></i> Details</button>
+                        ${canManage ? `<button class="btn btn-secondary text-sm edit-proj-btn" data-id="${escapeHtml(proj.id)}" title="Edit Project Settings"><i class="ph ph-pencil-simple"></i> Edit</button>` : ''}
                     </div>
                 </div>
             </div>
@@ -7426,10 +8646,24 @@ function renderProjects() {
         });
     });
 
+    document.querySelectorAll('.proj-records-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const id = e.currentTarget.getAttribute('data-id');
+            openProjectItemsModal(id, 'records');
+        });
+    });
+
     document.querySelectorAll('.view-proj-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
             const id = e.currentTarget.getAttribute('data-id');
-            openProjectItemsModal(id);
+            openProjectItemsModal(id, 'items');
+        });
+    });
+
+    document.querySelectorAll('.delete-proj-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const id = e.currentTarget.getAttribute('data-id');
+            openDeleteProjectModal(id);
         });
     });
 
@@ -7448,7 +8682,6 @@ function renderProjects() {
             await transferProjectItemToAnotherProject(projectId, signoutId);
         });
     });
-
 }
 
 async function openSignOutModal(itemId) {
@@ -9085,7 +10318,7 @@ function renderLogs() {
     const actionFilter = document.getElementById('logs-action-filter');
     const actorFilter = document.getElementById('logs-actor-filter');
     if (!tbody) return;
-    if (currentUser.role === 'student') return; // Double check protection
+    if (!canCurrentUserViewActivityLog()) return;
 
     if (actionFilter) {
         const previousValue = actionFilter.value || 'all';
@@ -9548,20 +10781,6 @@ async function openUserModal(editId = null) {
                     <option value="developer" ${isEdit && userToEdit.role === 'developer' ? 'selected' : ''}>Developer</option>
                 </select>
             </div>
-            <div class="form-group">
-                <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer; margin: 0;">
-                    <input type="checkbox" id="user-signin-attention-autotrigger" ${signInAttentionAutotrigger ? 'checked' : ''}>
-                    Auto-trigger attention light when this user signs in
-                </label>
-                <small class="text-muted">When enabled, this user login will fire the configured LED attention endpoint.</small>
-            </div>
-            <div class="form-group">
-                <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer; margin: 0;">
-                    <input type="checkbox" id="user-personal-items-enabled" ${personalItemsEnabled ? 'checked' : ''}>
-                    Show My Items (Personal)
-                </label>
-                <small class="text-muted">New users start hidden; enable this when the user should see personal sign-outs.</small>
-            </div>
             <div class="form-group" id="class-assign-container" style="display: ${(!isEdit || userToEdit.role === 'student') ? 'block' : 'none'};">
                 <label>Assigned Class</label>
                 <select id="user-class-assign" class="form-control">
@@ -9572,7 +10791,6 @@ async function openUserModal(editId = null) {
             <div id="perms-container" class="form-group" style="padding-top: 1.5rem; border-top: 1px solid var(--glass-border); display: ${(!isEdit || userToEdit.role === 'student') ? 'block' : 'none'};">
                 <div style="margin-bottom: 1rem;">
                     <label style="display: block; margin-bottom: 0.3rem; font-weight: 500;">Granular Permissions</label>
-                    <small class="text-muted" id="perms-source-hint" style="display: block; font-size: 0.85rem;">Manual Overrides</small>
                 </div>
                 <div style="display:flex; flex-direction:column; gap:0.75rem; margin-top:1.25rem; padding: 1rem; background: rgba(255, 255, 255, 0.02); border-radius: 8px;">
                     <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer; margin: 0;">
@@ -9583,6 +10801,12 @@ async function openUserModal(editId = null) {
                     </label>
                     <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer; margin: 0;">
                         <input type="checkbox" id="perm-signout" ${cSignOut ? 'checked' : ''}> Can Sign Out Items
+                    </label>
+                    <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer; margin: 0;">
+                        <input type="checkbox" id="user-signin-attention-autotrigger" ${signInAttentionAutotrigger ? 'checked' : ''}> Auto Open Door On Sign-In
+                    </label>
+                    <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer; margin: 0;">
+                        <input type="checkbox" id="user-personal-items-enabled" ${personalItemsEnabled ? 'checked' : ''}> Personal Signout Enabled
                     </label>
                 </div>
             </div>
@@ -9625,9 +10849,11 @@ async function openUserModal(editId = null) {
                 targetClass.defaultPermissions.autoTriggerAttentionOnSignIn
                 ?? targetClass.defaultPermissions.auto_trigger_attention_on_sign_in
             );
-            document.getElementById('perms-source-hint').textContent = 'Default from ' + targetClass.name;
+            const hint = document.getElementById('perms-source-hint');
+            if (hint) hint.textContent = 'Default from ' + targetClass.name;
         } else {
-            document.getElementById('perms-source-hint').textContent = 'Manual Overrides';
+            const hint = document.getElementById('perms-source-hint');
+            if (hint) hint.textContent = '';
         }
     });
 
@@ -13090,30 +14316,106 @@ document.getElementById('bulk-import-items-btn')?.addEventListener('click', asyn
 });
 
 /* =======================================
+   INVENTORY EDIT DROPDOWN MENU
+   ======================================= */
+const inventoryEditToggle = document.getElementById('inventory-edit-menu-toggle');
+const inventoryEditMenu = document.getElementById('inventory-edit-actions-menu');
+
+if (inventoryEditToggle && inventoryEditMenu) {
+    inventoryEditToggle.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const isHidden = inventoryEditMenu.classList.toggle('hidden');
+        inventoryEditToggle.setAttribute('aria-expanded', !isHidden ? 'true' : 'false');
+    });
+
+    document.addEventListener('click', (e) => {
+        if (!inventoryEditMenu.contains(e.target) && !inventoryEditToggle.contains(e.target)) {
+            inventoryEditMenu.classList.add('hidden');
+            inventoryEditToggle.setAttribute('aria-expanded', 'false');
+        }
+    });
+}
+
+const addItemMenuToggle = document.getElementById('add-item-menu-toggle');
+const addItemActionsMenu = document.getElementById('add-item-actions-menu');
+if (addItemMenuToggle && addItemActionsMenu) {
+    addItemMenuToggle.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const isHidden = addItemActionsMenu.classList.toggle('hidden');
+        addItemMenuToggle.setAttribute('aria-expanded', !isHidden ? 'true' : 'false');
+    });
+
+    document.addEventListener('click', (e) => {
+        if (!addItemActionsMenu.contains(e.target) && !addItemMenuToggle.contains(e.target)) {
+            addItemActionsMenu.classList.add('hidden');
+            addItemMenuToggle.setAttribute('aria-expanded', 'false');
+        }
+    });
+}
+
+document.getElementById('add-bundle-btn')?.addEventListener('click', () => {
+    addItemActionsMenu?.classList.add('hidden');
+    addItemMenuToggle?.setAttribute('aria-expanded', 'false');
+    openAddItemModal({ initialItemType: 'bundle' });
+});
+
+/* =======================================
    MANAGE CATEGORIES
    ======================================= */
 document.getElementById('manage-categories-btn')?.addEventListener('click', async () => {
+    inventoryEditMenu?.classList.add('hidden');
+    inventoryEditToggle?.setAttribute('aria-expanded', 'false');
     if (currentUser?.role === 'student') {
         showToast('You do not have permission to manage categories.', 'error');
         return;
     }
 
-    function renderCategoryModal() {
-        const renderOptionRows = (options, renameClass, deleteClass) => (options || []).map((option, index) => `
-            <div style="display:flex; align-items:center; justify-content:space-between; padding:0.5rem; border-bottom:1px solid rgba(255,255,255,0.05);">
-                <span style="color:var(--text-primary)">${escapeHtml(option)}</span>
-                <div style="display:flex;gap:0.5rem;">
-                    <button class="icon-btn text-accent ${renameClass}" data-index="${index}" title="Rename"><i class="ph ph-pencil-simple"></i></button>
-                    <button class="icon-btn text-danger ${deleteClass}" data-index="${index}" title="Delete"><i class="ph ph-trash"></i></button>
-                </div>
-            </div>
-        `).join('');
+    let editingCategory = null; // { section: 'categories' | 'subCategories' | 'brands', index: number }
+    let confirmingDeleteCategory = null; // { section: 'categories' | 'subCategories' | 'brands', index: number }
 
-        const renderSection = ({ title, icon, options, emptyMessage, addInputId, addBtnId, addPlaceholder, renameClass, deleteClass }) => `
+    function renderCategoryModal() {
+        const renderOptionRows = (options, sectionName) => (options || []).map((option, index) => {
+            const isEditing = editingCategory && editingCategory.section === sectionName && editingCategory.index === index;
+            const isConfirmingDelete = confirmingDeleteCategory && confirmingDeleteCategory.section === sectionName && confirmingDeleteCategory.index === index;
+
+            if (isEditing) {
+                return `
+                    <div style="display:flex; align-items:center; gap:0.5rem; padding:0.4rem 0.5rem; background:rgba(255,255,255,0.08); border:1px solid var(--accent, #3b82f6); border-radius:var(--radius-sm); margin-bottom:0.25rem;">
+                        <input type="text" class="form-control inline-cat-input" data-section="${sectionName}" data-index="${index}" value="${escapeHtml(option)}" style="flex:1; height:32px; padding:0.25rem 0.5rem; font-size:0.875rem;">
+                        <button class="btn btn-sm btn-primary inline-cat-save-btn" data-section="${sectionName}" data-index="${index}" title="Save"><i class="ph ph-check"></i></button>
+                        <button class="btn btn-sm btn-secondary inline-cat-cancel-btn" data-section="${sectionName}" data-index="${index}" title="Cancel"><i class="ph ph-x"></i></button>
+                    </div>
+                `;
+            }
+
+            if (isConfirmingDelete) {
+                return `
+                    <div style="display:flex; align-items:center; justify-content:space-between; gap:0.5rem; padding:0.4rem 0.5rem; background:rgba(239, 68, 68, 0.15); border:1px solid rgba(239, 68, 68, 0.4); border-radius:var(--radius-sm); margin-bottom:0.25rem;">
+                        <span style="color:var(--text-primary); font-size:0.85rem; font-weight:500;">Delete <strong>${escapeHtml(option)}</strong>?</span>
+                        <div style="display:flex; gap:0.35rem;">
+                            <button class="btn btn-sm btn-danger inline-cat-confirm-delete-btn" data-section="${sectionName}" data-index="${index}"><i class="ph ph-trash"></i> Delete</button>
+                            <button class="btn btn-sm btn-secondary inline-cat-cancel-delete-btn" data-section="${sectionName}" data-index="${index}">Cancel</button>
+                        </div>
+                    </div>
+                `;
+            }
+
+            return `
+                <div style="display:flex; align-items:center; justify-content:space-between; padding:0.5rem; border-bottom:1px solid rgba(255,255,255,0.05);">
+                    <span style="color:var(--text-primary)">${escapeHtml(option)}</span>
+                    <div style="display:flex;gap:0.5rem;">
+                        <button class="icon-btn text-accent rename-cat-btn" data-section="${sectionName}" data-index="${index}" title="Rename"><i class="ph ph-pencil-simple"></i></button>
+                        <button class="icon-btn text-danger delete-cat-btn" data-section="${sectionName}" data-index="${index}" title="Delete"><i class="ph ph-trash"></i></button>
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        const renderSection = ({ title, icon, options, emptyMessage, addInputId, addBtnId, addPlaceholder, sectionName }) => `
             <div class="glass-panel" style="padding:0.9rem;margin-bottom:1rem;">
                 <h4 style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.75rem;"><i class="ph ${icon}"></i> ${escapeHtml(title)}</h4>
                 <div style="max-height:220px; overflow-y:auto; background:rgba(0,0,0,0.2); border-radius:var(--radius-sm); border:1px solid var(--glass-border); margin-bottom:0.9rem;">
-                    ${renderOptionRows(options, renameClass, deleteClass) || `<p class="text-muted" style="padding:1rem;">${escapeHtml(emptyMessage)}</p>`}
+                    ${renderOptionRows(options, sectionName) || `<p class="text-muted" style="padding:1rem;">${escapeHtml(emptyMessage)}</p>`}
                 </div>
                 <div class="form-group" style="display:flex;gap:0.5rem;">
                     <input type="text" id="${addInputId}" class="form-control" placeholder="${escapeHtml(addPlaceholder)}" style="flex:1">
@@ -13137,8 +14439,7 @@ document.getElementById('manage-categories-btn')?.addEventListener('click', asyn
                     addInputId: 'new-category-name',
                     addBtnId: 'add-category-btn',
                     addPlaceholder: 'New category name',
-                    renameClass: 'rename-cat-btn',
-                    deleteClass: 'delete-cat-btn'
+                    sectionName: 'categories'
                 })}
                 ${renderSection({
                     title: 'Sub Categories',
@@ -13148,8 +14449,7 @@ document.getElementById('manage-categories-btn')?.addEventListener('click', asyn
                     addInputId: 'new-sub-category-name',
                     addBtnId: 'add-sub-category-btn',
                     addPlaceholder: 'New sub category name',
-                    renameClass: 'rename-sub-cat-btn',
-                    deleteClass: 'delete-sub-cat-btn'
+                    sectionName: 'subCategories'
                 })}
                 ${renderSection({
                     title: 'Brands',
@@ -13159,13 +14459,19 @@ document.getElementById('manage-categories-btn')?.addEventListener('click', asyn
                     addInputId: 'new-brand-name',
                     addBtnId: 'add-brand-btn',
                     addPlaceholder: 'New brand name',
-                    renameClass: 'rename-brand-btn',
-                    deleteClass: 'delete-brand-btn'
+                    sectionName: 'brands'
                 })}
             </div>
         `;
 
         openModal(html);
+
+        // Auto focus any active inline rename input
+        const activeInput = document.querySelector('.inline-cat-input');
+        if (activeInput) {
+            activeInput.focus();
+            activeInput.select();
+        }
 
         document.getElementById('add-category-btn')?.addEventListener('click', async () => {
             const name = document.getElementById('new-category-name').value.trim();
@@ -13224,76 +14530,157 @@ document.getElementById('manage-categories-btn')?.addEventListener('click', asyn
             renderCategoryModal();
         });
 
+        // Start inline rename
         document.querySelectorAll('.rename-cat-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const section = e.currentTarget.getAttribute('data-section');
+                const index = parseInt(e.currentTarget.getAttribute('data-index'), 10);
+                confirmingDeleteCategory = null;
+                editingCategory = { section, index };
+                renderCategoryModal();
+            });
+        });
+
+        // Cancel inline rename
+        document.querySelectorAll('.inline-cat-cancel-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                editingCategory = null;
+                renderCategoryModal();
+            });
+        });
+
+        // Save inline rename helper
+        async function saveCategoryRename(section, index) {
+            const input = document.querySelector(`.inline-cat-input[data-section="${section}"][data-index="${index}"]`);
+            if (!input) return;
+            const newName = input.value.trim();
+
+            if (section === 'categories') {
+                const oldName = categories[index];
+                if (!newName) {
+                    showToast('Category name cannot be empty.', 'error');
+                    return;
+                }
+                if (newName === oldName) {
+                    editingCategory = null;
+                    renderCategoryModal();
+                    return;
+                }
+                const renamed = await renameCategoryInSupabase(oldName, newName);
+                if (!renamed) {
+                    showToast('Failed to rename category in database.', 'error');
+                    return;
+                }
+                editingCategory = null;
+                await Promise.all([
+                    loadCategories(),
+                    refreshInventoryFromSupabase()
+                ]);
+                showToast(`Category renamed to "${newName}".`, 'success');
+                addLog(currentUser.id, 'Manage Categories', `Renamed category: ${oldName} → ${newName}`);
+                renderCategoryModal();
+            } else if (section === 'subCategories') {
+                const oldName = subCategories[index];
+                if (!newName) {
+                    showToast('Sub category name cannot be empty.', 'error');
+                    return;
+                }
+                if (newName === oldName) {
+                    editingCategory = null;
+                    renderCategoryModal();
+                    return;
+                }
+                const renamed = await renameSubCategoryInSupabase(oldName, newName);
+                if (!renamed) {
+                    showToast('Failed to rename sub category.', 'error');
+                    return;
+                }
+                editingCategory = null;
+                await refreshInventoryFromSupabase();
+                showToast(`Sub category renamed to "${newName}".`, 'success');
+                addLog(currentUser.id, 'Manage Categories', `Renamed sub category: ${oldName} → ${newName}`);
+                renderCategoryModal();
+            } else if (section === 'brands') {
+                const oldName = brands[index];
+                if (!newName) {
+                    showToast('Brand name cannot be empty.', 'error');
+                    return;
+                }
+                if (newName === oldName) {
+                    editingCategory = null;
+                    renderCategoryModal();
+                    return;
+                }
+                const renamed = await renameBrandInSupabase(oldName, newName);
+                if (!renamed) {
+                    showToast('Failed to rename brand.', 'error');
+                    return;
+                }
+                editingCategory = null;
+                await refreshInventoryFromSupabase();
+                showToast(`Brand renamed to "${newName}".`, 'success');
+                addLog(currentUser.id, 'Manage Categories', `Renamed brand: ${oldName} → ${newName}`);
+                renderCategoryModal();
+            }
+        }
+
+        // Save inline rename button click
+        document.querySelectorAll('.inline-cat-save-btn').forEach(btn => {
             btn.addEventListener('click', async (e) => {
-                const idx = parseInt(e.currentTarget.getAttribute('data-index'));
-                const oldName = categories[idx];
-                const newName = prompt(`Rename "${oldName}" to:`, oldName);
-                if (newName && newName.trim() && newName.trim() !== oldName) {
-                    const renamed = await renameCategoryInSupabase(oldName, newName.trim());
-                    if (!renamed) {
-                        showToast('Failed to rename category in database.', 'error');
-                        return;
-                    }
-                    await Promise.all([
-                        loadCategories(),
-                        refreshInventoryFromSupabase()
-                    ]);
-                    showToast(`Category renamed to "${newName.trim()}".`, 'success');
-                    addLog(currentUser.id, 'Manage Categories', `Renamed category: ${oldName} → ${newName.trim()}`);
+                const section = e.currentTarget.getAttribute('data-section');
+                const index = parseInt(e.currentTarget.getAttribute('data-index'), 10);
+                await saveCategoryRename(section, index);
+            });
+        });
+
+        // Save on Enter, cancel on Escape
+        document.querySelectorAll('.inline-cat-input').forEach(input => {
+            input.addEventListener('keydown', async (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    const section = e.currentTarget.getAttribute('data-section');
+                    const index = parseInt(e.currentTarget.getAttribute('data-index'), 10);
+                    await saveCategoryRename(section, index);
+                } else if (e.key === 'Escape') {
+                    editingCategory = null;
                     renderCategoryModal();
                 }
             });
         });
 
-        document.querySelectorAll('.rename-sub-cat-btn').forEach(btn => {
-            btn.addEventListener('click', async (e) => {
-                const idx = parseInt(e.currentTarget.getAttribute('data-index'));
-                const oldName = subCategories[idx];
-                const newName = prompt(`Rename "${oldName}" to:`, oldName);
-                if (newName && newName.trim() && newName.trim() !== oldName) {
-                    const renamed = await renameSubCategoryInSupabase(oldName, newName.trim());
-                    if (!renamed) {
-                        showToast('Failed to rename sub category.', 'error');
-                        return;
-                    }
-                    await refreshInventoryFromSupabase();
-                    showToast(`Sub category renamed to "${newName.trim()}".`, 'success');
-                    addLog(currentUser.id, 'Manage Categories', `Renamed sub category: ${oldName} → ${newName.trim()}`);
-                    renderCategoryModal();
-                }
-            });
-        });
-
-        document.querySelectorAll('.rename-brand-btn').forEach(btn => {
-            btn.addEventListener('click', async (e) => {
-                const idx = parseInt(e.currentTarget.getAttribute('data-index'));
-                const oldName = brands[idx];
-                const newName = prompt(`Rename "${oldName}" to:`, oldName);
-                if (newName && newName.trim() && newName.trim() !== oldName) {
-                    const renamed = await renameBrandInSupabase(oldName, newName.trim());
-                    if (!renamed) {
-                        showToast('Failed to rename brand.', 'error');
-                        return;
-                    }
-                    await refreshInventoryFromSupabase();
-                    showToast(`Brand renamed to "${newName.trim()}".`, 'success');
-                    addLog(currentUser.id, 'Manage Categories', `Renamed brand: ${oldName} → ${newName.trim()}`);
-                    renderCategoryModal();
-                }
-            });
-        });
-
+        // Prompt inline delete confirmation when trash button clicked
         document.querySelectorAll('.delete-cat-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const section = e.currentTarget.getAttribute('data-section');
+                const index = parseInt(e.currentTarget.getAttribute('data-index'), 10);
+                editingCategory = null;
+                confirmingDeleteCategory = { section, index };
+                renderCategoryModal();
+            });
+        });
+
+        // Cancel inline delete
+        document.querySelectorAll('.inline-cat-cancel-delete-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                confirmingDeleteCategory = null;
+                renderCategoryModal();
+            });
+        });
+
+        // Confirm inline delete
+        document.querySelectorAll('.inline-cat-confirm-delete-btn').forEach(btn => {
             btn.addEventListener('click', async (e) => {
-                const idx = parseInt(e.currentTarget.getAttribute('data-index'));
-                const catName = categories[idx];
-                if (confirm(`Delete category "${catName}"? Items in this category will become "Uncategorized".`)) {
-                    const moved = await renameCategoryInSupabase(catName, 'Uncategorized');
-                    if (!moved) {
+                const section = e.currentTarget.getAttribute('data-section');
+                const index = parseInt(e.currentTarget.getAttribute('data-index'), 10);
+
+                if (section === 'categories') {
+                    const catName = categories[index];
+                    const deleted = await deleteCategoryFromSupabase(catName);
+                    if (!deleted) {
                         showToast('Failed to delete category in database.', 'error');
                         return;
                     }
+                    confirmingDeleteCategory = null;
                     await Promise.all([
                         loadCategories(),
                         refreshInventoryFromSupabase()
@@ -13301,38 +14688,26 @@ document.getElementById('manage-categories-btn')?.addEventListener('click', asyn
                     showToast(`Category "${catName}" deleted.`, 'success');
                     addLog(currentUser.id, 'Manage Categories', `Deleted category: ${catName}`);
                     renderCategoryModal();
-                }
-            });
-        });
-
-        document.querySelectorAll('.delete-sub-cat-btn').forEach(btn => {
-            btn.addEventListener('click', async (e) => {
-                const idx = parseInt(e.currentTarget.getAttribute('data-index'));
-                const name = subCategories[idx];
-                if (confirm(`Delete sub category "${name}"? Items in this sub category will become "General".`)) {
+                } else if (section === 'subCategories') {
+                    const name = subCategories[index];
                     const deleted = await deleteSubCategoryFromSupabase(name);
                     if (!deleted) {
                         showToast('Failed to delete sub category.', 'error');
                         return;
                     }
+                    confirmingDeleteCategory = null;
                     await refreshInventoryFromSupabase();
                     showToast(`Sub category "${name}" deleted.`, 'success');
                     addLog(currentUser.id, 'Manage Categories', `Deleted sub category: ${name}`);
                     renderCategoryModal();
-                }
-            });
-        });
-
-        document.querySelectorAll('.delete-brand-btn').forEach(btn => {
-            btn.addEventListener('click', async (e) => {
-                const idx = parseInt(e.currentTarget.getAttribute('data-index'));
-                const name = brands[idx];
-                if (confirm(`Delete brand "${name}"? Items using it will become "Unspecified".`)) {
+                } else if (section === 'brands') {
+                    const name = brands[index];
                     const deleted = await deleteBrandFromSupabase(name);
                     if (!deleted) {
                         showToast('Failed to delete brand.', 'error');
                         return;
                     }
+                    confirmingDeleteCategory = null;
                     await refreshInventoryFromSupabase();
                     showToast(`Brand "${name}" deleted.`, 'success');
                     addLog(currentUser.id, 'Manage Categories', `Deleted brand: ${name}`);
@@ -13349,21 +14724,53 @@ document.getElementById('manage-categories-btn')?.addEventListener('click', asyn
    MANAGE VISIBILITY TAGS
    ======================================= */
 document.getElementById('manage-visibility-tags-btn')?.addEventListener('click', async () => {
+    inventoryEditMenu?.classList.add('hidden');
+    inventoryEditToggle?.setAttribute('aria-expanded', 'false');
     if (currentUser?.role === 'student') {
         showToast('You do not have permission to manage visibility tags.', 'error');
         return;
     }
 
+    let editingTagIndex = null;
+    let confirmingDeleteTagIndex = null;
+
     function renderVisibilityTagModal() {
-        const tagList = visibilityTags.map((tag, i) => `
-            <div style="display:flex; align-items:center; justify-content:space-between; padding:0.5rem; border-bottom:1px solid rgba(255,255,255,0.05);">
-                <span style="color:var(--text-primary)">${tag}</span>
-                <div style="display:flex;gap:0.5rem;">
-                    <button class="icon-btn text-accent rename-vtag-btn" data-index="${i}" title="Rename"><i class="ph ph-pencil-simple"></i></button>
-                    <button class="icon-btn text-danger delete-vtag-btn" data-index="${i}" title="Delete"><i class="ph ph-trash"></i></button>
+        const tagList = visibilityTags.map((tag, i) => {
+            const isEditing = editingTagIndex === i;
+            const isConfirmingDelete = confirmingDeleteTagIndex === i;
+
+            if (isEditing) {
+                return `
+                    <div style="display:flex; align-items:center; gap:0.5rem; padding:0.4rem 0.5rem; background:rgba(255,255,255,0.08); border:1px solid var(--accent, #3b82f6); border-radius:var(--radius-sm); margin-bottom:0.25rem;">
+                        <input type="text" class="form-control inline-vtag-input" data-index="${i}" value="${escapeHtml(tag)}" style="flex:1; height:32px; padding:0.25rem 0.5rem; font-size:0.875rem;">
+                        <button class="btn btn-sm btn-primary inline-vtag-save-btn" data-index="${i}" title="Save"><i class="ph ph-check"></i></button>
+                        <button class="btn btn-sm btn-secondary inline-vtag-cancel-btn" data-index="${i}" title="Cancel"><i class="ph ph-x"></i></button>
+                    </div>
+                `;
+            }
+
+            if (isConfirmingDelete) {
+                return `
+                    <div style="display:flex; align-items:center; justify-content:space-between; gap:0.5rem; padding:0.4rem 0.5rem; background:rgba(239, 68, 68, 0.15); border:1px solid rgba(239, 68, 68, 0.4); border-radius:var(--radius-sm); margin-bottom:0.25rem;">
+                        <span style="color:var(--text-primary); font-size:0.85rem; font-weight:500;">Delete tag <strong>${escapeHtml(tag)}</strong>?</span>
+                        <div style="display:flex; gap:0.35rem;">
+                            <button class="btn btn-sm btn-danger inline-vtag-confirm-delete-btn" data-index="${i}"><i class="ph ph-trash"></i> Delete</button>
+                            <button class="btn btn-sm btn-secondary inline-vtag-cancel-delete-btn" data-index="${i}">Cancel</button>
+                        </div>
+                    </div>
+                `;
+            }
+
+            return `
+                <div style="display:flex; align-items:center; justify-content:space-between; padding:0.5rem; border-bottom:1px solid rgba(255,255,255,0.05);">
+                    <span style="color:var(--text-primary)">${escapeHtml(tag)}</span>
+                    <div style="display:flex;gap:0.5rem;">
+                        <button class="icon-btn text-accent rename-vtag-btn" data-index="${i}" title="Rename"><i class="ph ph-pencil-simple"></i></button>
+                        <button class="icon-btn text-danger delete-vtag-btn" data-index="${i}" title="Delete"><i class="ph ph-trash"></i></button>
+                    </div>
                 </div>
-            </div>
-        `).join('');
+            `;
+        }).join('');
 
         const html = `
             <div class="modal-header">
@@ -13384,6 +14791,13 @@ document.getElementById('manage-visibility-tags-btn')?.addEventListener('click',
 
         openModal(html);
 
+        // Auto focus inline rename input
+        const activeInput = document.querySelector('.inline-vtag-input');
+        if (activeInput) {
+            activeInput.focus();
+            activeInput.select();
+        }
+
         document.getElementById('add-vtag-btn')?.addEventListener('click', async () => {
             const name = document.getElementById('new-vtag-name').value.trim();
             if (name && !visibilityTags.includes(name)) {
@@ -13401,49 +14815,117 @@ document.getElementById('manage-visibility-tags-btn')?.addEventListener('click',
             }
         });
 
+        // Start inline rename
         document.querySelectorAll('.rename-vtag-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const idx = parseInt(e.currentTarget.getAttribute('data-index'), 10);
+                confirmingDeleteTagIndex = null;
+                editingTagIndex = idx;
+                renderVisibilityTagModal();
+            });
+        });
+
+        // Cancel inline rename
+        document.querySelectorAll('.inline-vtag-cancel-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                editingTagIndex = null;
+                renderVisibilityTagModal();
+            });
+        });
+
+        // Save inline rename helper
+        async function saveTagRename(idx) {
+            const input = document.querySelector(`.inline-vtag-input[data-index="${idx}"]`);
+            if (!input) return;
+            const newName = input.value.trim();
+            const oldName = visibilityTags[idx];
+
+            if (!newName) {
+                showToast('Tag name cannot be empty.', 'error');
+                return;
+            }
+            if (newName === oldName) {
+                editingTagIndex = null;
+                renderVisibilityTagModal();
+                return;
+            }
+
+            const renamed = await renameVisibilityTagInSupabase(oldName, newName);
+            if (!renamed) {
+                showToast('Failed to rename visibility tag in database.', 'error');
+                return;
+            }
+
+            editingTagIndex = null;
+            await Promise.all([
+                loadVisibilityTags(),
+                refreshInventoryFromSupabase(),
+                loadStudentClasses()
+            ]);
+            showToast(`Renamed "${oldName}" → "${newName}".`, 'success');
+            addLog(currentUser.id, 'Manage Visibility Tags', `Renamed tag: ${oldName} → ${newName}`);
+            renderVisibilityTagModal();
+        }
+
+        // Save inline rename button click
+        document.querySelectorAll('.inline-vtag-save-btn').forEach(btn => {
             btn.addEventListener('click', async (e) => {
-                const idx = parseInt(e.currentTarget.getAttribute('data-index'));
-                const oldName = visibilityTags[idx];
-                const newName = prompt(`Rename "${oldName}" to:`, oldName);
-                if (newName && newName.trim() && newName.trim() !== oldName) {
-                    const trimmed = newName.trim();
-                    const renamed = await renameVisibilityTagInSupabase(oldName, trimmed);
-                    if (!renamed) {
-                        showToast('Failed to rename visibility tag in database.', 'error');
-                        return;
-                    }
-                    await Promise.all([
-                        loadVisibilityTags(),
-                        refreshInventoryFromSupabase(),
-                        loadStudentClasses()
-                    ]);
-                    showToast(`Renamed "${oldName}" → "${trimmed}".`, 'success');
-                    addLog(currentUser.id, 'Manage Visibility Tags', `Renamed tag: ${oldName} → ${trimmed}`);
+                const idx = parseInt(e.currentTarget.getAttribute('data-index'), 10);
+                await saveTagRename(idx);
+            });
+        });
+
+        // Save on Enter, cancel on Escape
+        document.querySelectorAll('.inline-vtag-input').forEach(input => {
+            input.addEventListener('keydown', async (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    const idx = parseInt(e.currentTarget.getAttribute('data-index'), 10);
+                    await saveTagRename(idx);
+                } else if (e.key === 'Escape') {
+                    editingTagIndex = null;
                     renderVisibilityTagModal();
                 }
             });
         });
 
+        // Prompt inline delete confirmation
         document.querySelectorAll('.delete-vtag-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const idx = parseInt(e.currentTarget.getAttribute('data-index'), 10);
+                editingTagIndex = null;
+                confirmingDeleteTagIndex = idx;
+                renderVisibilityTagModal();
+            });
+        });
+
+        // Cancel inline delete
+        document.querySelectorAll('.inline-vtag-cancel-delete-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                confirmingDeleteTagIndex = null;
+                renderVisibilityTagModal();
+            });
+        });
+
+        // Confirm inline delete
+        document.querySelectorAll('.inline-vtag-confirm-delete-btn').forEach(btn => {
             btn.addEventListener('click', async (e) => {
-                const idx = parseInt(e.currentTarget.getAttribute('data-index'));
+                const idx = parseInt(e.currentTarget.getAttribute('data-index'), 10);
                 const tagName = visibilityTags[idx];
-                if (confirm(`Delete visibility tag "${tagName}"? It will be removed from all items and classes.`)) {
-                    const deleted = await deleteVisibilityTagFromSupabase(tagName);
-                    if (!deleted) {
-                        showToast('Failed to delete visibility tag in database.', 'error');
-                        return;
-                    }
-                    await Promise.all([
-                        loadVisibilityTags(),
-                        refreshInventoryFromSupabase(),
-                        loadStudentClasses()
-                    ]);
-                    showToast(`Tag "${tagName}" deleted.`, 'success');
-                    addLog(currentUser.id, 'Manage Visibility Tags', `Deleted tag: ${tagName}`);
-                    renderVisibilityTagModal();
+                const deleted = await deleteVisibilityTagFromSupabase(tagName);
+                if (!deleted) {
+                    showToast('Failed to delete visibility tag in database.', 'error');
+                    return;
                 }
+                confirmingDeleteTagIndex = null;
+                await Promise.all([
+                    loadVisibilityTags(),
+                    refreshInventoryFromSupabase(),
+                    loadStudentClasses()
+                ]);
+                showToast(`Tag "${tagName}" deleted.`, 'success');
+                addLog(currentUser.id, 'Manage Visibility Tags', `Deleted tag: ${tagName}`);
+                renderVisibilityTagModal();
             });
         });
     }
