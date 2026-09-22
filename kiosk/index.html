@@ -172,7 +172,7 @@
                     <i class="ph ph-package"></i> Inventory
                 </button>
                 <button class="nav-btn" id="nav-knowledge-base" data-target="knowledge-base">
-                    <i class="ph ph-book-open-text"></i> Knowledge Base
+                    <i class="ph ph-book-open-text"></i> Knowledge Base <span class="nav-beta-badge">Beta</span>
                 </button>
                 <button class="nav-btn" id="nav-class-display" data-target="class-display">
                     <i class="ph ph-monitor-play"></i> Class Display
@@ -233,11 +233,11 @@
                         </div>
                         <div id="inventory-results-meta" class="inventory-results-meta text-muted">Loading inventory...</div>
                         <div class="inventory-layout-toggle" role="group" aria-label="Inventory layout">
-                            <button class="btn btn-secondary inventory-layout-btn active-view" id="inventory-view-row-btn" type="button">
-                                <i class="ph ph-list"></i> Row
+                            <button class="btn btn-secondary inventory-layout-btn active-view" id="inventory-view-row-btn" type="button" title="Row View" aria-label="Row View">
+                                <i class="ph ph-list" style="font-size: 1.2rem;"></i>
                             </button>
-                            <button class="btn btn-secondary inventory-layout-btn" id="inventory-view-grid-btn" type="button">
-                                <i class="ph ph-squares-four"></i> Grid
+                            <button class="btn btn-secondary inventory-layout-btn" id="inventory-view-grid-btn" type="button" title="Grid View" aria-label="Grid View">
+                                <i class="ph ph-squares-four" style="font-size: 1.2rem;"></i>
                             </button>
                         </div>
                         <div class="inventory-secondary-controls inventory-secondary-controls-redesign">
@@ -260,6 +260,9 @@
                                         </button>
                                         <button class="btn btn-secondary bulk-action-item" id="manage-visibility-tags-btn" type="button">
                                             <i class="ph ph-eye"></i> Visibility Tags
+                                        </button>
+                                        <button class="btn btn-secondary bulk-action-item" id="manage-bundles-btn" type="button">
+                                            <i class="ph ph-package"></i> Create Item Bundle
                                         </button>
                                     </div>
                                 </div>
@@ -329,10 +332,29 @@
 
                 <!-- Class Display Page (for classroom view of items out) -->
                 <div id="page-class-display" class="page hidden">
-                    <div class="action-bar">
-                        <h3>Class Display - Items Not Returned</h3>
-                        <div class="text-muted text-sm" style="font-weight: normal; margin-left: 1rem;">
-                            <i class="ph ph-info"></i> Display live status of items checked out to students
+                    <div class="action-bar" style="flex-wrap: wrap; gap: 0.75rem; justify-content: space-between;">
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <h3>Class Display</h3>
+                            <div class="text-muted text-sm" style="font-weight: normal;">
+                                <i class="ph ph-info"></i> Live classroom status of items checked out
+                            </div>
+                        </div>
+                        <div class="action-controls" style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+                            <div class="search-box" style="margin: 0; min-width: 180px;">
+                                <i class="ph ph-magnifying-glass search-icon"></i>
+                                <input type="text" id="class-display-search" placeholder="Search student or item..." class="form-control" style="height: 38px;">
+                            </div>
+                            <select id="class-display-class-filter" class="form-control" style="width: auto; min-width: 150px; height: 38px;">
+                                <option value="all">All Classes</option>
+                            </select>
+                            <select id="class-display-status-filter" class="form-control" style="width: auto; min-width: 140px; height: 38px;">
+                                <option value="all">All Items</option>
+                                <option value="overdue">Overdue Only</option>
+                                <option value="due-today">Due Today</option>
+                            </select>
+                            <button id="class-display-refresh-btn" class="btn btn-secondary" style="height: 38px; display: inline-flex; align-items: center; gap: 0.35rem;" title="Refresh live status">
+                                <i class="ph ph-arrows-clockwise"></i> <span>Refresh</span>
+                            </button>
                         </div>
                     </div>
                     <div id="class-display-container" class="glass-panel" style="padding: 2rem; min-height: 400px;">
@@ -587,28 +609,6 @@
                                 </div>
                             </div>
                         </div>
-
-                        <!-- Sign-in Hours Section -->
-                        <div style="margin-top: 2.5rem; padding-top: 2.5rem; border-top: 1px solid var(--glass-border);">
-                            <h4 style="margin-bottom: 1.5rem; color: var(--text-primary); font-size: 1.1rem;">Operating Hours</h4>
-                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1.5rem;">
-                                <div class="form-group">
-                                    <label>Start Time (HH:MM)</label>
-                                    <input type="time" id="kiosk-start-time" class="form-control" value="08:00">
-                                </div>
-                                <div class="form-group">
-                                    <label>End Time (HH:MM)</label>
-                                    <input type="time" id="kiosk-end-time" class="form-control" value="16:00">
-                                </div>
-                                <div class="form-group">
-                                    <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
-                                        <input type="checkbox" id="kiosk-enforce-hours" checked>
-                                        Enforce Operating Hours
-                                    </label>
-                                    <small class="text-muted" style="display: block; margin-top: 0.3rem;">Block access outside these hours</small>
-                                </div>
-                            </div>
-                        </div>
                     </div>
                 </div>
 
@@ -668,13 +668,13 @@
 
                 <!-- Knowledge Base Page -->
                 <div id="page-knowledge-base" class="page hidden">
-                    <div class="kb-header-container glass-panel">
-                        <div class="kb-header-top">
-                            <div class="kb-header-title-block">
-                                <div class="kb-header-icon"><i class="ph ph-book-open-text"></i></div>
+                    <div class="kb-header-panel glass-panel">
+                        <div class="kb-header-content">
+                            <div class="kb-title-block">
+                                <div class="kb-icon-badge"><i class="ph ph-book-open-text"></i></div>
                                 <div>
-                                    <h2>Student Resource & Knowledge Hub</h2>
-                                    <p class="text-muted">Explore robotics wiring guides, drivetrain physics, machining charts, 3D printing settings, and engineering calculators.</p>
+                                    <h2 class="kb-main-title">Student Resource & Knowledge Hub</h2>
+                                    <p class="kb-main-subtitle">Explore robotics wiring guides, drivetrain physics, machining charts, 3D printing settings, and engineering calculators.</p>
                                 </div>
                             </div>
                             <div class="kb-header-actions">
@@ -694,16 +694,16 @@
                             </div>
                         </div>
 
-                        <div class="kb-search-bar-wrap">
-                            <div class="kb-search-input-box">
-                                <i class="ph ph-magnifying-glass"></i>
-                                <input type="text" id="kb-search-input" class="form-control" placeholder="Search guides, mechanisms, formulas, fasteners, wire gauges (e.g. Swerve, 10-32, CAN bus)..." autocomplete="off">
+                        <div class="kb-toolbar">
+                            <div class="kb-search-wrap">
+                                <i class="ph ph-magnifying-glass kb-search-icon"></i>
+                                <input type="text" id="kb-search-input" class="form-control kb-search-input" placeholder="Search guides, mechanisms, formulas, fasteners, wire gauges (e.g. Swerve, 10-32, CAN bus)..." autocomplete="off">
                                 <button id="kb-search-clear-btn" class="kb-search-clear hidden" aria-label="Clear Search"><i class="ph ph-x"></i></button>
                             </div>
-                        </div>
 
-                        <div class="kb-category-pills-wrap" id="kb-category-pills">
-                            <!-- Category pills injected via JS -->
+                            <div class="kb-category-pills" id="kb-category-pills">
+                                <!-- Category pills injected via JS -->
+                            </div>
                         </div>
                     </div>
 
@@ -721,7 +721,7 @@
     </div>
 
     <div class="app-info-overlay" aria-label="Application info">
-        <button id="app-info-trigger" class="app-info-trigger" type="button">Info</button>
+        <button id="app-info-trigger" class="app-info-trigger" type="button">LEGAL</button>
     </div>
 
     <!-- Data and Application Logic -->

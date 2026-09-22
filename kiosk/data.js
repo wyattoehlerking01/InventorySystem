@@ -5,28 +5,44 @@
 // Initialize Supabase client
 const { SUPABASE_URL, SUPABASE_KEY } = window.APP_ENV || {};
 
-function resolveLedTriggerUrl() {
+function resolveLedTriggerUrl(userId) {
     const explicitUrl = String(window.APP_ENV?.LED_TRIGGER_URL || '').trim();
-    if (explicitUrl) return explicitUrl;
+    let base = explicitUrl;
+    if (!base) {
+        const gpioUrl = String(window.APP_ENV?.GPIO_SERVER_URL || '').trim();
+        if (gpioUrl) {
+            try {
+                const parsed = new URL(gpioUrl);
+                parsed.pathname = '/trigger';
+                parsed.search = '';
+                parsed.hash = '';
+                base = parsed.toString();
+            } catch {
+                base = '';
+            }
+        }
+    }
+    if (!base) return '';
 
-    const gpioUrl = String(window.APP_ENV?.GPIO_SERVER_URL || '').trim();
-    if (!gpioUrl) return '';
+    const effectiveUserId = userId || (typeof currentUser !== 'undefined' && currentUser?.id) || (typeof window !== 'undefined' && window.currentUser?.id) || '';
+    if (!effectiveUserId) return base;
 
     try {
-        const parsed = new URL(gpioUrl);
-        parsed.pathname = '/trigger';
-        parsed.search = '';
-        parsed.hash = '';
+        const parsed = new URL(base, (typeof window !== 'undefined' && window.location?.origin) || 'http://127.0.0.1:8090');
+        parsed.searchParams.set('userid', String(effectiveUserId));
         return parsed.toString();
     } catch {
-        return '';
+        const sep = base.includes('?') ? '&' : '?';
+        return `${base}${sep}userid=${encodeURIComponent(String(effectiveUserId))}`;
     }
 }
 
 const LED_TRIGGER_URL = resolveLedTriggerUrl();
 
-function notifySignoutLedTrigger() {
-    if (!LED_TRIGGER_URL) return;
+function notifySignoutLedTrigger(userId) {
+    const effectiveUserId = userId || (typeof currentUser !== 'undefined' && currentUser?.id) || (typeof window !== 'undefined' && window.currentUser?.id) || '';
+    const targetUrl = resolveLedTriggerUrl(effectiveUserId);
+    if (!targetUrl) return;
     if (typeof fetch !== 'function') {
         console.warn('LED trigger skipped: fetch is unavailable in this environment.');
         return;
@@ -34,7 +50,7 @@ function notifySignoutLedTrigger() {
 
     // Fire-and-forget: this should never block checkout UX.
     Promise.resolve().then(() => {
-        void fetch(LED_TRIGGER_URL, {
+        void fetch(targetUrl, {
             method: 'GET',
             mode: 'no-cors',
             cache: 'no-store',
@@ -254,6 +270,7 @@ async function fetchUserByBarcodeFromSupabase(barcodeValue) {
    ======================================= */
 
 let inventoryItems = [];
+let inventoryItemBundles = [];
 let mockUsers = [];
 let projects = [];
 let studentClasses = [];
@@ -435,7 +452,88 @@ async function flushActivityLogQueue(options = {}) {
    ======================================= */
 
 /**
- * Load all data from Supabase tables
+ * Load only public catalog / metadata needed before user login.
+ * Does NOT load sensitive records (activity logs, users, requests, projects, door sessions).
+ */
+async function loadPreLoginData() {
+    requireSupabaseClient('loadPreLoginData');
+
+    try {
+        await Promise.all([
+            loadCategories(),
+            loadVisibilityTags(),
+            loadInventoryItems(),
+            loadInventoryItemVisibility()
+        ]);
+        console.log('Pre-login public catalog data loaded successfully.');
+    } catch (error) {
+        console.error('Error loading pre-login data from Supabase:', error);
+        throw error;
+    }
+}
+
+/**
+ * Load role-appropriate user data after successful authentication.
+ */
+async function loadUserData(user) {
+    if (!user) return;
+    requireSupabaseClient('loadUserData');
+
+    try {
+        const isElevated = user.role === 'teacher' || user.role === 'developer';
+
+        const promises = [
+            loadUsers(),
+            loadProjects(),
+            loadStudentClasses(),
+            loadProjectCollaborators(),
+            loadProjectItemsOut(),
+            loadInventoryItems(),
+            loadInventoryItemVisibility()
+        ];
+
+        if (isElevated) {
+            promises.push(
+                loadActivityLogs(),
+                loadHelpRequests(),
+                loadExtensionRequests(),
+                loadOrderRequests(),
+                loadSystemFlags()
+            );
+        } else {
+            // Student: Clear elevated queues and logs to prevent leakage
+            activityLogs = [];
+            helpRequests = [];
+            extensionRequests = [];
+            orderRequests = [];
+            systemFlags = [];
+        }
+
+        await Promise.all(promises);
+        console.log(`User data loaded successfully for ${user.role} ${user.name}`);
+    } catch (error) {
+        console.error('Error loading user data from Supabase:', error);
+        throw error;
+    }
+}
+
+/**
+ * Wipe all sensitive session data on logout.
+ */
+function clearSensitiveDataOnLogout() {
+    activityLogs = [];
+    helpRequests = [];
+    extensionRequests = [];
+    orderRequests = [];
+    systemFlags = [];
+    projects = [];
+    studentClasses = [];
+    mockUsers = [];
+    console.log('Cleared sensitive session data on logout.');
+}
+
+/**
+ * Load all data from Supabase tables (maintenance / elevated use)
  */
 async function loadAllData() {
     requireSupabaseClient('loadAllData');
@@ -465,13 +563,21 @@ async function loadAllData() {
 }
 
 /**
- * Load users from public.users table
+ * Load users from public.users table (selecting safe profile fields)
  */
 async function loadUsers() {
-    const { data, error } = await dbClient.from('users').select('*');
+    let { data, error } = await dbClient
+        .from('users')
+        .select('id, name, email, role, grade, barcode, avatar, personal_items_enabled, status, created_at');
+
     if (error) {
-        console.error('Error loading users:', error);
-        return;
+        // Fallback for schemas missing some extended columns
+        const fallback = await dbClient.from('users').select('*');
+        if (fallback.error) {
+            console.error('Error loading users:', fallback.error);
+            return;
+        }
+        data = fallback.data;
     }
     const normalizePersonalItemsEnabled = (value) => {
         if (typeof value === 'boolean') return value;
@@ -539,9 +645,95 @@ async function loadInventoryItems() {
         imageLink: row.imageLink ?? row.image_link ?? null,
         supplierListingLink: row.supplierListingLink ?? row.supplier_listing_link ?? null,
         requiresDoorUnlock: row.requiresDoorUnlock ?? row.requires_door_unlock ?? true,
-        sku: row.sku ?? row.barcode ?? getInventoryItemBarcode(row)
+        sku: row.sku ?? row.barcode ?? getInventoryItemBarcode(row),
+        item_type: row.item_type || 'item',
+        visibility_level: row.visibility_level || 'standard'
     }));
+
+    await loadInventoryItemBundles();
+    hydrateInventoryItemBundles();
     console.log(`Loaded ${inventoryItems.length} inventory items`);
+}
+
+function isBundleItemType(itemType) {
+    return String(itemType || '').trim().toLowerCase() === 'bundle';
+}
+
+function getBundleComponentRowsForBundleItem(bundleItemId) {
+    return (inventoryItemBundles || [])
+        .filter(row => String(row.bundle_item_id || '') === String(bundleItemId || ''))
+        .map(row => ({
+            id: row.id,
+            bundleItemId: row.bundle_item_id,
+            componentItemId: row.component_item_id,
+            componentQuantity: Math.max(1, parseInt(row.component_quantity, 10) || 1)
+        }));
+}
+
+function computeBundleAvailability(bundleItemId) {
+    const components = getBundleComponentRowsForBundleItem(bundleItemId);
+    if (components.length === 0) return 0;
+
+    let availability = Number.POSITIVE_INFINITY;
+    for (const component of components) {
+        const childItem = inventoryItems.find(item => item.id === component.componentItemId);
+        const componentStock = Math.max(0, parseInt(childItem?.stock, 10) || 0);
+        const componentBundles = Math.floor(componentStock / Math.max(1, component.componentQuantity));
+        availability = Math.min(availability, componentBundles);
+    }
+
+    return Number.isFinite(availability) ? Math.max(0, availability) : 0;
+}
+
+function hydrateInventoryItemBundles() {
+    if (!Array.isArray(inventoryItems) || inventoryItems.length === 0) return;
+
+    const bundleItems = new Set((inventoryItemBundles || []).map(row => String(row.bundle_item_id || '')));
+    inventoryItems = inventoryItems.map(item => {
+        const isBundle = isBundleItemType(item.item_type) || bundleItems.has(String(item.id || ''));
+        if (!isBundle) return item;
+
+        const bundleComponents = getBundleComponentRowsForBundleItem(item.id)
+            .map(component => ({
+                ...component,
+                componentItem: inventoryItems.find(child => child.id === component.componentItemId) || null
+            }))
+            .filter(component => component.componentItemId);
+        const bundleStock = computeBundleAvailability(item.id);
+
+        return {
+            ...item,
+            item_type: 'bundle',
+            bundleComponents,
+            bundleStock,
+            stock: bundleStock
+        };
+    });
+}
+
+async function loadInventoryItemBundles() {
+    const { data, error } = await dbClient.from('inventory_item_bundles').select('*');
+    if (error) {
+        const message = String(error?.message || '').toLowerCase();
+        const code = String(error?.code || '').toUpperCase();
+        const missingTableError = message.includes('does not exist') || code === '42P01' || code === 'PGRST204';
+        if (missingTableError) {
+            inventoryItemBundles = [];
+            return;
+        }
+        console.error('Error loading inventory item bundles:', error);
+        return;
+    }
+
+    inventoryItemBundles = (data || []).map(row => ({
+        ...row,
+        bundle_item_id: row.bundle_item_id,
+        component_item_id: row.component_item_id,
+        component_quantity: Math.max(1, parseInt(row.component_quantity, 10) || 1)
+    }));
+
+    hydrateInventoryItemBundles();
+    console.log(`Loaded ${inventoryItemBundles.length} inventory bundle component rows`);
 }
 
 /**
@@ -550,6 +742,7 @@ async function loadInventoryItems() {
 async function refreshInventoryFromSupabase() {
     await loadInventoryItems();
     await loadInventoryItemVisibility();
+    await loadInventoryItemBundles();
     return inventoryItems;
 }
 
@@ -605,7 +798,11 @@ async function loadVisibilityTags() {
  * Load activity logs from public.activity_logs table
  */
 async function loadActivityLogs() {
-    const { data, error } = await dbClient.from('activity_logs').select('*').order('timestamp', { ascending: false });
+    const { data, error } = await dbClient
+        .from('activity_logs')
+        .select('*')
+        .order('timestamp', { ascending: false })
+        .limit(100);
     if (error) {
         console.error('Error loading activity logs:', error);
         return;
@@ -1010,23 +1207,131 @@ async function loadProjectCollaborators() {
  * Load project items out and attach to projects
  */
 async function loadProjectItemsOut() {
-    const { data, error } = await dbClient.from('project_items_out').select('*');
-    if (error) {
-        console.error('Error loading project items out:', error);
+    const isMissingTableError = (err) => {
+        const message = String(err?.message || '').toLowerCase();
+        const code = String(err?.code || '').toUpperCase();
+        return message.includes('does not exist') || code === '42P01' || code === 'PGRST204';
+    };
+
+    // Reset itemsOut on all existing projects to prevent accumulation on reloads
+    if (Array.isArray(projects)) {
+        projects.forEach(p => {
+            p.itemsOut = [];
+        });
+    }
+
+    const [itemsOutResult, bundleTxResult] = await Promise.all([
+        dbClient.from('project_items_out').select('*'),
+        dbClient.from('project_item_bundle_transactions').select('*')
+    ]);
+
+    if (itemsOutResult.error) {
+        console.error('Error loading project items out:', itemsOutResult.error);
         return;
     }
-    
-    data.forEach(io => {
-        const project = projects.find(p => p.id === io.project_id);
-        if (project) {
+
+    if (bundleTxResult.error && !isMissingTableError(bundleTxResult.error)) {
+        console.error('Error loading project bundle transactions:', bundleTxResult.error);
+    }
+
+    const bundleTransactions = (bundleTxResult.data || []).reduce((map, row) => {
+        map[String(row.id || '')] = row;
+        return map;
+    }, {});
+
+    const bundleChildren = (itemsOutResult.data || []).reduce((map, row) => {
+        const bundleId = String(row.bundle_transaction_id || '').trim();
+        if (!bundleId) return map;
+        if (!map[bundleId]) map[bundleId] = [];
+        map[bundleId].push(row);
+        return map;
+    }, {});
+
+    (itemsOutResult.data || []).forEach(io => {
+        if (io.bundle_transaction_id) return;
+
+        let project = projects.find(p => p.id === io.project_id);
+        if (!project) {
+            const isPersonal = String(io.project_id || '').startsWith('PERS-');
+            const isClass = String(io.project_id || '').startsWith('CLASS-');
+            const assignedUserId = io.assigned_to_user_id ?? io.assignedToUserId ?? io.signed_out_by_user_id ?? '';
+            project = {
+                id: io.project_id,
+                name: isPersonal ? 'My Items (Personal)' : (isClass ? 'Class Checkout' : 'Project Items'),
+                ownerId: assignedUserId,
+                collaborators: [],
+                collaboratorRoles: {},
+                itemsOut: [],
+                status: 'Active'
+            };
+            projects.push(project);
+        }
+
+        const ioRecord = {
+            id: io.id,
+            itemId: io.item_id,
+            quantity: io.quantity,
+            signoutDate: io.signout_date,
+            dueDate: io.due_date,
+            assignedToUserId: io.assigned_to_user_id ?? io.assignedToUserId ?? null,
+            signedOutByUserId: io.signed_out_by_user_id ?? io.signedOutByUserId ?? null
+        };
+
+        const alreadyExists = (project.itemsOut || []).some(existing => 
+            (existing.id && io.id && existing.id === io.id) ||
+            (existing.itemId === io.item_id && existing.signoutDate === io.signout_date && existing.quantity === io.quantity && String(existing.assignedToUserId || '') === String(ioRecord.assignedToUserId || ''))
+        );
+
+        if (!alreadyExists) {
+            project.itemsOut.push(ioRecord);
+        }
+    });
+
+    Object.values(bundleTransactions).forEach(tx => {
+        let project = projects.find(p => p.id === tx.project_id);
+        if (!project) {
+            const isPersonal = String(tx.project_id || '').startsWith('PERS-');
+            const isClass = String(tx.project_id || '').startsWith('CLASS-');
+            const assignedUserId = tx.assigned_to_user_id ?? tx.assignedToUserId ?? tx.signed_out_by_user_id ?? '';
+            project = {
+                id: tx.project_id,
+                name: isPersonal ? 'My Items (Personal)' : (isClass ? 'Class Checkout' : 'Project Items'),
+                ownerId: assignedUserId,
+                collaborators: [],
+                collaboratorRoles: {},
+                itemsOut: [],
+                status: 'Active'
+            };
+            projects.push(project);
+        }
+
+        const children = (bundleChildren[String(tx.id || '')] || []).map(row => ({
+            id: row.id,
+            itemId: row.item_id,
+            quantity: row.quantity,
+            signoutDate: row.signout_date,
+            dueDate: row.due_date,
+            assignedToUserId: row.assigned_to_user_id ?? row.assignedToUserId ?? null,
+            signedOutByUserId: row.signed_out_by_user_id ?? row.signedOutByUserId ?? null,
+            bundleTransactionId: row.bundle_transaction_id
+        }));
+
+        const alreadyExists = (project.itemsOut || []).some(existing => 
+            existing.id && tx.id && existing.id === tx.id
+        );
+
+        if (!alreadyExists) {
             project.itemsOut.push({
-                id: io.id,
-                itemId: io.item_id,
-                quantity: io.quantity,
-                signoutDate: io.signout_date,
-                dueDate: io.due_date,
-                assignedToUserId: io.assigned_to_user_id ?? io.assignedToUserId ?? null,
-                signedOutByUserId: io.signed_out_by_user_id ?? io.signedOutByUserId ?? null
+                id: tx.id,
+                itemId: tx.bundle_item_id,
+                quantity: tx.bundle_quantity,
+                signoutDate: tx.signout_date,
+                dueDate: tx.due_date,
+                assignedToUserId: tx.assigned_to_user_id ?? tx.assignedToUserId ?? null,
+                signedOutByUserId: tx.signed_out_by_user_id ?? tx.signedOutByUserId ?? null,
+                bundleTransactionId: tx.id,
+                bundleComponents: children,
+                isBundle: true
             });
         }
     });
@@ -2012,6 +2317,7 @@ async function insertProjectItemOutToSupabase(itemOut, { triggerLed = true } = {
 
     const normalizedId = String(itemOut.id || createUuid()).trim();
     const normalizedQty = Math.max(1, parseInt(itemOut.quantity, 10) || 1);
+    const normalizedBundleTransactionId = String(itemOut.bundleTransactionId || itemOut.bundle_transaction_id || '').trim() || null;
 
     const payload = {
         id: normalizedId,
@@ -2021,7 +2327,8 @@ async function insertProjectItemOutToSupabase(itemOut, { triggerLed = true } = {
         signout_date: itemOut.signoutDate,
         due_date: itemOut.dueDate,
         assigned_to_user_id: itemOut.assignedToUserId || null,
-        signed_out_by_user_id: itemOut.signedOutByUserId || null
+        signed_out_by_user_id: itemOut.signedOutByUserId || null,
+        bundle_transaction_id: normalizedBundleTransactionId
     };
 
     const fallbackPayload = {
@@ -2030,7 +2337,8 @@ async function insertProjectItemOutToSupabase(itemOut, { triggerLed = true } = {
         item_id: itemOut.itemId,
         quantity: normalizedQty,
         signout_date: itemOut.signoutDate,
-        due_date: itemOut.dueDate
+        due_date: itemOut.dueDate,
+        bundle_transaction_id: normalizedBundleTransactionId
     };
 
     const minimalPayload = {
@@ -2038,7 +2346,8 @@ async function insertProjectItemOutToSupabase(itemOut, { triggerLed = true } = {
         project_id: itemOut.projectId,
         item_id: itemOut.itemId,
         quantity: normalizedQty,
-        signout_date: itemOut.signoutDate
+        signout_date: itemOut.signoutDate,
+        bundle_transaction_id: normalizedBundleTransactionId
     };
 
     const payloadNoId = {
@@ -2048,7 +2357,8 @@ async function insertProjectItemOutToSupabase(itemOut, { triggerLed = true } = {
         signout_date: itemOut.signoutDate,
         due_date: itemOut.dueDate,
         assigned_to_user_id: itemOut.assignedToUserId || null,
-        signed_out_by_user_id: itemOut.signedOutByUserId || null
+        signed_out_by_user_id: itemOut.signedOutByUserId || null,
+        bundle_transaction_id: normalizedBundleTransactionId
     };
 
     const fallbackPayloadNoId = {
@@ -2056,14 +2366,16 @@ async function insertProjectItemOutToSupabase(itemOut, { triggerLed = true } = {
         item_id: itemOut.itemId,
         quantity: normalizedQty,
         signout_date: itemOut.signoutDate,
-        due_date: itemOut.dueDate
+        due_date: itemOut.dueDate,
+        bundle_transaction_id: normalizedBundleTransactionId
     };
 
     const minimalPayloadNoId = {
         project_id: itemOut.projectId,
         item_id: itemOut.itemId,
         quantity: normalizedQty,
-        signout_date: itemOut.signoutDate
+        signout_date: itemOut.signoutDate,
+        bundle_transaction_id: normalizedBundleTransactionId
     };
 
     let data = null;
@@ -2097,7 +2409,7 @@ async function insertProjectItemOutToSupabase(itemOut, { triggerLed = true } = {
     }
 
     if (triggerLed && shouldTriggerLedForItem(itemOut)) {
-        notifySignoutLedTrigger();
+        notifySignoutLedTrigger(itemOut?.userId || itemOut?.user_id);
     }
     return data?.[0];
 }
@@ -2133,7 +2445,7 @@ async function addProjectItemOutBatchToSupabase(itemOuts) {
     }
 
     if (shouldTriggerLed) {
-        notifySignoutLedTrigger();
+        notifySignoutLedTrigger(items?.[0]?.userId || items?.[0]?.user_id);
     }
 
     return insertedRows;
@@ -2174,6 +2486,112 @@ async function returnItemByCompositeToSupabase({ projectId, itemId, signoutDate,
         console.error('Error returning item by composite key:', error);
         return false;
     }
+    return true;
+}
+
+/**
+ * Replace the component rows for a bundle item.
+ */
+async function saveInventoryItemBundleComponentsInSupabase(bundleItemId, components) {
+    if (!bundleItemId) return false;
+
+    const normalizedComponents = (Array.isArray(components) ? components : [])
+        .map(component => ({
+            bundle_item_id: bundleItemId,
+            component_item_id: String(component?.componentItemId || component?.itemId || '').trim(),
+            component_quantity: Math.max(1, parseInt(component?.componentQuantity || component?.quantity, 10) || 1)
+        }))
+        .filter(component => component.component_item_id);
+
+    const { data: previousRows, error: previousRowsError } = await dbClient
+        .from('inventory_item_bundles')
+        .select('*')
+        .eq('bundle_item_id', bundleItemId);
+
+    if (previousRowsError) {
+        console.error('Error loading existing bundle component rows:', previousRowsError);
+        return false;
+    }
+
+    const { error: deleteError } = await dbClient
+        .from('inventory_item_bundles')
+        .delete()
+        .eq('bundle_item_id', bundleItemId);
+
+    if (deleteError) {
+        console.error('Error clearing bundle component rows:', deleteError);
+        return false;
+    }
+
+    if (normalizedComponents.length === 0) {
+        inventoryItemBundles = (inventoryItemBundles || []).filter(row => String(row.bundle_item_id || '') !== String(bundleItemId));
+        hydrateInventoryItemBundles();
+        return true;
+    }
+
+    const { error: insertError } = await dbClient
+        .from('inventory_item_bundles')
+        .insert(normalizedComponents);
+
+    if (insertError) {
+        console.error('Error saving bundle component rows:', insertError);
+        if ((previousRows || []).length > 0) {
+            await dbClient.from('inventory_item_bundles').insert(previousRows.map(row => ({
+                bundle_item_id: row.bundle_item_id,
+                component_item_id: row.component_item_id,
+                component_quantity: row.component_quantity
+            })));
+        }
+        return false;
+    }
+
+    await loadInventoryItemBundles();
+    return true;
+}
+
+async function addProjectBundleTransactionToSupabase(transaction) {
+    const { data, error } = await dbClient.from('project_item_bundle_transactions').insert([{
+        id: transaction.id || createUuid(),
+        project_id: transaction.projectId,
+        bundle_item_id: transaction.bundleItemId,
+        bundle_quantity: Math.max(1, parseInt(transaction.bundleQuantity, 10) || 1),
+        signout_date: transaction.signoutDate,
+        due_date: transaction.dueDate,
+        assigned_to_user_id: transaction.assignedToUserId || null,
+        signed_out_by_user_id: transaction.signedOutByUserId || null
+    }]).select();
+
+    if (error) {
+        console.error('Error adding bundle transaction:', error);
+        return null;
+    }
+
+    return data?.[0] || transaction;
+}
+
+async function deleteBundleTransactionFromSupabase(bundleTransactionId) {
+    if (!bundleTransactionId) return false;
+
+    const { error: childDeleteError } = await dbClient
+        .from('project_items_out')
+        .delete()
+        .eq('bundle_transaction_id', bundleTransactionId);
+
+    if (childDeleteError) {
+        console.error('Error deleting bundle child rows:', childDeleteError);
+        return false;
+    }
+
+    const { error: transactionDeleteError } = await dbClient
+        .from('project_item_bundle_transactions')
+        .delete()
+        .eq('id', bundleTransactionId);
+
+    if (transactionDeleteError) {
+        console.error('Error deleting bundle transaction row:', transactionDeleteError);
+        return false;
+    }
+
     return true;
 }
 
@@ -2987,17 +3405,39 @@ async function setItemVisibilityTagsInSupabase(itemId, tagNames) {
  * Add project collaborator
  */
 async function addProjectCollaboratorToSupabase(projectId, userId, memberRole = 'collaborator') {
-    const { data, error } = await dbClient.from('project_collaborators').insert([{
+    const role = typeof normalizeMemberRole === 'function' ? normalizeMemberRole(memberRole) : (memberRole || 'collaborator');
+    
+    // Maintain in-memory state immediately so newly added members are recognized right away
+    if (Array.isArray(projects)) {
+        const targetProj = projects.find(p => p.id === projectId);
+        if (targetProj) {
+            targetProj.collaborators = targetProj.collaborators || [];
+            if (!targetProj.collaborators.includes(userId)) {
+                targetProj.collaborators.push(userId);
+            }
+            targetProj.collaboratorRoles = targetProj.collaboratorRoles || {};
+            targetProj.collaboratorRoles[userId] = role;
+        }
+    }
+
+    let { data, error } = await dbClient.from('project_collaborators').insert([{
         project_id: projectId,
         user_id: userId,
-        member_role: memberRole || 'collaborator'
+        member_role: role
     }]).select();
     
     if (error) {
-        console.error('Error adding project collaborator:', error);
-        return null;
+        const fallback = await dbClient.from('project_collaborators').insert([{
+            project_id: projectId,
+            user_id: userId
+        }]).select();
+        if (fallback.error) {
+            console.warn('Error adding project collaborator in Supabase:', error, fallback.error);
+            return { project_id: projectId, user_id: userId, member_role: role };
+        }
+        return fallback.data?.[0] || { project_id: projectId, user_id: userId, member_role: role };
     }
-    return data?.[0];
+    return data?.[0] || { project_id: projectId, user_id: userId, member_role: role };
 }
 
 /**
@@ -3039,6 +3479,16 @@ async function addProjectTransferToSupabase(transfer) {
  * Remove project collaborator
  */
 async function removeProjectCollaboratorFromSupabase(projectId, userId) {
+    if (Array.isArray(projects)) {
+        const targetProj = projects.find(p => p.id === projectId);
+        if (targetProj) {
+            targetProj.collaborators = (targetProj.collaborators || []).filter(id => id !== userId);
+            if (targetProj.collaboratorRoles) {
+                delete targetProj.collaboratorRoles[userId];
+            }
+        }
+    }
+
     const { error } = await dbClient.from('project_collaborators')
         .delete()
         .eq('project_id', projectId)
@@ -3075,6 +3525,195 @@ function addLog(userId, action, details) {
     scheduleActivityLogQueueFlush(0);
     
     return log;
+}
+
+/**
+ * Fetch database event data and compute timeline status changes for a selected inventory item.
+ */
+async function fetchItemTimelineData(itemId) {
+    if (!itemId) return { item: null, activityLogs: [], itemsOutRows: [], transfersRows: [], doorJobsRows: [], extensionRows: [], error: 'Item ID required' };
+
+    let freshItem = null;
+    let dbLogs = [];
+    let itemsOutRows = [];
+    let transfersRows = [];
+    let doorJobsRows = [];
+    let extensionRows = [];
+
+    // 1. Fetch fresh item record from DB
+    try {
+        if (dbClient) {
+            const { data, error } = await dbClient
+                .from('inventory_items')
+                .select('*')
+                .eq('id', itemId)
+                .maybeSingle();
+            if (!error && data) {
+                freshItem = {
+                    ...data,
+                    main_category: data.main_category ?? data.mainCategory ?? data.category ?? 'Uncategorized',
+                    sub_category: data.sub_category ?? data.subCategory ?? 'General',
+                    category: data.category ?? data.main_category ?? data.mainCategory ?? 'Uncategorized',
+                    brand: data.brand ?? data.supplier ?? 'Unspecified',
+                    storageLocation: data.storageLocation ?? data.storage_location ?? data.location ?? null,
+                    imageLink: data.imageLink ?? data.image_link ?? null,
+                    supplierListingLink: data.supplierListingLink ?? data.supplier_listing_link ?? null,
+                    requiresDoorUnlock: data.requiresDoorUnlock ?? data.requires_door_unlock ?? true,
+                    sku: data.sku ?? data.barcode ?? (typeof getInventoryItemBarcode === 'function' ? getInventoryItemBarcode(data) : data.sku)
+                };
+            }
+        }
+    } catch (e) {
+        console.warn('Could not query inventory_items directly:', e);
+    }
+
+    if (!freshItem && Array.isArray(inventoryItems)) {
+        freshItem = inventoryItems.find(i => String(i.id) === String(itemId)) || null;
+    }
+
+    if (!freshItem) {
+        return { item: null, activityLogs: [], itemsOutRows: [], transfersRows: [], doorJobsRows: [], extensionRows: [], error: 'Item not found' };
+    }
+
+    // 2. Query activity_logs from DB
+    try {
+        if (dbClient) {
+            const { data, error } = await dbClient
+                .from('activity_logs')
+                .select('*')
+                .order('timestamp', { ascending: false })
+                .limit(500);
+            if (!error && Array.isArray(data)) {
+                dbLogs = data;
+            }
+
+            const { data: specificLogs, error: specificError } = await dbClient
+                .from('activity_logs')
+                .select('*')
+                .ilike('details', `%${itemId}%`)
+                .order('timestamp', { ascending: false })
+                .limit(100);
+            if (!specificError && Array.isArray(specificLogs)) {
+                const existingMap = new Set(dbLogs.map(l => String(l.id)));
+                specificLogs.forEach(l => {
+                    if (l && l.id && !existingMap.has(String(l.id))) {
+                        dbLogs.push(l);
+                        existingMap.add(String(l.id));
+                    }
+                });
+            }
+        }
+    } catch (e) {
+        console.warn('Could not query activity_logs directly:', e);
+    }
+
+    // Merge with in-memory activityLogs
+    if (Array.isArray(activityLogs) && activityLogs.length > 0) {
+        const existingMap = new Set(dbLogs.map(l => String(l.id)));
+        activityLogs.forEach(l => {
+            if (l && l.id && !existingMap.has(String(l.id))) {
+                dbLogs.push(l);
+                existingMap.add(String(l.id));
+            }
+        });
+    }
+
+    // 3. Query project_items_out from DB
+    try {
+        if (dbClient) {
+            const { data, error } = await dbClient
+                .from('project_items_out')
+                .select('*')
+                .eq('item_id', itemId)
+                .order('signout_date', { ascending: false });
+            if (!error && Array.isArray(data)) {
+                itemsOutRows = data;
+            }
+        }
+    } catch (e) {
+        console.warn('Could not query project_items_out directly:', e);
+    }
+
+    // Merge with in-memory projects itemsOut
+    if (Array.isArray(projects)) {
+        projects.forEach(p => {
+            (p.itemsOut || []).forEach(io => {
+                if (String(io.itemId || io.item_id) === String(itemId)) {
+                    const match = itemsOutRows.some(r => String(r.id) === String(io.id) || (r.project_id === (io.projectId || p.id) && r.signout_date === io.signoutDate));
+                    if (!match) {
+                        itemsOutRows.push({
+                            id: io.id || `out-${Math.random()}`,
+                            project_id: io.projectId || p.id,
+                            item_id: io.itemId,
+                            quantity: io.quantity || 1,
+                            signout_date: io.signoutDate,
+                            due_date: io.dueDate,
+                            assigned_to_user_id: io.assignedToUserId,
+                            signed_out_by_user_id: io.signedOutByUserId
+                        });
+                    }
+                }
+            });
+        });
+    }
+
+    // 4. Query project_item_transfers
+    try {
+        if (dbClient) {
+            const { data, error } = await dbClient
+                .from('project_item_transfers')
+                .select('*')
+                .eq('item_id', itemId)
+                .order('created_at', { ascending: false });
+            if (!error && Array.isArray(data)) {
+                transfersRows = data;
+            }
+        }
+    } catch (e) {
+        // Safe to ignore
+    }
+
+    // 5. Query door_unlock_jobs
+    try {
+        if (dbClient) {
+            const { data, error } = await dbClient
+                .from('door_unlock_jobs')
+                .select('*')
+                .eq('item_id', itemId)
+                .order('created_at', { ascending: false })
+                .limit(50);
+            if (!error && Array.isArray(data)) {
+                doorJobsRows = data;
+            }
+        }
+    } catch (e) {
+        // Safe to ignore
+    }
+
+    // 6. Query extension_requests
+    try {
+        if (dbClient) {
+            const { data, error } = await dbClient
+                .from('extension_requests')
+                .select('*')
+                .eq('item_id', itemId)
+                .order('created_at', { ascending: false });
+            if (!error && Array.isArray(data)) {
+                extensionRows = data;
+            }
+        }
+    } catch (e) {
+        // Safe to ignore
+    }
+
+    return {
+        item: freshItem,
+        activityLogs: dbLogs,
+        itemsOutRows,
+        transfersRows,
+        doorJobsRows,
+        extensionRows
+    };
 }
 
 

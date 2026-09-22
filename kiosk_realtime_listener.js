@@ -115,7 +115,7 @@ function runOverlayCommand() {
     });
 }
 
-function triggerDoorAttentionLed() {
+function triggerDoorAttentionLed(userId = null) {
     return new Promise((resolve) => {
         if (!LED_TRIGGER_URL) {
             console.warn('[kiosk-listener] LED_TRIGGER_URL/GPIO_SERVER_URL not configured; attention LED skipped.');
@@ -126,6 +126,9 @@ function triggerDoorAttentionLed() {
         let url;
         try {
             url = new URL(LED_TRIGGER_URL);
+            if (userId) {
+                url.searchParams.set('userid', String(userId));
+            }
         } catch {
             console.error('[kiosk-listener] LED trigger URL is invalid:', LED_TRIGGER_URL);
             resolve(false);
@@ -205,9 +208,9 @@ function announceDoorOpen() {
     });
 }
 
-async function handleDoorOpenRequest(contextLabel) {
+async function handleDoorOpenRequest(contextLabel, userId = null) {
     const announced = await announceDoorOpen();
-    const ledTriggered = await triggerDoorAttentionLed();
+    const ledTriggered = await triggerDoorAttentionLed(userId);
 
     if (announced && ledTriggered) {
         console.log(`[kiosk-listener] ${contextLabel}: announced "door open" and triggered attention LED.`);
@@ -342,8 +345,9 @@ async function processDoorUnlockJob(job) {
         const claimedJob = await claimDoorUnlockJob(job.id);
         if (!claimedJob) return;
 
+        const actorUserId = claimedJob.request_payload?.userId || claimedJob.request_payload?.actorId || null;
         console.log(`[kiosk-listener] Processing door queue job ${claimedJob.id} for kiosk ${KIOSK_ID}.`);
-        const success = await handleDoorOpenRequest(`door_unlock_job/${claimedJob.id}`);
+        const success = await handleDoorOpenRequest(`door_unlock_job/${claimedJob.id}`, actorUserId);
 
         await completeDoorUnlockJob(claimedJob.id, success, {
             statusMessage: success

@@ -377,7 +377,20 @@ async function completeAuthenticatedSession(user) {
         return false;
     }
 
-    loadAllData().catch(loadError => {
+    (typeof loadUserData === 'function' ? loadUserData(user) : loadAllData()).then(() => {
+        try {
+            renderProjects();
+            renderInventory();
+            if (user.role !== 'student') {
+                renderUsers();
+                renderClasses();
+                renderRequests();
+                renderLogs();
+            }
+        } catch (e) {
+            console.warn('Render after user data load error:', e);
+        }
+    }).catch(loadError => {
         console.error('Post-login load failed:', loadError);
         showToast('Signed in, but data refresh failed.', 'warning');
     });
@@ -1093,7 +1106,7 @@ function openAppInfoMenu() {
 
     const html = `
         <div class="modal-header debug-modal-header">
-            <h3 style="color:#a78bfa"><i class="ph ph-info"></i> ${escapeHtml(popupHeading)}</h3>
+            <h3 style="color:var(--accent-primary)"><i class="ph ph-info"></i> ${escapeHtml(popupHeading)}</h3>
             <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
         </div>
         <div class="debug-modal-body">
@@ -1466,15 +1479,6 @@ function readKioskNumberSetting(values, fallback, min, max) {
     return fallback;
 }
 
-function readKioskTimeSetting(values, fallback) {
-    for (const value of values) {
-        if (value === undefined || value === null || value === '') continue;
-        const text = String(value).trim();
-        if (/^\d{2}:\d{2}$/.test(text)) return text;
-    }
-    return fallback;
-}
-
 function resolveKioskRuntimeSettings(source = {}, fallbackOverrides = null) {
     const defaults = getDefaultKioskSettings();
     const fallback = {
@@ -1516,20 +1520,6 @@ function resolveKioskRuntimeSettings(source = {}, fallbackOverrides = null) {
             ?? merged.location
             ?? ''
         ).trim(),
-        startTime: readKioskTimeSetting([
-            merged.startTime,
-            merged.start_time,
-            merged.operating_start_time
-        ], fallback.startTime),
-        endTime: readKioskTimeSetting([
-            merged.endTime,
-            merged.end_time,
-            merged.operating_end_time
-        ], fallback.endTime),
-        enforceHours: readKioskBooleanSetting([
-            merged.enforceHours,
-            merged.enforce_hours
-        ], fallback.enforceHours),
         doorOpenWarningSeconds: Math.round(readKioskNumberSetting([
             merged.doorOpenWarningSeconds,
             merged.door_open_warning_seconds,
@@ -1583,10 +1573,7 @@ async function saveKioskSettingsToSupabase(settings, targetKioskId = kioskId) {
             branding_text: settings.brandingText,
             door_open_warning_seconds: settings.doorOpenWarningSeconds,
             door_open_block_seconds: settings.doorOpenBlockSeconds,
-            door_unlock_duration: settings.doorUnlockDuration,
-            start_time: settings.startTime,
-            end_time: settings.endTime,
-            enforce_hours: settings.enforceHours
+            door_unlock_duration: settings.doorUnlockDuration
         },
         {
             ...basePayload,
@@ -1598,10 +1585,7 @@ async function saveKioskSettingsToSupabase(settings, targetKioskId = kioskId) {
             branding_text: settings.brandingText,
             door_open_warning_seconds: settings.doorOpenWarningSeconds,
             door_open_block_seconds: settings.doorOpenBlockSeconds,
-            door_unlock_duration_seconds: settings.doorUnlockDuration,
-            operating_start_time: settings.startTime,
-            operating_end_time: settings.endTime,
-            enforce_hours: settings.enforceHours
+            door_unlock_duration_seconds: settings.doorUnlockDuration
         },
         {
             ...basePayload,
@@ -1614,10 +1598,7 @@ async function saveKioskSettingsToSupabase(settings, targetKioskId = kioskId) {
                 brandingText: settings.brandingText,
                 doorOpenWarningSeconds: settings.doorOpenWarningSeconds,
                 doorOpenBlockSeconds: settings.doorOpenBlockSeconds,
-                doorUnlockDuration: settings.doorUnlockDuration,
-                startTime: settings.startTime,
-                endTime: settings.endTime,
-                enforceHours: settings.enforceHours
+                doorUnlockDuration: settings.doorUnlockDuration
             }
         },
         {
@@ -1631,10 +1612,7 @@ async function saveKioskSettingsToSupabase(settings, targetKioskId = kioskId) {
                 brandingText: settings.brandingText,
                 doorOpenWarningSeconds: settings.doorOpenWarningSeconds,
                 doorOpenBlockSeconds: settings.doorOpenBlockSeconds,
-                doorUnlockDuration: settings.doorUnlockDuration,
-                startTime: settings.startTime,
-                endTime: settings.endTime,
-                enforceHours: settings.enforceHours
+                doorUnlockDuration: settings.doorUnlockDuration
             }
         }
     ];
@@ -1785,11 +1763,6 @@ function startKioskVersionRealtimeListener(targetKioskId = kioskId) {
                 session_timeout_minutes: payload?.new?.session_timeout_minutes,
                 no_activity_expiry: payload?.new?.no_activity_expiry,
                 no_activity_expiry_minutes: payload?.new?.no_activity_expiry_minutes,
-                start_time: payload?.new?.start_time,
-                operating_start_time: payload?.new?.operating_start_time,
-                end_time: payload?.new?.end_time,
-                operating_end_time: payload?.new?.operating_end_time,
-                enforce_hours: payload?.new?.enforce_hours,
                 enforce_privilege_unlock: payload?.new?.enforce_privilege_unlock,
                 show_order_form: payload?.new?.show_order_form,
                 show_credential_request: payload?.new?.show_credential_request,
@@ -2441,17 +2414,24 @@ async function triggerDoorAttentionLed(options = {}) {
 
     try {
         let url = endpoint;
+        const targetUserId = options?.userId || options?.actorUserId || currentUser?.id || (typeof window !== 'undefined' && window.currentUser?.id) || '';
 
-        // Append unlock job and actor id when provided
-        if (options && (options.unlockJobId || options.actorUserId)) {
-            try {
-                const urlObj = new URL(endpoint);
-                if (options.unlockJobId) urlObj.searchParams.append('unlockJobId', String(options.unlockJobId));
-                if (options.actorUserId) urlObj.searchParams.append('actorUserId', String(options.actorUserId));
-                url = urlObj.toString();
-            } catch (__) {
-                // if URL parsing fails, continue with original endpoint
-                url = endpoint;
+        try {
+            const urlObj = new URL(endpoint, window.location.origin);
+            if (targetUserId) {
+                urlObj.searchParams.set('userid', String(targetUserId));
+            }
+            if (options?.unlockJobId) {
+                urlObj.searchParams.set('unlockJobId', String(options.unlockJobId));
+            }
+            if (options?.actorUserId && !urlObj.searchParams.has('actorUserId')) {
+                urlObj.searchParams.set('actorUserId', String(options.actorUserId));
+            }
+            url = urlObj.toString();
+        } catch (__) {
+            if (targetUserId) {
+                const sep = url.includes('?') ? '&' : '?';
+                url = `${url}${sep}userid=${encodeURIComponent(String(targetUserId))}`;
             }
         }
 
@@ -2517,7 +2497,7 @@ async function triggerSignInAttentionIfEnabled(user) {
         addLog(actorId, 'Door Unlock Queue Failed', `Failed to enqueue sign-in job: ${String(enqueueError?.message || enqueueError)}`);
     }
 
-    const blinked = await triggerDoorAttentionLed({ unlockJobId, actorUserId: actorId });
+    const blinked = await triggerDoorAttentionLed({ unlockJobId, actorUserId: actorId, userId: actorId });
 
     if (blinked) {
         addLog(actorId, 'Door Attention', `Auto attention triggered on sign-in for ${actorId} [role=${actorRole}].`);
@@ -2553,7 +2533,7 @@ async function requestDoorUnlockAndLogAccess({ actionType, item, quantity = 1, p
         addLog(actorId, 'Door Unlock Queue Failed', `Failed to enqueue ${actionType} job: ${String(enqueueError?.message || enqueueError)}`);
     }
 
-    const blinked = await triggerDoorAttentionLed({ unlockJobId, actorUserId: actorId });
+    const blinked = await triggerDoorAttentionLed({ unlockJobId, actorUserId: actorId, userId: actorId });
     if (blinked) {
         addLog(actorId, 'Door Attention', `LED attention triggered for ${actionType}: ${quantity}x ${itemName} (${itemId}) in ${projectName} [role=${actorRole}].`);
         return true;
@@ -2591,7 +2571,7 @@ async function requestManualDoorUnlockAndLogAccess(reason = 'manual door control
         addLog(actorId, 'Door Unlock Queue Failed', `Failed to enqueue manual-unlock job: ${String(enqueueError?.message || enqueueError)}`);
     }
 
-    const blinked = await triggerDoorAttentionLed({ unlockJobId, actorUserId: actorId });
+    const blinked = await triggerDoorAttentionLed({ unlockJobId, actorUserId: actorId, userId: actorId });
     if (blinked) {
         addLog(actorId, 'Door Attention', `Manual attention trigger by ${actorId} [role=${actorRole}] (${reason}).`);
     } else {
@@ -3152,6 +3132,121 @@ async function checkoutBasket() {
     for (const basketItem of inventoryBasket) {
         const item = inventoryItems.find(i => i.id === basketItem.id);
         if (item) {
+            const isBundle = isBundleItemType(item?.item_type) || (Array.isArray(item?.bundleComponents) && item.bundleComponents.length > 0);
+            const bundleComponents = isBundle ? (item.bundleComponents || []) : [];
+
+            if (isBundle) {
+                const bundleTransactionId = createUuid();
+                const signoutDate = new Date().toISOString();
+                const dueDate = calculateDueDate(new Date(), currentUser, project);
+                const assignedToUserId = project.ownerId;
+
+                const bundleTransaction = await addProjectBundleTransactionToSupabase({
+                    id: bundleTransactionId,
+                    projectId: project.id,
+                    bundleItemId: item.id,
+                    bundleQuantity: basketItem.qty,
+                    signoutDate,
+                    dueDate,
+                    assignedToUserId,
+                    signedOutByUserId: currentUser.id
+                });
+
+                if (!bundleTransaction) {
+                    showToast(`Checkout failed while creating bundle sign-out for ${item.name}.`, 'error');
+                    await Promise.all([refreshProjectsFromSupabase(), refreshInventoryFromSupabase()]);
+                    renderInventory();
+                    renderProjects();
+                    return;
+                }
+
+                const childRows = [];
+                const stockSnapshots = [];
+                for (const component of bundleComponents) {
+                    const childItem = inventoryItems.find(child => child.id === (component.componentItemId || component.itemId));
+                    if (!childItem) continue;
+
+                    const componentQty = Math.max(1, parseInt(component.componentQuantity || component.quantity, 10) || 1) * basketItem.qty;
+                    const currentStock = Math.max(0, parseInt(childItem.stock, 10) || 0);
+                    if (currentStock < componentQty) {
+                        for (const snapshot of stockSnapshots.reverse()) {
+                            await updateItemInSupabase(snapshot.item.id, { stock: snapshot.previousStock });
+                        }
+                        await deleteBundleTransactionFromSupabase(bundleTransaction.id);
+                        showToast(`Not enough stock for ${childItem.name} in bundle ${item.name}.`, 'error');
+                        return;
+                    }
+
+                    childRows.push({
+                        id: generateId('OUT'),
+                        projectId: project.id,
+                        itemId: childItem.id,
+                        quantity: componentQty,
+                        signoutDate,
+                        dueDate,
+                        assignedToUserId,
+                        signedOutByUserId: currentUser.id,
+                        bundleTransactionId: bundleTransaction.id,
+                        requiresDoorUnlock: childItem.requiresDoorUnlock ?? childItem.requires_door_unlock ?? false
+                    });
+                }
+
+                const savedRows = await addProjectItemOutBatchToSupabase(childRows);
+                if (!savedRows) {
+                    await deleteBundleTransactionFromSupabase(bundleTransaction.id);
+                    showToast(`Checkout failed while recording bundle components for ${item.name}.`, 'error');
+                    return;
+                }
+
+                for (const component of bundleComponents) {
+                    const childItem = inventoryItems.find(child => child.id === (component.componentItemId || component.itemId));
+                    if (!childItem) continue;
+
+                    const componentQty = Math.max(1, parseInt(component.componentQuantity || component.quantity, 10) || 1) * basketItem.qty;
+                    const currentStock = Math.max(0, parseInt(childItem.stock, 10) || 0);
+                    const nextStock = currentStock - componentQty;
+                    stockSnapshots.push({ item: childItem, previousStock: currentStock });
+
+                    const stockUpdated = await updateItemInSupabase(childItem.id, { stock: nextStock });
+                    if (!stockUpdated) {
+                        for (const snapshot of stockSnapshots.reverse()) {
+                            await updateItemInSupabase(snapshot.item.id, { stock: snapshot.previousStock });
+                        }
+                        await deleteBundleTransactionFromSupabase(bundleTransaction.id);
+                        showToast(`Failed to update stock for ${childItem.name}.`, 'error');
+                        return;
+                    }
+
+                    childItem.stock = nextStock;
+                    _trackItemSignout(childItem, componentQty);
+                }
+
+                project.itemsOut = project.itemsOut || [];
+                project.itemsOut.push({
+                    id: bundleTransaction.id,
+                    itemId: item.id,
+                    quantity: basketItem.qty,
+                    signoutDate,
+                    dueDate,
+                    assignedToUserId,
+                    signedOutByUserId: currentUser.id,
+                    bundleTransactionId: bundleTransaction.id,
+                    isBundle: true,
+                    bundleComponents: bundleComponents.map(c => ({
+                        itemId: c.componentItemId || c.itemId,
+                        quantity: (c.componentQuantity || c.quantity || 1) * basketItem.qty
+                    }))
+                });
+
+                _trackItemSignout(item, basketItem.qty);
+                if (project.id.startsWith('PERS-')) {
+                    addLog(currentUser.id, 'Personal Sign-out', `Bulk signed out bundle ${basketItem.qty}x ${item.name} to self`);
+                } else {
+                    addLog(currentUser.id, 'Project Sign-out', `Bulk signed out bundle ${basketItem.qty}x ${item.name} for project ${project.name}`);
+                }
+                continue;
+            }
+
             const signoutData = {
                 id: generateId('OUT'),
                 itemId: item.id,
@@ -3185,7 +3280,6 @@ async function checkoutBasket() {
                 await Promise.all([refreshProjectsFromSupabase(), refreshInventoryFromSupabase()]);
                 renderInventory();
                 renderProjects();
-                renderProjects();
                 return;
             }
 
@@ -3205,7 +3299,6 @@ async function checkoutBasket() {
                 showToast(`Checkout failed while updating stock for ${item.name}. Sign-out was rolled back.`, 'error');
                 await Promise.all([refreshProjectsFromSupabase(), refreshInventoryFromSupabase()]);
                 renderInventory();
-                renderProjects();
                 renderProjects();
                 return;
             }
@@ -3297,7 +3390,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     await bootstrapDoorSensorState(kioskId);
     startDoorSensorRealtimeListener(kioskId);
     startDoorTelemetryUiTicker();
-    startActivityLogsRealtimeListener();
+    // Note: Activity logs realtime listener is started post-login for elevated roles only.
 
     if (!verification.valid) {
         const unavailableDescription = verification.reason === 'invalid_license'
@@ -3315,14 +3408,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (!stored) return false;
             if (currentUser) return false;
 
-            // Ensure core data (users) is loaded so we can resolve the identity
-            if (typeof loadAllData === 'function') {
-                try { await loadAllData(); } catch (e) { console.warn('loadAllData failed during session restore', e); }
-            }
-
-            let user = (mockUsers || []).find(u => String(u.id) === String(stored));
-            if (!user && typeof fetchUserByIdFromSupabase === 'function') {
+            let user = null;
+            if (typeof fetchUserByIdFromSupabase === 'function') {
                 try { user = await fetchUserByIdFromSupabase(stored); } catch (e) { console.warn('fetchUserByIdFromSupabase failed during restore', e); }
+            }
+            if (!user && Array.isArray(mockUsers)) {
+                user = mockUsers.find(u => String(u.id) === String(stored));
             }
 
             if (!user) {
@@ -3339,9 +3430,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // Restore without generating login analytics/log entries
                 login(user, { suppressTracking: true });
 
-                // Refresh key UI data after restore
-                if (typeof refreshProjectsFromSupabase === 'function') await refreshProjectsFromSupabase();
-                if (typeof refreshInventoryFromSupabase === 'function') await refreshInventoryFromSupabase();
+                // Load scoped user data
+                if (typeof loadUserData === 'function') {
+                    try { await loadUserData(user); } catch (e) { console.warn('loadUserData failed during session restore', e); }
+                } else if (typeof loadAllData === 'function') {
+                    try { await loadAllData(); } catch (e) { console.warn('loadAllData failed during session restore', e); }
+                }
             } catch (e) {
                 console.warn('Session restore failed', e);
                 try { sessionStorage.removeItem('manageSignedInUserIdV1'); } catch (err) {}
@@ -3356,12 +3450,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     await tryRestoreSessionFromSessionStorage();
 
-    // Load all data from Supabase tables before initializing the app
+    // Load public catalog data before user signs in
     try {
-        await loadAllData();
+        await (typeof loadPreLoginData === 'function' ? loadPreLoginData() : loadAllData());
     } catch (error) {
-        console.error('Initial Supabase load failed:', error);
-        showToast('Unable to load data from server. Login may not work until this is fixed.', 'error');
+        console.error('Initial Supabase pre-login load failed:', error);
+        showToast('Unable to load catalog from server. Login may not work until this is fixed.', 'error');
     }
 
     // Bring focus to the primary login field for the current app mode.
@@ -3574,7 +3668,20 @@ async function handleBarcodeLogin(rawId) {
                 return;
             }
 
-            loadAllData().catch(loadError => {
+            (typeof loadUserData === 'function' ? loadUserData(user) : loadAllData()).then(() => {
+                try {
+                    renderProjects();
+                    renderInventory();
+                    if (user.role !== 'student') {
+                        renderUsers();
+                        renderClasses();
+                        renderRequests();
+                        renderLogs();
+                    }
+                } catch (e) {
+                    console.warn('Render after user data load error:', e);
+                }
+            }).catch(loadError => {
                 console.error('Post-login load failed:', loadError);
                 showToast('Signed in, but data refresh failed.', 'warning');
             });
@@ -3920,6 +4027,7 @@ function setProfilePrivilegedActionState(isEnabled) {
 
 function login(user, options = {}) {
     currentUser = user;
+    if (typeof window !== 'undefined') window.currentUser = user;
     privilegedSessionAuthenticated = false;
     privilegedStartupAuditShown = false;
     getOrCreatePersonalProject(user.id);
@@ -3960,7 +4068,10 @@ function login(user, options = {}) {
     else userRoleEl.style.color = '#94a3b8';
     userRoleEl.classList.toggle('hidden', !isStaffRole);
 
-    // Access Control & Permission Enforcement
+    // Start realtime audit logs listener only for elevated roles
+    if (user.role === 'teacher' || user.role === 'developer') {
+        startActivityLogsRealtimeListener();
+    }
     const navRequests = document.getElementById('nav-requests');
     if (user.role === 'student') {
         navLogs.classList.add('hidden');
@@ -3974,6 +4085,7 @@ function login(user, options = {}) {
         document.getElementById('inventory-edit-actions-wrap')?.classList.add('hidden');
         document.getElementById('manage-categories-btn')?.classList.add('hidden');
         document.getElementById('manage-visibility-tags-btn')?.classList.add('hidden');
+        document.getElementById('manage-bundles-btn')?.classList.add('hidden');
         document.getElementById('bulk-manage-items-btn')?.classList.add('hidden');
         document.getElementById('bulk-delete-items-btn')?.classList.add('hidden');
         document.getElementById('bulk-import-items-btn')?.classList.add('hidden');
@@ -3990,6 +4102,7 @@ function login(user, options = {}) {
         document.getElementById('inventory-edit-actions-wrap')?.classList.remove('hidden');
         document.getElementById('manage-categories-btn')?.classList.remove('hidden');
         document.getElementById('manage-visibility-tags-btn')?.classList.remove('hidden');
+        document.getElementById('manage-bundles-btn')?.classList.remove('hidden');
         document.getElementById('bulk-manage-items-btn')?.classList.remove('hidden');
         document.getElementById('bulk-delete-items-btn')?.classList.remove('hidden');
         document.getElementById('bulk-import-items-btn')?.classList.remove('hidden');
@@ -4075,11 +4188,27 @@ function logout(message = 'Logged out successfully') {
 
     _trackLogout();
     currentUser = null;
+    if (typeof window !== 'undefined') window.currentUser = null;
     privilegedSessionAuthenticated = false;
     privilegedStartupAuditShown = false;
     inventoryBasket = [];
     toggleBasket(false);
     clearInterval(countdownInterval);
+
+    // Stop elevated activity logs realtime listener on logout
+    if (activityLogsChannel) {
+        try {
+            const client = getSettingsSupabaseClient();
+            if (client) client.removeChannel(activityLogsChannel);
+        } catch (e) {}
+        activityLogsChannel = null;
+    }
+
+    // Clean up sensitive memory data
+    if (typeof clearSensitiveDataOnLogout === 'function') {
+        clearSensitiveDataOnLogout();
+    }
+
     pages.forEach(page => {
         page.classList.remove('active');
         page.classList.add('hidden');
@@ -4127,6 +4256,7 @@ function returnToLoginView(options = {}) {
 
     if (currentUser) _trackLogout();
     currentUser = null;
+    if (typeof window !== 'undefined') window.currentUser = null;
     privilegedSessionAuthenticated = false;
     privilegedStartupAuditShown = false;
     inventoryBasket = [];
@@ -4342,7 +4472,7 @@ async function promptSetPrivilegedActionPassword(reason = 'this action', forcedR
 
         const html = `
             <div class="modal-header debug-modal-header">
-                <h3 style="color:#a78bfa"><i class="ph ph-lock-key"></i> ${modalTitle}</h3>
+                <h3 style="color:var(--accent-primary)"><i class="ph ph-lock-key"></i> ${modalTitle}</h3>
                 <button class="close-btn" id="priv-pass-close"><i class="ph ph-x"></i></button>
             </div>
             <div class="modal-body">
@@ -4462,7 +4592,7 @@ function requestPrivilegedActionAuth(reason = 'this action') {
     return new Promise(resolve => {
         const html = `
             <div class="modal-header debug-modal-header">
-                <h3 style="color:#a78bfa"><i class="ph ph-lock-key"></i> Authentication Required</h3>
+                <h3 style="color:var(--accent-primary)"><i class="ph ph-lock-key"></i> Authentication Required</h3>
                 <button class="close-btn" id="priv-auth-close"><i class="ph ph-x"></i></button>
             </div>
             <div class="modal-body">
@@ -4547,6 +4677,16 @@ navBtns.forEach(btn => {
 async function refreshPageDataFromSupabase(targetId) {
     if (targetId === 'requests') {
         await refreshPageDataFromSupabase('orders');
+        return;
+    }
+
+    if (targetId === 'class-display') {
+        await Promise.all([
+            refreshProjectsFromSupabase(),
+            refreshInventoryFromSupabase(),
+            refreshUsersFromSupabase(),
+            loadStudentClasses()
+        ]);
         return;
     }
 
@@ -5742,19 +5882,573 @@ function openItemPreviewModal(itemId) {
                 ${recentUsersHtml}
             </div>
         </div>
-        <div class="modal-footer">
-            ${currentUser?.role !== 'student' ? `<button class="btn btn-secondary" id="create-bundle-from-item-btn"><i class="ph ph-package"></i> Create Bundle</button>` : ''}
+        <div class="modal-footer" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;">
+            <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+                <button type="button" class="btn btn-secondary item-timeline-btn" id="preview-open-timeline-btn" data-id="${escapeHtml(item.id)}">
+                    <i class="ph ph-clock-counter-clockwise"></i> Status Timeline
+                </button>
+                ${currentUser?.role !== 'student' ? `<button class="btn btn-secondary" id="create-bundle-from-item-btn"><i class="ph ph-package"></i> Create Bundle</button>` : ''}
+            </div>
             <button class="btn btn-secondary" onclick="closeModal()">Close</button>
         </div>
     `;
 
     openModal(html);
+
+    document.getElementById('preview-open-timeline-btn')?.addEventListener('click', (e) => {
+        e.preventDefault();
+        openItemTimelineModal(item.id);
+    });
+
     document.getElementById('create-bundle-from-item-btn')?.addEventListener('click', () => {
         closeModal();
         openAddItemModal({
             initialItemType: 'bundle',
             initialBundleComponents: [{ componentItemId: item.id, componentQuantity: 1 }]
         });
+    });
+}
+
+function formatRelativeTimelineTime(date) {
+    if (!date) return '';
+    const now = Date.now();
+    const diffMs = now - (date instanceof Date ? date.getTime() : new Date(date).getTime());
+    if (isNaN(diffMs)) return '';
+
+    if (diffMs < 0) {
+        const sec = Math.floor(-diffMs / 1000);
+        if (sec < 60) return 'in a few seconds';
+        const min = Math.floor(sec / 60);
+        if (min < 60) return `in ${min}m`;
+        const hr = Math.floor(min / 60);
+        if (hr < 24) return `in ${hr}h`;
+        return `in ${Math.floor(hr / 24)}d`;
+    }
+
+    const sec = Math.floor(diffMs / 1000);
+    if (sec < 45) return 'just now';
+    const min = Math.floor(sec / 60);
+    if (min < 60) return `${min}m ago`;
+    const hr = Math.floor(min / 60);
+    if (hr < 24) return `${hr}h ago`;
+    const days = Math.floor(hr / 24);
+    if (days < 30) return `${days}d ago`;
+    const months = Math.floor(days / 30);
+    if (months < 12) return `${months}mo ago`;
+    return `${Math.floor(months / 12)}y ago`;
+}
+
+function parseTimelineEventsFromData(data) {
+    const { item, activityLogs = [], itemsOutRows = [], transfersRows = [], doorJobsRows = [], extensionRows = [] } = data;
+    const events = [];
+    if (!item) return events;
+
+    const itemId = String(item.id || '').trim();
+    const itemName = String(item.name || '').trim();
+    const itemSku = String(item.sku || '').trim();
+    const itemBarcode = typeof getInventoryItemBarcode === 'function' ? getInventoryItemBarcode(item) : itemSku;
+
+    const resolveUser = (uid) => {
+        if (!uid) return 'System';
+        if (Array.isArray(mockUsers)) {
+            const u = mockUsers.find(user => String(user.id) === String(uid) || String(user.username) === String(uid));
+            if (u) {
+                const role = u.role ? ` (${u.role})` : '';
+                return `${u.name || u.username || uid}${role}`;
+            }
+        }
+        return String(uid);
+    };
+
+    const resolveProject = (pid) => {
+        if (!pid) return '';
+        if (String(pid).startsWith('PERS-')) return 'Personal Project';
+        if (String(pid).startsWith('CLASS-')) return 'Class Project';
+        if (Array.isArray(projects)) {
+            const p = projects.find(proj => String(proj.id) === String(pid));
+            if (p && p.name) return p.name;
+        }
+        return String(pid);
+    };
+
+    // 1. Process Activity Logs
+    activityLogs.forEach(log => {
+        if (!log) return;
+        const details = String(log.details || '');
+        const action = String(log.action || '').trim();
+        const detailsLower = details.toLowerCase();
+
+        let isMatch = false;
+        if (itemId && (details.includes(itemId) || detailsLower.includes(itemId.toLowerCase()))) isMatch = true;
+        if (!isMatch && itemSku && itemSku.length >= 3 && detailsLower.includes(itemSku.toLowerCase())) isMatch = true;
+        if (!isMatch && itemBarcode && itemBarcode.length >= 3 && detailsLower.includes(itemBarcode.toLowerCase())) isMatch = true;
+        if (!isMatch && itemName) {
+            if (itemName.length >= 4 && detailsLower.includes(itemName.toLowerCase())) {
+                isMatch = true;
+            } else {
+                const escaped = itemName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                if (new RegExp(`\\b${escaped}\\b`, 'i').test(details)) isMatch = true;
+            }
+        }
+
+        if (!isMatch) return;
+
+        let type = 'general';
+        let statusTag = 'Activity';
+        let statusBadgeClass = 'status-na';
+        let nodeClass = 'node-neutral';
+        let icon = 'ph-clock';
+        let title = action || 'Item Activity';
+
+        const actionLower = action.toLowerCase();
+        if (actionLower.includes('sign out') || actionLower.includes('sign-out')) {
+            type = 'checkout';
+            statusTag = 'Checked Out';
+            statusBadgeClass = 'status-lowstock';
+            nodeClass = 'node-warning';
+            icon = 'ph-export';
+            title = 'Signed Out to Project / User';
+        } else if (actionLower.includes('return')) {
+            type = 'return';
+            statusTag = 'Returned / Restocked';
+            statusBadgeClass = 'status-instock';
+            nodeClass = 'node-success';
+            icon = 'ph-arrow-down-left';
+            title = 'Returned to Inventory';
+        } else if (actionLower.includes('add item') || actionLower.includes('created item') || actionLower.includes('item registered')) {
+            type = 'created';
+            statusTag = 'Added to Inventory';
+            statusBadgeClass = 'status-available';
+            nodeClass = 'node-success';
+            icon = 'ph-plus-circle';
+            title = 'Registered in Inventory Catalog';
+        } else if (actionLower.includes('barcode')) {
+            type = 'stock';
+            statusTag = 'Barcode Assigned';
+            statusBadgeClass = 'status-available';
+            nodeClass = 'node-info';
+            icon = 'ph-barcode';
+            title = action;
+        } else if (actionLower.includes('door') || actionLower.includes('attention')) {
+            type = 'door';
+            statusTag = actionLower.includes('failed') ? 'Door Alert' : 'Door Unlocked';
+            statusBadgeClass = actionLower.includes('failed') ? 'status-critical' : 'status-available';
+            nodeClass = actionLower.includes('failed') ? 'node-danger' : 'node-info';
+            icon = actionLower.includes('failed') ? 'ph-warning' : 'ph-lock-key-open';
+            title = 'Hardware Door Attention';
+        } else if (actionLower.includes('transfer')) {
+            type = 'transfer';
+            statusTag = 'Transferred';
+            statusBadgeClass = 'status-project-completed';
+            nodeClass = 'node-info';
+            icon = 'ph-arrows-left-right';
+            title = 'Transferred Between Projects';
+        } else if (actionLower.includes('extension')) {
+            type = 'extension';
+            const isApproved = actionLower.includes('approved') || detailsLower.includes('approved');
+            statusTag = isApproved ? 'Extension Approved' : 'Extension Requested';
+            statusBadgeClass = isApproved ? 'status-instock' : 'status-lowstock';
+            nodeClass = isApproved ? 'node-success' : 'node-warning';
+            icon = 'ph-calendar-plus';
+            title = 'Due Date Extension';
+        } else if (actionLower.includes('update') || actionLower.includes('edit')) {
+            type = 'stock';
+            statusTag = 'Item Updated';
+            statusBadgeClass = 'status-na';
+            nodeClass = 'node-neutral';
+            icon = 'ph-pencil-simple';
+            title = 'Item Metadata / Stock Updated';
+        }
+
+        let projectFromDetails = '';
+        const prjMatch = details.match(/(?:for Project:\s*|for project\s+|in\s+project\s+|in\s+)([A-Za-z0-9_\-\s]+?)(?:\s*\(|\s*\[|\s*$|\s*\.)/i);
+        if (prjMatch && prjMatch[1]) {
+            projectFromDetails = prjMatch[1].trim();
+        }
+
+        let qtyMatch = details.match(/(\d+)x/i) || details.match(/\((\d+)\s*units?\)/i);
+        let parsedQty = qtyMatch ? parseInt(qtyMatch[1], 10) : null;
+
+        events.push({
+            id: String(log.id || `log-${Math.random()}`),
+            type,
+            statusTag,
+            statusBadgeClass,
+            nodeClass,
+            icon,
+            title,
+            details,
+            actorName: resolveUser(log.user_id),
+            projectName: projectFromDetails,
+            quantity: parsedQty,
+            timestamp: new Date(log.timestamp || Date.now()),
+            isActiveCheckout: false
+        });
+    });
+
+    // 2. Process active checkouts in itemsOutRows
+    itemsOutRows.forEach(row => {
+        if (!row) return;
+        const rowSignoutDate = row.signout_date ? new Date(row.signout_date) : new Date();
+        const rowDue = row.due_date ? new Date(row.due_date) : null;
+        const projName = resolveProject(row.project_id);
+        const userName = resolveUser(row.assigned_to_user_id || row.signed_out_by_user_id);
+        const qty = parseInt(row.quantity, 10) || 1;
+
+        const isDupe = events.some(e => 
+            e.type === 'checkout' && 
+            Math.abs(e.timestamp.getTime() - rowSignoutDate.getTime()) < 15000
+        );
+
+        if (isDupe) {
+            const existingEvt = events.find(e => 
+                e.type === 'checkout' && 
+                Math.abs(e.timestamp.getTime() - rowSignoutDate.getTime()) < 15000
+            );
+            if (existingEvt) {
+                existingEvt.isActiveCheckout = true;
+                existingEvt.dueDate = rowDue ? rowDue.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : null;
+                if (!existingEvt.projectName && projName) existingEvt.projectName = projName;
+                if (!existingEvt.quantity) existingEvt.quantity = qty;
+            }
+        } else {
+            events.push({
+                id: `out-${row.id || Math.random()}`,
+                type: 'checkout',
+                statusTag: 'In Use (Signed Out)',
+                statusBadgeClass: 'status-lowstock',
+                nodeClass: 'node-warning',
+                icon: 'ph-export',
+                title: `Signed out to ${projName || 'Project'}`,
+                details: `Item checked out (${qty} unit${qty > 1 ? 's' : ''}). Due: ${rowDue ? rowDue.toLocaleDateString() : 'No due date set'}`,
+                actorName: userName,
+                projectName: projName,
+                quantity: qty,
+                dueDate: rowDue ? rowDue.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : null,
+                timestamp: rowSignoutDate,
+                isActiveCheckout: true
+            });
+        }
+    });
+
+    // 3. Process Transfers
+    transfersRows.forEach(xfer => {
+        if (!xfer) return;
+        const xferDate = xfer.created_at ? new Date(xfer.created_at) : new Date();
+        const fromName = resolveProject(xfer.from_project_id);
+        const toName = resolveProject(xfer.to_project_id);
+        const qty = parseInt(xfer.quantity, 10) || 1;
+        events.push({
+            id: `xfer-${xfer.id || Math.random()}`,
+            type: 'transfer',
+            statusTag: 'Transferred',
+            statusBadgeClass: 'status-project-completed',
+            nodeClass: 'node-info',
+            icon: 'ph-arrows-left-right',
+            title: `Transferred ${qty}x to ${toName}`,
+            details: `Transferred ${qty} unit(s) from ${fromName} to ${toName}.`,
+            actorName: resolveUser(xfer.transferred_by_user_id),
+            projectName: `${fromName} → ${toName}`,
+            quantity: qty,
+            timestamp: xferDate,
+            isActiveCheckout: false
+        });
+    });
+
+    // 4. Ensure an initial registration event exists
+    const hasCreated = events.some(e => e.type === 'created');
+    if (!hasCreated) {
+        const earliestTime = events.length > 0
+            ? Math.min(...events.map(e => e.timestamp.getTime())) - 600000
+            : Date.now();
+
+        events.push({
+            id: `catalog-baseline-${itemId}`,
+            type: 'created',
+            statusTag: 'Catalog Entry',
+            statusBadgeClass: 'status-available',
+            nodeClass: 'node-success',
+            icon: 'ph-package',
+            title: 'Initial Catalog Registration',
+            details: `Registered in inventory catalog with SKU: ${itemSku || 'N/A'}, Category: ${item.category || item.main_category || 'General'}, Initial Threshold: ${item.threshold ?? 0}.`,
+            actorName: 'System / Admin',
+            projectName: '',
+            quantity: parseInt(item.stock, 10) || 0,
+            timestamp: new Date(earliestTime),
+            isActiveCheckout: false
+        });
+    }
+
+    events.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+    return events;
+}
+
+async function openItemTimelineModal(itemId) {
+    if (!itemId) return;
+
+    const fallbackItem = (Array.isArray(inventoryItems) ? inventoryItems.find(i => String(i.id) === String(itemId)) : null) || { id: itemId, name: 'Inventory Item' };
+    const safeInitialName = escapeHtml(String(fallbackItem.name || 'Inventory Item'));
+
+    const loadingHtml = `
+        <div class="modal-header">
+            <div style="display:flex;align-items:center;gap:0.75rem;">
+                <div style="width:38px;height:38px;border-radius:8px;background:rgba(5,150,105,0.15);color:var(--accent-primary);display:flex;align-items:center;justify-content:center;font-size:1.3rem;">
+                    <i class="ph ph-clock-counter-clockwise"></i>
+                </div>
+                <div>
+                    <h3 style="margin:0;font-size:1.15rem;">Status Changes Timeline</h3>
+                    <div class="text-xs text-muted" style="margin-top:0.15rem;">${safeInitialName}</div>
+                </div>
+            </div>
+            <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
+        </div>
+        <div class="modal-body" style="padding:1.5rem 1rem;">
+            <div class="item-timeline-loading">
+                <i class="ph-bold ph-spinner animate-spin" style="font-size:2.5rem;color:var(--accent-primary);display:inline-block;margin-bottom:0.75rem;"></i>
+                <div class="font-medium text-primary">Fetching event timeline from database...</div>
+                <div class="text-xs text-muted" style="margin-top:0.35rem;">Querying activity logs, active checkouts, and hardware status</div>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+        </div>
+    `;
+
+    openModal(loadingHtml);
+    dynamicModal.classList.add('item-timeline-modal');
+
+    let data;
+    try {
+        data = await fetchItemTimelineData(itemId);
+    } catch (err) {
+        console.error('Failed to fetch item timeline data:', err);
+        data = { error: err.message || 'Database query failed' };
+    }
+
+    if (!data || !data.item) {
+        const errorHtml = `
+            <div class="modal-header">
+                <h3>Status Changes Timeline</h3>
+                <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
+            </div>
+            <div class="modal-body">
+                <div class="item-timeline-empty">
+                    <i class="ph ph-warning-circle" style="color:var(--danger);"></i>
+                    <p class="font-medium text-primary">Could not load item event data</p>
+                    <p class="text-xs text-muted">${escapeHtml(data?.error || 'Item was not found in database.')}</p>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal()">Close</button>
+            </div>
+        `;
+        openModal(errorHtml);
+        dynamicModal.classList.add('item-timeline-modal');
+        return;
+    }
+
+    const item = data.item;
+    const safeItemId = escapeHtml(String(item.id || itemId));
+    const safeItemName = escapeHtml(String(item.name || 'Unnamed Item'));
+    const safeSku = escapeHtml(String(item.sku || 'N/A'));
+    const imageUrl = typeof getInventoryItemImageUrl === 'function' ? getInventoryItemImageUrl(item) : (item.imageLink || item.image_link);
+    const location = item.location || item.storageLocation || 'Unassigned';
+    const currentStock = Math.max(0, parseInt(item.stock, 10) || 0);
+    const totalQty = typeof getItemTotalQuantity === 'function' ? getItemTotalQuantity(item) : currentStock;
+    const isConsumable = typeof isConsumableItemType === 'function' ? isConsumableItemType(item.item_type) : false;
+    const currentStatus = typeof determineStatus === 'function' ? determineStatus(item.stock, item.threshold, item.item_type) : 'In Stock';
+    const statusClass = currentStatus === 'In Stock' ? 'status-instock' : (currentStatus === 'Low Stock' || currentStatus === 'Out of Stock') ? 'status-lowstock' : isConsumable ? 'status-available' : 'status-na';
+    const categoryLabel = escapeHtml(typeof getInventoryMainCategory === 'function' ? `${getInventoryMainCategory(item)} / ${getInventorySubCategory(item)}` : (item.category || 'General'));
+    const requiresDoor = !!(item.requiresDoorUnlock ?? item.requires_door_unlock);
+
+    const allEvents = parseTimelineEventsFromData(data);
+    const checkoutEvents = allEvents.filter(e => e.type === 'checkout');
+    const returnEvents = allEvents.filter(e => e.type === 'return');
+    const transferEvents = allEvents.filter(e => e.type === 'transfer');
+    const otherEvents = allEvents.filter(e => e.type !== 'checkout' && e.type !== 'return' && e.type !== 'transfer');
+
+    const totalOutUnits = (data.itemsOutRows || []).reduce((sum, r) => sum + (parseInt(r.quantity, 10) || 1), 0);
+
+    let activeFilter = 'all';
+
+    const renderEventsListHtml = (filterKey) => {
+        let filtered = allEvents;
+        if (filterKey === 'checkout') filtered = checkoutEvents;
+        else if (filterKey === 'return') filtered = returnEvents;
+        else if (filterKey === 'transfer') filtered = transferEvents;
+        else if (filterKey === 'other') filtered = otherEvents;
+
+        if (filtered.length === 0) {
+            return `
+                <div class="item-timeline-empty">
+                    <i class="ph ph-clock-counter-clockwise"></i>
+                    <p class="font-medium text-primary">No status events found for this filter</p>
+                    <p class="text-xs text-muted">Try selecting "All Events" to view the complete history.</p>
+                </div>
+            `;
+        }
+
+        return `
+            <div class="item-timeline-track">
+                ${filtered.map(evt => {
+                    const exactTime = evt.timestamp instanceof Date && !isNaN(evt.timestamp.getTime())
+                        ? evt.timestamp.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+                        : 'Unknown date';
+                    const relativeTime = formatRelativeTimelineTime(evt.timestamp);
+                    const formattedDate = evt.timestamp instanceof Date && !isNaN(evt.timestamp.getTime())
+                        ? evt.timestamp.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+                        : '';
+
+                    return `
+                        <div class="item-timeline-item" data-type="${evt.type}">
+                            <div class="item-timeline-node ${evt.nodeClass}" title="${evt.statusTag}">
+                                <i class="ph ${evt.icon}"></i>
+                            </div>
+                            <div class="item-timeline-card${evt.isActiveCheckout ? ' is-active' : ''}">
+                                <div class="item-timeline-card-header">
+                                    <div style="display:flex;align-items:center;gap:0.45rem;flex-wrap:wrap;">
+                                        <span class="status-badge ${evt.statusBadgeClass}">${evt.statusTag}</span>
+                                        <span class="item-timeline-event-title">${escapeHtml(evt.title)}</span>
+                                        ${evt.isActiveCheckout ? '<span class="status-badge status-critical" style="font-size:0.7rem;padding:0.15rem 0.5rem;"><i class="ph ph-circle-wavy-check"></i> Active Now</span>' : ''}
+                                    </div>
+                                    <div class="item-timeline-event-time" title="${exactTime}">
+                                        <span class="time-relative">${relativeTime}</span>
+                                        <span style="font-size:0.7rem;color:var(--text-muted);">${formattedDate}</span>
+                                    </div>
+                                </div>
+                                ${evt.details ? `<div class="item-timeline-details-text">${escapeHtml(evt.details)}</div>` : ''}
+                                <div class="item-timeline-event-meta">
+                                    ${evt.actorName ? `<span class="item-timeline-pill" title="User / Actor"><i class="ph ph-user"></i> ${escapeHtml(evt.actorName)}</span>` : ''}
+                                    ${evt.projectName ? `<span class="item-timeline-pill" title="Project"><i class="ph ph-folder"></i> ${escapeHtml(evt.projectName)}</span>` : ''}
+                                    ${evt.quantity ? `<span class="item-timeline-pill" title="Quantity"><i class="ph ph-stack"></i> ${evt.quantity} unit${evt.quantity > 1 ? 's' : ''}</span>` : ''}
+                                    ${evt.dueDate ? `<span class="item-timeline-pill" title="Due Date"><i class="ph ph-calendar"></i> Due ${escapeHtml(evt.dueDate)}</span>` : ''}
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                }).join('')}
+            </div>
+        `;
+    };
+
+    const mainModalHtml = `
+        <div class="modal-header">
+            <div style="display:flex;align-items:center;gap:0.75rem;">
+                <div style="width:38px;height:38px;border-radius:8px;background:rgba(5,150,105,0.15);color:var(--accent-primary);display:flex;align-items:center;justify-content:center;font-size:1.3rem;">
+                    <i class="ph ph-clock-counter-clockwise"></i>
+                </div>
+                <div>
+                    <h3 style="margin:0;font-size:1.15rem;">Status Changes Timeline</h3>
+                    <div class="text-xs text-muted" style="margin-top:0.15rem;">Live audit trail and status history from database</div>
+                </div>
+            </div>
+            <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
+        </div>
+        <div class="modal-body">
+            <!-- Item Banner -->
+            <div class="item-timeline-header-card">
+                <div class="item-timeline-thumb">
+                    ${imageUrl 
+                        ? `<img src="${escapeHtml(imageUrl)}" alt="${safeItemName}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';"><i class="ph ph-image" style="display:none;"></i>`
+                        : `<i class="ph ph-package"></i>`}
+                </div>
+                <div class="item-timeline-meta-wrap">
+                    <div class="item-timeline-title">${safeItemName}</div>
+                    <div class="item-timeline-badges">
+                        <span class="status-badge ${statusClass}">${currentStatus}</span>
+                        <span class="item-timeline-pill font-mono"><i class="ph ph-barcode"></i> SKU: ${safeSku}</span>
+                        <span class="item-timeline-pill"><i class="ph ph-tag"></i> ${categoryLabel}</span>
+                        <span class="item-timeline-pill"><i class="ph ph-map-pin"></i> ${escapeHtml(location)}</span>
+                        ${requiresDoor 
+                            ? `<span class="item-timeline-pill" style="color:#fbbf24;"><i class="ph ph-lock-key"></i> Behind Door</span>`
+                            : `<span class="item-timeline-pill"><i class="ph ph-lock-key-open"></i> Open Storage</span>`}
+                    </div>
+                </div>
+            </div>
+
+            <!-- Summary Metric Cards -->
+            <div class="item-timeline-summary-grid">
+                <div class="item-timeline-summary-card">
+                    <span class="item-timeline-summary-label">Current Stock</span>
+                    <span class="item-timeline-summary-value">
+                        ${isConsumable ? 'Consumable' : `${currentStock} / ${totalQty}`}
+                    </span>
+                </div>
+                <div class="item-timeline-summary-card">
+                    <span class="item-timeline-summary-label">Currently Out</span>
+                    <span class="item-timeline-summary-value" style="${totalOutUnits > 0 ? 'color:#fbbf24;' : ''}">
+                        <i class="ph ph-export"></i> ${totalOutUnits} in use
+                    </span>
+                </div>
+                <div class="item-timeline-summary-card">
+                    <span class="item-timeline-summary-label">Threshold</span>
+                    <span class="item-timeline-summary-value">
+                        <i class="ph ph-shield-check"></i> ${item.threshold ?? 0}
+                    </span>
+                </div>
+                <div class="item-timeline-summary-card">
+                    <span class="item-timeline-summary-label">Database Events</span>
+                    <span class="item-timeline-summary-value">
+                        <i class="ph ph-database"></i> ${allEvents.length} logged
+                    </span>
+                </div>
+            </div>
+
+            <!-- Timeline Filter Bar -->
+            <div class="item-timeline-controls">
+                <div class="item-timeline-filter-chips" id="item-timeline-filters">
+                    <button type="button" class="item-timeline-filter-btn active" data-filter="all">All Events (${allEvents.length})</button>
+                    <button type="button" class="item-timeline-filter-btn" data-filter="checkout">Checkouts (${checkoutEvents.length})</button>
+                    <button type="button" class="item-timeline-filter-btn" data-filter="return">Returns (${returnEvents.length})</button>
+                    ${transferEvents.length > 0 ? `<button type="button" class="item-timeline-filter-btn" data-filter="transfer">Transfers (${transferEvents.length})</button>` : ''}
+                    <button type="button" class="item-timeline-filter-btn" data-filter="other">Stock & Setup (${otherEvents.length})</button>
+                </div>
+                <button type="button" class="btn btn-secondary btn-sm" id="item-timeline-refresh-btn" title="Re-query database for latest events">
+                    <i class="ph ph-arrows-clockwise"></i> Refresh
+                </button>
+            </div>
+
+            <!-- Timeline Entries Container -->
+            <div id="item-timeline-list-container">
+                ${renderEventsListHtml(activeFilter)}
+            </div>
+        </div>
+        <div class="modal-footer" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;">
+            <button type="button" class="btn btn-secondary" id="item-timeline-preview-btn">
+                <i class="ph ph-info"></i> Full Item Details
+            </button>
+            <button type="button" class="btn btn-secondary" onclick="closeModal()">Close</button>
+        </div>
+    `;
+
+    openModal(mainModalHtml);
+    dynamicModal.classList.add('item-timeline-modal');
+
+    const listContainer = document.getElementById('item-timeline-list-container');
+    const filterButtons = document.querySelectorAll('#item-timeline-filters .item-timeline-filter-btn');
+
+    filterButtons.forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const filterKey = e.currentTarget.getAttribute('data-filter');
+            activeFilter = filterKey;
+            filterButtons.forEach(b => b.classList.remove('active'));
+            e.currentTarget.classList.add('active');
+            if (listContainer) {
+                listContainer.innerHTML = renderEventsListHtml(activeFilter);
+            }
+        });
+    });
+
+    document.getElementById('item-timeline-refresh-btn')?.addEventListener('click', (e) => {
+        e.preventDefault();
+        openItemTimelineModal(itemId);
+    });
+
+    document.getElementById('item-timeline-preview-btn')?.addEventListener('click', (e) => {
+        e.preventDefault();
+        if (typeof openItemPreviewModal === 'function') {
+            openItemPreviewModal(itemId);
+        }
     });
 }
 
@@ -5904,7 +6598,9 @@ function renderInventory() {
                 <td class="inventory-stock-status-cell">
                     <div class="inventory-stock-status-content">
                         <span class="inventory-stock-value${isConsumable ? ' is-muted' : ''}">${isConsumable ? 'Not tracked' : `${Math.max(0, parseInt(item?.stock, 10) || 0)} of ${getItemTotalQuantity(item)}`}</span>
-                        <span class="status-badge ${statusClass}">${currentStatus}</span>
+                        <button type="button" class="status-badge ${statusClass} item-timeline-btn" data-id="${safeItemId}" title="Click to view status changes timeline">
+                            ${currentStatus} <i class="ph ph-clock-counter-clockwise" style="font-size:0.75rem;margin-left:3px;vertical-align:middle;"></i>
+                        </button>
                     </div>
                 </td>
                 <td>
@@ -5913,6 +6609,9 @@ function renderInventory() {
                             <button class="btn btn-secondary btn-sm inventory-item-action-btn edit-item-btn" data-id="${safeItemId}" title="Edit Item">
                                 <i class="ph ph-pencil-simple"></i>
                             </button>` : ''}
+                        <button class="btn btn-secondary btn-sm inventory-item-action-btn item-timeline-btn" data-id="${safeItemId}" title="View Status Timeline">
+                            <i class="ph ph-clock-counter-clockwise"></i>
+                        </button>
                         <button class="btn btn-secondary btn-sm inventory-item-action-btn add-basket-btn" data-id="${safeItemId}" title="Add to Basket" 
                             style="background: rgba(148, 163, 184, 0.08); color: var(--text-secondary); border: 1px solid var(--glass-border)">
                             <i class="ph ph-shopping-cart-simple"></i>
@@ -5935,6 +6634,8 @@ function renderInventory() {
         const isConsumable = isConsumableItemType(item?.item_type);
         const totalQuantity = getItemTotalQuantity(item);
         const tagsHtml = renderItemVisibilityTagsHtml(item);
+        const currentStatus = determineStatus(item?.stock, item?.threshold, item?.item_type);
+        const statusClass = currentStatus === 'In Stock' ? 'status-instock' : (currentStatus === 'Low Stock' || currentStatus === 'Out of Stock') ? 'status-lowstock' : isConsumable ? 'status-available' : 'status-na';
 
         return `
             <tr class="inventory-grid-card-row">
@@ -5961,6 +6662,12 @@ function renderInventory() {
                                 <span class="inventory-grid-card-meta-value${isConsumable ? ' is-muted' : ''}">${isConsumable ? 'Not tracked' : `${stockValue} of ${totalQuantity}`}</span>
                             </div>
                             <div class="inventory-grid-card-meta-row">
+                                <span class="inventory-grid-card-meta-label">Status</span>
+                                <button type="button" class="status-badge ${statusClass} item-timeline-btn" data-id="${safeItemId}" title="Click to view status changes timeline">
+                                    ${currentStatus} <i class="ph ph-clock-counter-clockwise" style="font-size:0.75rem;margin-left:3px;vertical-align:middle;"></i>
+                                </button>
+                            </div>
+                            <div class="inventory-grid-card-meta-row">
                                 <span class="inventory-grid-card-meta-label">SKU</span>
                                 <span class="inventory-grid-card-meta-value">${safeItemSku || 'N/A'}</span>
                             </div>
@@ -5970,6 +6677,9 @@ function renderInventory() {
                                     <button class="btn btn-secondary btn-sm inventory-item-action-btn edit-item-btn" data-id="${safeItemId}" title="Edit Item">
                                         <i class="ph ph-pencil-simple"></i>
                                     </button>` : ''}
+                                <button class="btn btn-secondary btn-sm inventory-item-action-btn item-timeline-btn" data-id="${safeItemId}" title="View Status Timeline">
+                                    <i class="ph ph-clock-counter-clockwise"></i>
+                                </button>
                                 <button class="btn btn-secondary btn-sm inventory-item-action-btn add-basket-btn" data-id="${safeItemId}" title="Add to Basket" 
                                     style="background: rgba(148, 163, 184, 0.08); color: var(--text-secondary); border: 1px solid var(--glass-border)">
                                     <i class="ph ph-shopping-cart-simple"></i>
@@ -6012,6 +6722,17 @@ function renderInventory() {
             if (id) openItemVisibilityTagsModal(id);
         });
     });
+
+    // Attach item timeline modal listeners
+    document.querySelectorAll('.item-timeline-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const id = e.currentTarget.getAttribute('data-id');
+            if (id) openItemTimelineModal(id);
+        });
+    });
+
     // Attach basket listeners
     document.querySelectorAll('.add-basket-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
@@ -6348,13 +7069,13 @@ function canCurrentUserReturnProjectItem(project) {
 function canCurrentUserViewProject(project) {
     if (!currentUser || !project) return false;
     if (currentUser.role !== 'student') return true;
-    return project.ownerId === currentUser.id || !!getProjectMembershipRole(project, currentUser.id);
+    return String(project.ownerId).trim().toUpperCase() === String(currentUser.id).trim().toUpperCase() || !!getProjectMembershipRole(project, currentUser.id);
 }
 
 function canCurrentUserManageProject(project) {
     if (!currentUser || !project) return false;
     if (currentUser.role !== 'student') return true;
-    return project.ownerId === currentUser.id || getProjectMembershipRole(project, currentUser.id) === 'collaborator';
+    return String(project.ownerId).trim().toUpperCase() === String(currentUser.id).trim().toUpperCase() || !!getProjectMembershipRole(project, currentUser.id);
 }
 
 function normalizeProjectCollaboratorRole(role) {
@@ -6364,11 +7085,33 @@ function normalizeProjectCollaboratorRole(role) {
 
 function getProjectMembershipRole(project, userId) {
     if (!project || !userId) return null;
-    if (project.ownerId === userId) return 'owner';
-    const explicitRole = normalizeProjectCollaboratorRole(project.collaboratorRoles?.[userId]);
-    if (explicitRole) return explicitRole;
-    if (Array.isArray(project.collaborators) && project.collaborators.includes(userId)) {
-        return 'collaborator';
+    const normUserId = String(userId).trim();
+    if (String(project.ownerId || '').trim().toUpperCase() === normUserId.toUpperCase()) return 'owner';
+    
+    // Check explicit collaboratorRoles mapping (case-tolerant)
+    if (project.collaboratorRoles && typeof project.collaboratorRoles === 'object') {
+        for (const [key, role] of Object.entries(project.collaboratorRoles)) {
+            if (String(key).trim().toUpperCase() === normUserId.toUpperCase()) {
+                return normalizeProjectCollaboratorRole(role);
+            }
+        }
+    }
+    
+    // Check collaborators array (case-tolerant)
+    if (Array.isArray(project.collaborators)) {
+        const found = project.collaborators.some(id => String(id || '').trim().toUpperCase() === normUserId.toUpperCase());
+        if (found) return 'collaborator';
+    }
+
+    // Check class project student membership
+    if (project.classId || project.class_id || String(project.id || '').startsWith('CLASS-')) {
+        const classId = project.classId || project.class_id || String(project.id || '').replace(/^CLASS-/, '');
+        if (typeof studentClasses !== 'undefined' && Array.isArray(studentClasses)) {
+            const cls = studentClasses.find(c => String(c.id).trim() === String(classId).trim());
+            if (cls && Array.isArray(cls.studentIds) && cls.studentIds.some(id => String(id || '').trim().toUpperCase() === normUserId.toUpperCase())) {
+                return 'collaborator';
+            }
+        }
     }
     return null;
 }
@@ -6394,13 +7137,19 @@ function getProjectOwnerLabel(project) {
 }
 
 async function syncProjectCollaboratorsInSupabase(projectId, nextCollaborators, prevCollaborators, nextCollaboratorRoles = {}, prevCollaboratorRoles = {}) {
-    const prev = new Set(prevCollaborators || []);
-    const next = new Set(nextCollaborators || []);
+    const prev = new Set((prevCollaborators || []).map(id => String(id).trim()));
+    const next = new Set((nextCollaborators || []).map(id => String(id).trim()));
+
+    // Maintain local project state immediately
+    const targetProject = projects.find(p => p.id === projectId);
+    if (targetProject) {
+        targetProject.collaborators = Array.from(next);
+        targetProject.collaboratorRoles = { ...nextCollaboratorRoles };
+    }
 
     for (const userId of prev) {
         if (!next.has(userId)) {
-            const removed = await removeProjectCollaboratorFromSupabase(projectId, userId);
-            if (!removed) return false;
+            await removeProjectCollaboratorFromSupabase(projectId, userId);
         }
     }
 
@@ -6410,12 +7159,10 @@ async function syncProjectCollaboratorsInSupabase(projectId, nextCollaborators, 
 
         if (!prev.has(userId) || nextRole !== prevRole) {
             if (prev.has(userId) && nextRole !== prevRole) {
-                const removed = await removeProjectCollaboratorFromSupabase(projectId, userId);
-                if (!removed) return false;
+                await removeProjectCollaboratorFromSupabase(projectId, userId);
             }
 
-            const added = await addProjectCollaboratorToSupabase(projectId, userId, nextRole);
-            if (!added) return false;
+            await addProjectCollaboratorToSupabase(projectId, userId, nextRole);
         }
     }
 
@@ -6491,14 +7238,59 @@ function getProjectTransferMemberCandidates(project) {
     if (!project) return [];
 
     const memberIds = new Set();
-    if (project.ownerId) memberIds.add(project.ownerId);
+    if (project.ownerId) memberIds.add(String(project.ownerId).trim());
     if (Array.isArray(project.collaborators)) {
-        project.collaborators.forEach(userId => memberIds.add(userId));
+        project.collaborators.forEach(userId => {
+            if (userId) memberIds.add(String(userId).trim());
+        });
+    }
+    if (project.collaboratorRoles && typeof project.collaboratorRoles === 'object') {
+        Object.keys(project.collaboratorRoles).forEach(userId => {
+            if (userId) memberIds.add(String(userId).trim());
+        });
     }
 
-    return Array.from(memberIds)
-        .map(userId => mockUsers.find(user => user.id === userId))
-        .filter(user => !!user && String(user.status || '').toLowerCase() !== 'suspended');
+    if (project.classId || project.class_id || String(project.id || '').startsWith('CLASS-')) {
+        const classId = project.classId || project.class_id || String(project.id || '').replace(/^CLASS-/, '');
+        if (typeof studentClasses !== 'undefined' && Array.isArray(studentClasses)) {
+            const cls = studentClasses.find(c => String(c.id).trim() === String(classId).trim());
+            if (cls && Array.isArray(cls.studentIds)) {
+                cls.studentIds.forEach(userId => {
+                    if (userId) memberIds.add(String(userId).trim());
+                });
+            }
+        }
+    }
+
+    const resolvedUsers = [];
+    const seenUserIds = new Set();
+
+    for (const userId of memberIds) {
+        const normalized = userId.toUpperCase();
+        if (seenUserIds.has(normalized)) continue;
+        seenUserIds.add(normalized);
+
+        const foundUser = mockUsers.find(user => 
+            String(user.id || '').trim().toUpperCase() === normalized ||
+            String(user.barcode || '').trim().toUpperCase() === normalized
+        );
+
+        if (foundUser) {
+            if (String(foundUser.status || '').toLowerCase() !== 'suspended') {
+                resolvedUsers.push(foundUser);
+            }
+        } else {
+            // Include placeholder so member is never hidden
+            resolvedUsers.push({
+                id: userId,
+                name: userId,
+                role: 'student',
+                status: 'Active'
+            });
+        }
+    }
+
+    return resolvedUsers;
 }
 
 function findProjectTransferMember(project, rawId) {
@@ -6508,12 +7300,28 @@ function findProjectTransferMember(project, rawId) {
     const normalizedScan = scannedId.toUpperCase();
     const candidates = getProjectTransferMemberCandidates(project);
 
-    return candidates.find(user => {
+    const directMatch = candidates.find(user => {
         const userId = String(user.id || '').trim().toUpperCase();
         const userName = String(user.name || '').trim().toUpperCase();
         const userBarcode = String(user.barcode || '').trim().toUpperCase();
         return normalizedScan === userId || normalizedScan === userBarcode || normalizedScan === userName;
-    }) || null;
+    });
+    if (directMatch) return directMatch;
+
+    const recognizedUser = mockUsers.find(user => {
+        const userId = String(user.id || '').trim().toUpperCase();
+        const userName = String(user.name || '').trim().toUpperCase();
+        const userBarcode = String(user.barcode || '').trim().toUpperCase();
+        return normalizedScan === userId || normalizedScan === userBarcode || normalizedScan === userName;
+    });
+
+    if (recognizedUser && String(recognizedUser.status || '').toLowerCase() !== 'suspended') {
+        if (getProjectMembershipRole(project, recognizedUser.id)) {
+            return recognizedUser;
+        }
+    }
+
+    return null;
 }
 
 function buildTransferProjectListHtml(eligibleProjects, selectedProjectId = '') {
@@ -6902,10 +7710,26 @@ function getProjectTransactionRecords(project) {
 
             let linked = false;
             for (const existing of recordsMap.values()) {
-                if (isReturn && existing.items.some(item => details.includes(item.name) || (item.sku && item.sku !== 'N/A' && details.includes(item.sku)))) {
+                const matchesItem = existing.items.some(item => 
+                    details.includes(item.name) || 
+                    (item.sku && item.sku !== 'N/A' && details.includes(item.sku)) ||
+                    (item.id && details.includes(item.id))
+                );
+
+                if (isReturn && matchesItem) {
                     existing.events.push(event);
                     existing.status = 'RETURNED';
                     existing.items.forEach(i => i.status = 'RETURNED');
+                    linked = true;
+                    break;
+                }
+                if (isCheckout && matchesItem) {
+                    existing.events.push(event);
+                    linked = true;
+                    break;
+                }
+                if (isTransfer && matchesItem) {
+                    existing.events.push(event);
                     linked = true;
                     break;
                 }
@@ -6961,7 +7785,10 @@ function getProjectTransactionRecords(project) {
         }
     });
 
-    return Array.from(recordsMap.values()).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    const uniqueRecords = Array.from(recordsMap.values()).filter((rec, index, self) =>
+        index === self.findIndex(r => r.id === rec.id || (r.projectId === rec.projectId && r.timestamp === rec.timestamp && (r.items[0]?.id && r.items[0]?.id === rec.items[0]?.id)))
+    );
+    return uniqueRecords.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 }
 
 function openReceiptModal(transactionId, projectId) {
@@ -7171,9 +7998,17 @@ function openProjectItemsModal(projectId, initialTab = 'items') {
     const records = hasElevated ? getProjectTransactionRecords(project) : [];
     const activeTab = (hasElevated && initialTab === 'records') ? 'records' : 'items';
 
-    const itemsHtml = project.itemsOut.length === 0
+    const seenModalItemKeys = new Set();
+    const uniqueProjectItemsOut = (project.itemsOut || []).filter(io => {
+        const key = io.id || `${io.itemId}-${io.signoutDate}-${io.quantity}-${io.assignedToUserId}`;
+        if (seenModalItemKeys.has(key)) return false;
+        seenModalItemKeys.add(key);
+        return true;
+    });
+
+    const itemsHtml = uniqueProjectItemsOut.length === 0
         ? '<p class="text-muted py-4 text-center">No items are currently signed out for this project.</p>'
-        : project.itemsOut.map(io => {
+        : uniqueProjectItemsOut.map(io => {
             const item = inventoryItems.find(i => i.id === io.itemId);
             const assignedUserId = io.assignedToUserId || project.ownerId;
             const assignedUser = mockUsers.find(u => u.id === assignedUserId);
@@ -7252,8 +8087,8 @@ function openProjectItemsModal(projectId, initialTab = 'items') {
     const html = `
         <div class="modal-header">
             <div>
-                <h3 style="margin-bottom:0.25rem;">Project: ${escapeHtml(project.name)}</h3>
-                <span class="text-muted text-xs">Manager: ${escapeHtml(getProjectOwnerLabel(project))} • ID: ${escapeHtml(project.id)}</span>
+                <h3 style="margin-bottom:0.25rem;">Project: ${escapeHtml(project.name || project.id)}</h3>
+                <span class="text-muted text-xs">Manager: ${escapeHtml(getProjectOwnerLabel(project))}</span>
             </div>
             <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
         </div>
@@ -7261,7 +8096,7 @@ function openProjectItemsModal(projectId, initialTab = 'items') {
             ${hasElevated ? `
             <div class="project-modal-tabs">
                 <button class="btn btn-sm ${activeTab === 'items' ? 'btn-primary' : 'btn-secondary'} proj-tab-btn" id="proj-tab-items-btn" data-tab="items">
-                    <i class="ph ph-toolbox"></i> Active Items (${project.itemsOut.length})
+                    <i class="ph ph-toolbox"></i> Active Items (${uniqueProjectItemsOut.length})
                 </button>
                 <button class="btn btn-sm ${activeTab === 'records' ? 'btn-primary' : 'btn-secondary'} proj-tab-btn" id="proj-tab-records-btn" data-tab="records">
                     <i class="ph ph-receipt"></i> Records & Receipts (${records.length})
@@ -7272,7 +8107,7 @@ function openProjectItemsModal(projectId, initialTab = 'items') {
             <div id="proj-tab-content-items" class="${activeTab === 'items' ? '' : 'hidden'}">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">
                     <span class="text-muted text-sm">Currently Signed Out Equipment:</span>
-                    <span class="badge" style="font-size:0.75rem;">${project.itemsOut.length} active line item(s)</span>
+                    <span class="badge" style="font-size:0.75rem;">${uniqueProjectItemsOut.length} active line item(s)</span>
                 </div>
                 <ul class="stock-list">${itemsHtml}</ul>
             </div>
@@ -8448,15 +9283,23 @@ function renderProjects() {
 
     // Add My Items personal project card first for every user
     if (displayPersonalProject) {
-        const personalOutCount = (displayPersonalProject.itemsOut || []).reduce((acc, curr) => acc + (parseInt(curr.quantity, 10) || 0), 0);
-        const personalItemsHtml = displayPersonalProject.itemsOut.length > 0 ? `
+        const seenPersonalKeys = new Set();
+        const uniquePersonalItems = (displayPersonalProject.itemsOut || []).filter(io => {
+            const key = io.id || `${io.itemId}-${io.signoutDate}-${io.quantity}-${io.assignedToUserId}`;
+            if (seenPersonalKeys.has(key)) return false;
+            seenPersonalKeys.add(key);
+            return true;
+        });
+
+        const personalOutCount = uniquePersonalItems.reduce((acc, curr) => acc + (parseInt(curr.quantity, 10) || 0), 0);
+        const personalItemsHtml = uniquePersonalItems.length > 0 ? `
             <div class="proj-items-rack">
                 <div class="proj-items-summary-bar has-out">
                     <span><i class="ph ph-toolbox"></i> <strong>${personalOutCount}</strong> Item${personalOutCount === 1 ? '' : 's'} Signed Out</span>
-                    <span class="text-xs text-muted font-mono">${displayPersonalProject.itemsOut.length} line item${displayPersonalProject.itemsOut.length === 1 ? '' : 's'}</span>
+                    <span class="text-xs text-muted font-mono">${uniquePersonalItems.length} line item${uniquePersonalItems.length === 1 ? '' : 's'}</span>
                 </div>
                 <div class="proj-items-list">
-                    ${displayPersonalProject.itemsOut.map(io => {
+                    ${uniquePersonalItems.map(io => {
                         const item = inventoryItems.find(i => i.id === io.itemId);
                         const signoutId = io.id || `${io.itemId}-${io.signoutDate}-${io.quantity}`;
                         const isOverdue = io.dueDate && new Date(io.dueDate) < new Date();
@@ -8494,7 +9337,6 @@ function renderProjects() {
                 <div class="project-header">
                     <div class="project-title-area">
                         <h4><i class="ph ph-backpack" style="color:var(--accent-secondary);font-size:1.25rem;"></i> My Items</h4>
-                        <span class="project-id-chip">Personal Workspace</span>
                     </div>
                     <span class="proj-badge role-badge"><i class="ph ph-user"></i> ${escapeHtml(currentUser.name)}</span>
                 </div>
@@ -8544,7 +9386,16 @@ function renderProjects() {
         const linkedClass = proj.classId
             ? studentClasses.find(cls => String(cls.id) === String(proj.classId))
             : null;
-        const outCount = (proj.itemsOut || []).reduce((acc, curr) => acc + (parseInt(curr.quantity, 10) || 0), 0);
+
+        const seenProjKeys = new Set();
+        const uniqueProjItems = (proj.itemsOut || []).filter(io => {
+            const key = io.id || `${io.itemId}-${io.signoutDate}-${io.quantity}-${io.assignedToUserId}`;
+            if (seenProjKeys.has(key)) return false;
+            seenProjKeys.add(key);
+            return true;
+        });
+
+        const outCount = uniqueProjItems.reduce((acc, curr) => acc + (parseInt(curr.quantity, 10) || 0), 0);
         const canManage = canCurrentUserManageProject(proj);
         const membershipRole = currentUser.role === 'student' ? getProjectMembershipRole(proj, currentUser.id) : null;
         const collabCount = Array.isArray(proj.collaborators) ? proj.collaborators.length : 0;
@@ -8559,14 +9410,14 @@ function renderProjects() {
         else if (statusLower === 'archived') statusIcon = 'ph-archive';
 
         // List items out rack
-        const itemsOutHtml = proj.itemsOut && proj.itemsOut.length > 0 ? `
+        const itemsOutHtml = uniqueProjItems.length > 0 ? `
             <div class="proj-items-rack">
                 <div class="proj-items-summary-bar has-out">
                     <span><i class="ph ph-toolbox"></i> <strong>${outCount}</strong> Item${outCount === 1 ? '' : 's'} Signed Out</span>
-                    <span class="text-xs text-muted font-mono">${proj.itemsOut.length} line item${proj.itemsOut.length === 1 ? '' : 's'}</span>
+                    <span class="text-xs text-muted font-mono">${uniqueProjItems.length} line item${uniqueProjItems.length === 1 ? '' : 's'}</span>
                 </div>
                 <div class="proj-items-list">
-                    ${proj.itemsOut.map(io => {
+                    ${uniqueProjItems.map(io => {
                         const item = inventoryItems.find(i => i.id === io.itemId);
                         const assignedUserId = io.assignedToUserId || proj.ownerId;
                         const assignedUser = mockUsers.find(u => u.id === assignedUserId);
@@ -8609,8 +9460,7 @@ function renderProjects() {
             <div class="project-card flex-col" data-project-id="${escapeHtml(proj.id)}" data-status="${escapeHtml(proj.status || 'Active')}">
                 <div class="project-header">
                     <div class="project-title-area">
-                        <h4><i class="ph ph-folder-open" style="color:var(--accent-primary);font-size:1.15rem;"></i> ${escapeHtml(proj.name)}</h4>
-                        <span class="project-id-chip">${escapeHtml(proj.id)}</span>
+                        <h4><i class="ph ph-folder-open" style="color:var(--accent-primary);font-size:1.15rem;"></i> ${escapeHtml(proj.name || proj.id)}</h4>
                     </div>
                     <span class="status-badge ${getProjectStatusBadgeClass(proj.status)}"><i class="ph ${statusIcon}"></i> ${escapeHtml(proj.status || 'Active')}</span>
                 </div>
@@ -8723,6 +9573,25 @@ async function openSignOutModal(itemId) {
             ? staffClasses.map(cls => `<option value="${escapeHtml(cls.id)}">${escapeHtml(cls.name)}</option>`).join('')
             : '<option value="">No classes available</option>';
 
+        const isBundle = isBundleItemType(item?.item_type) || (Array.isArray(item?.bundleComponents) && item.bundleComponents.length > 0);
+        const bundleComponents = isBundle ? (item.bundleComponents || []) : [];
+        const bundleComponentsHtml = isBundle ? `
+            <div style="margin-top:0.65rem;padding:0.65rem;background:rgba(147,51,234,0.08);border-radius:6px;border:1px solid rgba(147,51,234,0.25);">
+                <div style="font-weight:600;font-size:0.85rem;color:#9333ea;margin-bottom:0.35rem;display:flex;align-items:center;gap:0.4rem;">
+                    <i class="ph ph-package"></i> Bundle Includes:
+                </div>
+                <ul style="margin:0;padding-left:1.2rem;font-size:0.8rem;color:var(--text-secondary);">
+                    ${bundleComponents.map(comp => {
+                        const compItem = inventoryItems.find(i => i.id === (comp.componentItemId || comp.itemId));
+                        const compName = compItem ? compItem.name : (comp.componentItemId || 'Item');
+                        const compQty = comp.componentQuantity || comp.quantity || 1;
+                        const compStock = compItem ? compItem.stock : '?';
+                        return `<li><strong>${compQty}x</strong> ${escapeHtml(compName)} <span class="text-muted">(Available: ${compStock})</span></li>`;
+                    }).join('') || '<li>No components configured</li>'}
+                </ul>
+            </div>
+        ` : '';
+
         const html = `
             <div class="modal-header">
                 <h3>Sign Out Item</h3>
@@ -8733,11 +9602,12 @@ async function openSignOutModal(itemId) {
                 <div class="glass-panel" style="padding:0.85rem;margin-bottom:0.9rem;border-radius:var(--radius-sm)">
                     <div style="display:flex;justify-content:space-between;gap:0.75rem;align-items:flex-start;">
                         <div>
-                            <div class="font-bold">${escapeHtml(item.name)}</div>
+                            <div class="font-bold">${escapeHtml(item.name)} ${isBundle ? '<span class="badge" style="background:rgba(147,51,234,0.15);color:#9333ea;font-size:0.7rem;vertical-align:middle;margin-left:0.35rem;"><i class="ph ph-package"></i> Bundle</span>' : ''}</div>
                             <small class="text-muted">SKU: ${escapeHtml(item.sku || 'N/A')} | Category: ${escapeHtml(item.category || 'N/A')}</small>
                         </div>
                         <span class="badge" style="background:rgba(245,158,11,0.2);color:var(--warning)">In Stock: ${escapeHtml(item.stock)}</span>
                     </div>
+                    ${bundleComponentsHtml}
                     <div style="margin-top:0.45rem">
                         <small><strong>Location:</strong> ${formatItemExtraInfo(item).location}</small><br>
                         <small><strong>Description:</strong> ${formatItemExtraInfo(item).description}</small>
@@ -9158,6 +10028,129 @@ async function openSignOutModal(itemId) {
                         showToast('Failed to create personal project in database.', 'error');
                         return;
                     }
+                }
+
+                if (isBundle) {
+                    if (bundleComponents.length === 0) {
+                        showToast('This bundle has no components configured.', 'error');
+                        return;
+                    }
+
+                    const bundleTransactionId = createUuid();
+                    const signoutDate = new Date().toISOString();
+                    const dueDate = calculateDueDate(new Date(), currentUser, project);
+
+                    const bundleTransaction = await addProjectBundleTransactionToSupabase({
+                        id: bundleTransactionId,
+                        projectId: project.id,
+                        bundleItemId: item.id,
+                        bundleQuantity: qty,
+                        signoutDate,
+                        dueDate,
+                        assignedToUserId,
+                        signedOutByUserId: currentUser.id
+                    });
+
+                    if (!bundleTransaction) {
+                        showToast('Failed to save bundle transaction.', 'error');
+                        return;
+                    }
+
+                    const childRows = [];
+                    const stockSnapshots = [];
+                    for (const component of bundleComponents) {
+                        const childItem = inventoryItems.find(child => child.id === (component.componentItemId || component.itemId));
+                        if (!childItem) continue;
+
+                        const componentQty = Math.max(1, parseInt(component.componentQuantity || component.quantity, 10) || 1) * qty;
+                        const currentStock = Math.max(0, parseInt(childItem.stock, 10) || 0);
+                        if (currentStock < componentQty) {
+                            for (const snapshot of stockSnapshots.reverse()) {
+                                await updateItemInSupabase(snapshot.item.id, { stock: snapshot.previousStock });
+                            }
+                            await deleteBundleTransactionFromSupabase(bundleTransaction.id);
+                            showToast(`Not enough stock for ${childItem.name} to build this bundle.`, 'error');
+                            return;
+                        }
+
+                        childRows.push({
+                            id: generateId('OUT'),
+                            projectId: project.id,
+                            itemId: childItem.id,
+                            quantity: componentQty,
+                            signoutDate,
+                            dueDate,
+                            assignedToUserId,
+                            signedOutByUserId: currentUser.id,
+                            bundleTransactionId: bundleTransaction.id,
+                            requiresDoorUnlock: childItem.requiresDoorUnlock ?? childItem.requires_door_unlock ?? false
+                        });
+                    }
+
+                    const savedRows = await addProjectItemOutBatchToSupabase(childRows);
+                    if (!savedRows) {
+                        await deleteBundleTransactionFromSupabase(bundleTransaction.id);
+                        showToast('Failed to save bundle items. Transaction was rolled back.', 'error');
+                        return;
+                    }
+
+                    for (const component of bundleComponents) {
+                        const childItem = inventoryItems.find(child => child.id === (component.componentItemId || component.itemId));
+                        if (!childItem) continue;
+
+                        const componentQty = Math.max(1, parseInt(component.componentQuantity || component.quantity, 10) || 1) * qty;
+                        const currentStock = Math.max(0, parseInt(childItem.stock, 10) || 0);
+                        const nextStock = currentStock - componentQty;
+                        stockSnapshots.push({ item: childItem, previousStock: currentStock });
+
+                        const stockUpdated = await updateItemInSupabase(childItem.id, { stock: nextStock });
+                        if (!stockUpdated) {
+                            for (const snapshot of stockSnapshots.reverse()) {
+                                await updateItemInSupabase(snapshot.item.id, { stock: snapshot.previousStock });
+                            }
+                            await deleteBundleTransactionFromSupabase(bundleTransaction.id);
+                            showToast(`Failed to update stock for ${childItem.name}. Transaction was rolled back.`, 'error');
+                            return;
+                        }
+
+                        childItem.stock = nextStock;
+                        _trackItemSignout(childItem, componentQty);
+                    }
+
+                    project.itemsOut = project.itemsOut || [];
+                    project.itemsOut.push({
+                        id: bundleTransaction.id,
+                        itemId: item.id,
+                        quantity: qty,
+                        signoutDate,
+                        dueDate,
+                        assignedToUserId,
+                        signedOutByUserId: currentUser.id,
+                        bundleTransactionId: bundleTransaction.id,
+                        isBundle: true,
+                        bundleComponents: bundleComponents.map(c => ({
+                            itemId: c.componentItemId || c.itemId,
+                            quantity: (c.componentQuantity || c.quantity || 1) * qty
+                        }))
+                    });
+
+                    _trackItemSignout(item, qty);
+                    if (destinationMode === 'personal') {
+                        addLog(currentUser.id, 'Personal Sign-out', `Signed out bundle ${qty}x ${item.name} (SKU: ${item.sku}) to self`);
+                    } else {
+                        addLog(currentUser.id, 'Project Sign-out', `Signed out bundle ${qty}x ${item.name} (SKU: ${item.sku}) for project ${project.name}`);
+                    }
+
+                    await Promise.all([refreshProjectsFromSupabase(), refreshInventoryFromSupabase()]);
+                    hydrateInventoryItemBundles();
+
+                    showToast(`Signed out bundle (${qty}x) successfully.`, 'success');
+                    closeModal();
+
+                    renderInventory();
+                    renderProjects();
+                    loadDashboard();
+                    return;
                 }
 
                 const signoutData = {
@@ -10105,142 +11098,416 @@ document.getElementById('create-class-btn')?.addEventListener('click', async () 
 /* =======================================
    CLASS DISPLAY LOGIC (for classroom visibility)
    ======================================= */
-function renderClassDisplay() {
+let classDisplayListenersBound = false;
+let classDisplayChannel = null;
+
+function initClassDisplayControls() {
+    const classFilter = document.getElementById('class-display-class-filter');
+    const statusFilter = document.getElementById('class-display-status-filter');
+    const searchInput = document.getElementById('class-display-search');
+    const refreshBtn = document.getElementById('class-display-refresh-btn');
+
+    // Populate class filter dropdown dynamically
+    if (classFilter) {
+        const currentVal = classFilter.value || 'all';
+        const classes = Array.isArray(studentClasses) ? [...studentClasses].sort((a, b) => (a.name || '').localeCompare(b.name || '')) : [];
+        classFilter.innerHTML = '<option value="all">All Classes</option>' + 
+            classes.map(c => `<option value="${escapeHtml(c.id)}" ${c.id === currentVal ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('');
+    }
+
+    if (!classDisplayListenersBound) {
+        classDisplayListenersBound = true;
+
+        if (classFilter) {
+            classFilter.addEventListener('change', () => renderClassDisplay(false));
+        }
+        if (statusFilter) {
+            statusFilter.addEventListener('change', () => renderClassDisplay(false));
+        }
+        if (searchInput) {
+            searchInput.addEventListener('input', () => renderClassDisplay(false));
+        }
+        if (refreshBtn) {
+            refreshBtn.addEventListener('click', async () => {
+                const icon = refreshBtn.querySelector('i');
+                if (icon) icon.classList.add('ph-spin');
+                refreshBtn.disabled = true;
+                try {
+                    await Promise.all([
+                        refreshProjectsFromSupabase(),
+                        refreshInventoryFromSupabase(),
+                        refreshUsersFromSupabase(),
+                        loadStudentClasses()
+                    ]);
+                    showToast('Class Display updated', 'info');
+                } catch (e) {
+                    console.error('Error refreshing class display data:', e);
+                } finally {
+                    if (icon) icon.classList.remove('ph-spin');
+                    refreshBtn.disabled = false;
+                    renderClassDisplay(false);
+                }
+            });
+        }
+    }
+}
+
+function renderClassDisplay(updateFilters = true) {
     const container = document.getElementById('class-display-container');
     if (!container) return;
 
-    // Collect all items out (including personal My Items projects), grouped by user
+    if (updateFilters) {
+        initClassDisplayControls();
+    }
+
+    const searchInput = document.getElementById('class-display-search');
+    const classFilter = document.getElementById('class-display-class-filter');
+    const statusFilter = document.getElementById('class-display-status-filter');
+
+    const searchQuery = (searchInput?.value || '').trim().toLowerCase();
+    const selectedClassId = classFilter?.value || 'all';
+    const selectedStatus = statusFilter?.value || 'all';
+
+    // Collect personal items out across students (only personal checkouts, not group projects)
     const itemsByUser = {};
     const now = new Date();
+
+    const findUser = (id) => {
+        if (!id) return null;
+        const normalized = String(id).trim().toLowerCase();
+        return (Array.isArray(mockUsers) ? mockUsers : []).find(u => String(u.id || '').trim().toLowerCase() === normalized);
+    };
 
     const resolveStudentDisplayUser = (proj, outItem) => {
         const assignedId = outItem.assignedToUserId || proj.ownerId;
         const signedOutById = outItem.signedOutByUserId;
         const projectOwnerId = proj.ownerId;
 
-        const assignedUser = mockUsers.find(u => u.id === assignedId);
-        const signedOutByUser = mockUsers.find(u => u.id === signedOutById);
-        const ownerUser = mockUsers.find(u => u.id === projectOwnerId);
+        const assignedUser = findUser(assignedId);
+        const signedOutByUser = findUser(signedOutById);
+        const ownerUser = findUser(projectOwnerId);
 
-        // Prefer student identities for class display.
+        // Prefer student identities for class display
         if (assignedUser?.role === 'student') return assignedUser;
         if (signedOutByUser?.role === 'student') return signedOutByUser;
         if (ownerUser?.role === 'student') return ownerUser;
 
-        // Fallback chain to avoid dropping records when role data is incomplete.
         return assignedUser || signedOutByUser || ownerUser || null;
     };
 
-    projects.forEach(proj => {
-        proj.itemsOut.forEach(outItem => {
+    const allProjects = Array.isArray(projects) ? projects : [];
+    // Only include personal projects / student personal checkouts (exclude group / class project items)
+    const personalProjects = allProjects.filter(proj => 
+        String(proj?.id || '').startsWith('PERS-') || 
+        proj?.isPersonal === true || 
+        String(proj?.name || '').toLowerCase() === 'personal'
+    );
+
+    personalProjects.forEach(proj => {
+        const itemsOutList = Array.isArray(proj.itemsOut) ? proj.itemsOut : [];
+        itemsOutList.forEach(outItem => {
             const displayUser = resolveStudentDisplayUser(proj, outItem);
             const fallbackId = outItem.assignedToUserId || outItem.signedOutByUserId || proj.ownerId || 'Unknown User';
             const displayUserId = displayUser?.id || fallbackId;
-            const userName = displayUser?.name || displayUserId;
+            const userName = displayUser?.name || outItem.assignedToUserName || outItem.userName || (displayUserId !== 'Unknown User' ? `User (${displayUserId})` : 'Student');
+
+            // Find enrolled classes for this user
+            const enrolledClasses = (Array.isArray(studentClasses) ? studentClasses : []).filter(c => 
+                Array.isArray(c.students) && (
+                    c.students.some(sId => String(sId).trim().toLowerCase() === String(displayUserId).trim().toLowerCase()) ||
+                    (displayUser?.id && c.students.some(sId => String(sId).trim().toLowerCase() === String(displayUser.id).trim().toLowerCase()))
+                )
+            );
+
+            // Also check if project has classId
+            if (proj.classId || proj.class_id) {
+                const pClassId = String(proj.classId || proj.class_id).trim();
+                const matchedClass = (Array.isArray(studentClasses) ? studentClasses : []).find(c => String(c.id).trim() === pClassId);
+                if (matchedClass && !enrolledClasses.some(c => c.id === matchedClass.id)) {
+                    enrolledClasses.push(matchedClass);
+                }
+            }
 
             if (!itemsByUser[displayUserId]) {
                 itemsByUser[displayUserId] = {
+                    id: displayUserId,
                     name: userName,
+                    userObj: displayUser,
+                    classes: enrolledClasses,
                     items: []
                 };
             }
 
-            const item = inventoryItems.find(i => i.id === outItem.itemId);
-            const dueDate = new Date(outItem.dueDate);
-            const isOverdue = dueDate < now;
+            const item = (Array.isArray(inventoryItems) ? inventoryItems : []).find(i => String(i.id).toLowerCase() === String(outItem.itemId).toLowerCase());
+            
+            const dueDateRaw = outItem.dueDate || outItem.due_date;
+            const dueDate = dueDateRaw ? new Date(dueDateRaw) : null;
+            const isValidDueDate = dueDate && !isNaN(dueDate.getTime());
+            const isOverdue = isValidDueDate ? dueDate < now : false;
+            const isDueToday = isValidDueDate ? (
+                dueDate.getFullYear() === now.getFullYear() &&
+                dueDate.getMonth() === now.getMonth() &&
+                dueDate.getDate() === now.getDate()
+            ) : false;
+
+            const signoutDateRaw = outItem.signoutDate || outItem.signout_date;
+            const signoutDate = signoutDateRaw ? new Date(signoutDateRaw) : null;
+            const isValidSignoutDate = signoutDate && !isNaN(signoutDate.getTime());
+
             const signoutId = outItem.id || `${outItem.itemId}-${outItem.signoutDate}-${outItem.quantity}`;
 
             itemsByUser[displayUserId].items.push({
-                quantity: outItem.quantity,
-                itemName: item ? item.name : 'Unknown Item',
-                itemSku: item ? item.sku : 'N/A',
-                category: item ? item.category : 'N/A',
+                quantity: parseInt(outItem.quantity, 10) || 1,
+                itemId: outItem.itemId,
+                itemName: item ? item.name : (outItem.itemName || outItem.name || `Item (${outItem.itemId})`),
+                itemSku: item ? item.sku : (outItem.sku || outItem.itemSku || 'N/A'),
+                category: item ? item.category : (outItem.category || 'General'),
+                itemImage: item?.image || item?.imageUrl || '',
                 dueDate,
+                isValidDueDate,
                 isOverdue,
-                signoutDate: new Date(outItem.signoutDate),
+                isDueToday,
+                signoutDate,
+                isValidSignoutDate,
                 projectId: proj.id,
+                projectName: proj.name || 'Personal',
+                isPersonal: true,
                 signoutId,
                 outItem
             });
         });
     });
 
-    // Sort users alphabetically
-    const sortedUserIds = Object.keys(itemsByUser).sort((a, b) => {
-        return itemsByUser[a].name.localeCompare(itemsByUser[b].name);
+    // Compute global summary counts before filtering
+    const allUserIds = Object.keys(itemsByUser);
+    const totalGlobalStudents = allUserIds.length;
+    let totalGlobalItems = 0;
+    let totalGlobalOverdue = 0;
+    allUserIds.forEach(uId => {
+        itemsByUser[uId].items.forEach(it => {
+            totalGlobalItems += it.quantity;
+            if (it.isOverdue) totalGlobalOverdue += it.quantity;
+        });
     });
 
-    if (sortedUserIds.length === 0) {
+    // Filter users and items based on controls
+    let filteredUserIds = allUserIds.filter(userId => {
+        const userData = itemsByUser[userId];
+
+        // Class filter
+        if (selectedClassId !== 'all') {
+            const inSelectedClass = userData.classes.some(c => String(c.id) === selectedClassId);
+            if (!inSelectedClass) return false;
+        }
+
+        // Status filter
+        if (selectedStatus === 'overdue') {
+            const hasOverdue = userData.items.some(i => i.isOverdue);
+            if (!hasOverdue) return false;
+        } else if (selectedStatus === 'due-today') {
+            const hasDueToday = userData.items.some(i => i.isDueToday);
+            if (!hasDueToday) return false;
+        }
+
+        // Search query
+        if (searchQuery) {
+            const matchUserName = (userData.name || '').toLowerCase().includes(searchQuery);
+            const matchItems = userData.items.some(i => 
+                (i.itemName || '').toLowerCase().includes(searchQuery) ||
+                (i.itemSku || '').toLowerCase().includes(searchQuery) ||
+                (i.category || '').toLowerCase().includes(searchQuery)
+            );
+            const matchClasses = userData.classes.some(c => (c.name || '').toLowerCase().includes(searchQuery));
+            if (!matchUserName && !matchItems && !matchClasses) return false;
+        }
+
+        return true;
+    });
+
+    // Sort users alphabetically
+    filteredUserIds.sort((a, b) => {
+        return (itemsByUser[a].name || '').localeCompare(itemsByUser[b].name || '');
+    });
+
+    // If completely empty (no personal items out lab-wide)
+    if (totalGlobalStudents === 0) {
         container.innerHTML = `
-            <div class="text-center py-12">
-                <i class="ph ph-check-circle" style="font-size: 4rem; color: #10b981; margin-bottom: 1rem;"></i>
-                <h3 style="font-size: 1.5rem; margin-bottom: 0.5rem;">All Clear!</h3>
-                <p class="text-muted" style="font-size: 1.1rem;">All students have returned their required items.</p>
+            <div style="padding: 4rem 2rem; text-align: center; border-radius: 12px; background: rgba(16, 185, 129, 0.04); border: 1px dashed rgba(16, 185, 129, 0.25);">
+                <div style="width: 64px; height: 64px; border-radius: 50%; background: rgba(16, 185, 129, 0.12); display: inline-flex; align-items: center; justify-content: center; margin-bottom: 1rem;">
+                    <i class="ph ph-check-circle" style="font-size: 2.5rem; color: #10b981;"></i>
+                </div>
+                <h3 style="font-size: 1.4rem; font-weight: 700; margin-bottom: 0.35rem; color: #10b981;">All Clear</h3>
+                <p class="text-muted" style="font-size: 1rem; max-width: 460px; margin: 0 auto;">No students currently have personal items checked out.</p>
             </div>
         `;
+        startClassDisplayRealtimeListener();
         return;
     }
 
-    // Build display HTML with large text for classroom visibility
-    const displayHtml = sortedUserIds.map(userId => {
-        const userData = itemsByUser[userId];
-        const overdueCount = userData.items.filter(i => i.isOverdue).length;
-        const hasOverdue = overdueCount > 0;
+    // If filtered result is empty
+    if (filteredUserIds.length === 0) {
+        container.innerHTML = `
+            <div style="padding: 3.5rem 2rem; text-align: center; border-radius: 12px; background: rgba(255,255,255,0.02); border: 1px dashed var(--glass-border);">
+                <i class="ph ph-magnifying-glass" style="font-size: 2.25rem; color: var(--text-muted, #9ca3af); margin-bottom: 0.75rem; display: inline-block;"></i>
+                <h3 style="font-size: 1.25rem; margin-bottom: 0.35rem;">No matching student items</h3>
+                <p class="text-muted" style="margin-bottom: 1.25rem; font-size: 0.95rem;">No active personal checkouts match your current search and filter settings.</p>
+                <button class="btn btn-secondary" onclick="document.getElementById('class-display-search').value=''; document.getElementById('class-display-class-filter').value='all'; document.getElementById('class-display-status-filter').value='all'; renderClassDisplay(false);">
+                    Clear Filters
+                </button>
+            </div>
+        `;
+        startClassDisplayRealtimeListener();
+        return;
+    }
 
-        const itemsHtml = userData.items.map(itemData => {
-            const statusClass = itemData.isOverdue ? 'text-danger' : 'text-warning';
-            const statusIcon = itemData.isOverdue ? 'ph-clock-countdown' : 'ph-hourglass';
-            const dueText = itemData.isOverdue 
-                ? `Overdue since ${itemData.dueDate.toLocaleDateString()}`
-                : `Due: ${itemData.dueDate.toLocaleDateString()}`;
+    // Header stats bar
+    const statsBarHtml = `
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; margin-bottom: 1.75rem;">
+            <div style="padding: 1.25rem 1.5rem; border-radius: 10px; background: rgba(59, 130, 246, 0.06); border: 1px solid rgba(59, 130, 246, 0.2); display: flex; align-items: center; justify-content: space-between;">
+                <div>
+                    <div style="font-size: 0.8rem; color: #93c5fd; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700;">Students With Items</div>
+                    <div style="font-size: 1.75rem; font-weight: 800; color: #60a5fa; margin-top: 0.2rem;">${filteredUserIds.length} <span style="font-size: 0.9rem; font-weight: normal; color: var(--text-muted, #9ca3af);">/ ${totalGlobalStudents}</span></div>
+                </div>
+                <i class="ph ph-users" style="font-size: 2rem; color: rgba(96, 165, 250, 0.4);"></i>
+            </div>
+            <div style="padding: 1.25rem 1.5rem; border-radius: 10px; background: rgba(16, 185, 129, 0.06); border: 1px solid rgba(16, 185, 129, 0.2); display: flex; align-items: center; justify-content: space-between;">
+                <div>
+                    <div style="font-size: 0.8rem; color: #6ee7b7; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700;">Personal Items Out</div>
+                    <div style="font-size: 1.75rem; font-weight: 800; color: #34d399; margin-top: 0.2rem;">${totalGlobalItems}</div>
+                </div>
+                <i class="ph ph-package" style="font-size: 2rem; color: rgba(52, 211, 153, 0.4);"></i>
+            </div>
+            <div style="padding: 1.25rem 1.5rem; border-radius: 10px; background: ${totalGlobalOverdue > 0 ? 'rgba(239, 68, 68, 0.08)' : 'rgba(16, 185, 129, 0.06)'}; border: 1px solid ${totalGlobalOverdue > 0 ? 'rgba(239, 68, 68, 0.3)' : 'rgba(16, 185, 129, 0.2)'}; display: flex; align-items: center; justify-content: space-between;">
+                <div>
+                    <div style="font-size: 0.8rem; color: ${totalGlobalOverdue > 0 ? '#fca5a5' : '#6ee7b7'}; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700;">Overdue Items</div>
+                    <div style="font-size: 1.75rem; font-weight: 800; color: ${totalGlobalOverdue > 0 ? '#f87171' : '#34d399'}; margin-top: 0.2rem;">
+                        ${totalGlobalOverdue}
+                    </div>
+                </div>
+                <i class="ph ${totalGlobalOverdue > 0 ? 'ph-warning-circle' : 'ph-shield-check'}" style="font-size: 2rem; color: ${totalGlobalOverdue > 0 ? 'rgba(248, 113, 113, 0.5)' : 'rgba(52, 211, 153, 0.4)'};"></i>
+            </div>
+        </div>
+    `;
+
+    // Render Student Cards
+    const studentsCardsHtml = filteredUserIds.map(userId => {
+        const userData = itemsByUser[userId];
+        
+        // Filter items if specific status filter is active
+        let visibleItems = userData.items;
+        if (selectedStatus === 'overdue') {
+            visibleItems = visibleItems.filter(i => i.isOverdue);
+        } else if (selectedStatus === 'due-today') {
+            visibleItems = visibleItems.filter(i => i.isDueToday);
+        }
+        if (searchQuery) {
+            visibleItems = visibleItems.filter(i => 
+                (userData.name || '').toLowerCase().includes(searchQuery) ||
+                (i.itemName || '').toLowerCase().includes(searchQuery) ||
+                (i.itemSku || '').toLowerCase().includes(searchQuery) ||
+                (i.category || '').toLowerCase().includes(searchQuery)
+            );
+        }
+
+        const userOverdueCount = userData.items.filter(i => i.isOverdue).reduce((sum, it) => sum + it.quantity, 0);
+        const userTotalQuantity = userData.items.reduce((sum, it) => sum + it.quantity, 0);
+        const hasOverdue = userOverdueCount > 0;
+
+        const classBadges = (userData.classes || []).map(c => `
+            <span class="badge" style="background: rgba(59, 130, 246, 0.12); color: #93c5fd; border: 1px solid rgba(59, 130, 246, 0.25); font-size: 0.8rem; padding: 0.2rem 0.55rem; border-radius: 6px;">
+                <i class="ph ph-chalkboard-simple"></i> ${escapeHtml(c.name)}
+            </span>
+        `).join(' ');
+
+        const itemsHtml = visibleItems.map(itemData => {
+            const isOverdue = itemData.isOverdue;
+            const isDueToday = itemData.isDueToday;
+
+            let borderAccent = 'rgba(59, 130, 246, 0.4)';
+            let statusBadge = '';
+            if (isOverdue) {
+                borderAccent = '#ef4444';
+                const overdueDateText = itemData.isValidDueDate ? itemData.dueDate.toLocaleDateString() : 'Past Due';
+                statusBadge = `
+                    <span style="color: #ef4444; font-weight: 700; display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.85rem; background: rgba(239, 68, 68, 0.12); padding: 0.25rem 0.6rem; border-radius: 6px; border: 1px solid rgba(239, 68, 68, 0.3);">
+                        <i class="ph ph-warning-circle"></i> Overdue (Due ${escapeHtml(overdueDateDateText)})
+                    </span>
+                `;
+            } else if (isDueToday) {
+                borderAccent = '#f59e0b';
+                statusBadge = `
+                    <span style="color: #f59e0b; font-weight: 700; display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.85rem; background: rgba(245, 158, 11, 0.12); padding: 0.25rem 0.6rem; border-radius: 6px; border: 1px solid rgba(245, 158, 11, 0.3);">
+                        <i class="ph ph-clock"></i> Due Today
+                    </span>
+                `;
+            } else if (itemData.isValidDueDate) {
+                statusBadge = `
+                    <span style="color: var(--text-muted, #9ca3af); font-size: 0.85rem; display: inline-flex; align-items: center; gap: 0.3rem;">
+                        <i class="ph ph-calendar"></i> Due: ${escapeHtml(itemData.dueDate.toLocaleDateString())}
+                    </span>
+                `;
+            } else {
+                statusBadge = `
+                    <span style="color: var(--text-muted, #9ca3af); font-size: 0.85rem; display: inline-flex; align-items: center; gap: 0.3rem;">
+                        <i class="ph ph-calendar-blank"></i> No Due Date
+                    </span>
+                `;
+            }
+
+            const signoutText = itemData.isValidSignoutDate ? `Out since ${itemData.signoutDate.toLocaleDateString()}` : '';
 
             return `
-                <div style="background: rgba(0,0,0,0.2); padding: 1rem; border-radius: 0.5rem; margin-bottom: 0.75rem; border-left: 4px solid ${itemData.isOverdue ? '#ff0000' : '#fbbf24'}">
-                    <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 0.5rem;">
-                        <div>
-                            <div style="font-size: 1.3rem; font-weight: bold;">
+                <div style="background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.06); border-left: 3px solid ${borderAccent}; padding: 0.85rem 1.1rem; border-radius: 8px; margin-bottom: 0.5rem; transition: background 0.15s ease;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;">
+                        <div style="flex: 1; min-width: 220px;">
+                            <div style="font-size: 1.05rem; font-weight: 700; color: var(--text-primary, #ffffff); line-height: 1.3;">
                                 ${escapeHtml(itemData.itemName)}
                             </div>
-                            <div style="font-size: 0.95rem; color: #d1d5db; margin-top: 0.25rem;">
-                                <span class="badge" style="background: rgba(107, 114, 128, 0.3); padding: 0.25rem 0.5rem; border-radius: 0.25rem;">
+                            <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.3rem;">
+                                <span class="badge" style="background: rgba(255, 255, 255, 0.07); color: #d1d5db; padding: 0.15rem 0.45rem; border-radius: 4px; font-size: 0.78rem;">
                                     ${escapeHtml(itemData.category)}
                                 </span>
-                                <span style="margin-left: 0.5rem;">SKU: ${escapeHtml(itemData.itemSku)}</span>
+                                <span style="color: var(--text-muted, #9ca3af); font-size: 0.82rem;">SKU: <strong style="color: #e5e7eb;">${escapeHtml(itemData.itemSku)}</strong></span>
+                                ${signoutText ? `<span style="color: var(--text-muted, #9ca3af); font-size: 0.82rem;">• ${escapeHtml(signoutText)}</span>` : ''}
                             </div>
                         </div>
-                        <div style="text-align: right;">
-                            <div style="font-size: 1.5rem; font-weight: bold; color: #10b981;">
-                                ${itemData.quantity}x
+                        <div style="display: flex; align-items: center; gap: 1.25rem;">
+                            <div>
+                                ${statusBadge}
                             </div>
-                            <div style="font-size: 0.85rem; color: #d1d5db;">
-                                qty
+                            <div style="display: flex; align-items: baseline; gap: 0.2rem; min-width: 45px; justify-content: flex-end;">
+                                <span style="font-size: 1.35rem; font-weight: 800; color: #34d399;">${itemData.quantity}x</span>
                             </div>
                         </div>
-                    </div>
-                    <div style="font-size: 0.95rem; ${statusClass}">
-                        <i class="ph ${statusIcon}" style="margin-right: 0.25rem;"></i> ${dueText}
                     </div>
                 </div>
             `;
         }).join('');
 
+        const initials = (userData.name || 'U').trim().split(/\s+/).map(p => p.charAt(0)).join('').toUpperCase().slice(0, 2) || 'S';
+
         return `
-            <div style="margin-bottom: 2rem; padding-bottom: 2rem; border-bottom: 2px solid rgba(5, 150, 105, 0.3);">
-                <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem;">
-                    <div style="width: 60px; height: 60px; border-radius: 50%; background: linear-gradient(135deg, #059669, #10b981); display: flex; align-items: center; justify-content: center; color: white; font-size: 1.5rem; font-weight: bold;">
-                        ${escapeHtml(userData.name.charAt(0).toUpperCase())}
-                    </div>
-                    <div>
-                        <h2 style="font-size: 1.8rem; margin: 0; font-weight: bold;">
-                            ${escapeHtml(userData.name)}
-                        </h2>
-                        <div style="font-size: 1rem; color: #d1d5db; margin-top: 0.25rem;">
-                            ${userData.items.length} item${userData.items.length !== 1 ? 's' : ''} checked out
-                            ${hasOverdue ? `<span style="color: #ff0000; font-weight: bold; margin-left: 0.5rem;"><i class="ph ph-warning"></i> ${overdueCount} overdue</span>` : ''}
+            <div style="margin-bottom: 1.25rem; padding: 1.25rem 1.5rem; border-radius: 12px; border: 1px solid ${hasOverdue ? 'rgba(239, 68, 68, 0.25)' : 'rgba(255, 255, 255, 0.08)'}; background: ${hasOverdue ? 'rgba(239, 68, 68, 0.025)' : 'rgba(255, 255, 255, 0.015)'};">
+                <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 0.85rem; padding-bottom: 0.75rem; border-bottom: 1px solid rgba(255,255,255,0.06);">
+                    <div style="display: flex; align-items: center; gap: 0.85rem;">
+                        <div style="width: 42px; height: 42px; border-radius: 50%; background: linear-gradient(135deg, ${hasOverdue ? '#dc2626, #ef4444' : '#059669, #10b981'}); display: flex; align-items: center; justify-content: center; color: white; font-size: 1.05rem; font-weight: 800; box-shadow: 0 2px 8px rgba(0,0,0,0.2); flex-shrink: 0;">
+                            ${escapeHtml(initials)}
+                        </div>
+                        <div>
+                            <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+                                <h4 style="font-size: 1.2rem; margin: 0; font-weight: 700; color: var(--text-primary, #ffffff); line-height: 1.2;">
+                                    ${escapeHtml(userData.name)}
+                                </h4>
+                                ${classBadges}
+                            </div>
+                            <div style="font-size: 0.85rem; color: var(--text-muted, #9ca3af); margin-top: 0.15rem; display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;">
+                                <span><strong>${userTotalQuantity}</strong> personal item${userTotalQuantity !== 1 ? 's' : ''} out</span>
+                                ${hasOverdue ? `<span style="color: #ef4444; font-weight: 700; display: inline-flex; align-items: center; gap: 0.25rem;"><i class="ph ph-warning"></i> ${userOverdueCount} overdue</span>` : ''}
+                            </div>
                         </div>
                     </div>
                 </div>
-                <div style="margin-left: 0;">
+                <div style="display: flex; flex-direction: column;">
                     ${itemsHtml}
                 </div>
             </div>
@@ -10248,55 +11515,54 @@ function renderClassDisplay() {
     }).join('');
 
     container.innerHTML = `
-        <div style="background: linear-gradient(135deg, rgba(5, 150, 105, 0.1), rgba(16, 185, 129, 0.05)); padding: 2rem; border-radius: 0.75rem;">
-            <div style="margin-bottom: 2rem;">
-                <h3 style="font-size: 1.5rem; margin: 0 0 0.5rem 0;">
-                    <i class="ph ph-warning"></i> Items Not Returned
-                </h3>
-                <p style="color: #d1d5db; margin: 0; font-size: 1rem;">
-                    Ensure all students return their required items before dismissal
-                </p>
-            </div>
-            ${displayHtml}
+        <div style="max-width: 100%;">
+            ${statsBarHtml}
+            ${studentsCardsHtml}
         </div>
     `;
 
-    // Set up real-time updates for this display
+    // Set up real-time listener for updates
     startClassDisplayRealtimeListener();
 }
 
-let classDisplayChannel = null;
-
-/**
- * Start real-time listener for items_out updates to auto-refresh class display
- */
 function startClassDisplayRealtimeListener() {
-    const client = getSupabaseClientForCurrentPage();
-    if (!client || !document.getElementById('page-class-display')?.classList.contains('active')) return;
+    try {
+        const client = getSupabaseClientForCurrentPage();
+        if (!client || !document.getElementById('page-class-display')?.classList.contains('active')) return;
 
-    // Clean up previous channel
-    if (classDisplayChannel) {
-        client.removeChannel(classDisplayChannel);
-        classDisplayChannel = null;
-    }
-
-    // Subscribe to changes in project_items_out table
-    classDisplayChannel = client
-        .channel('class-display-items-out')
-        .on('postgres_changes', {
-            event: '*',
-            schema: 'public',
-            table: 'project_items_out'
-        }, async payload => {
-            // Refresh data and re-render
-            await refreshProjectsFromSupabase();
-            renderClassDisplay();
-        })
-        .subscribe(status => {
-            if (status === 'CHANNEL_ERROR') {
-                console.warn('Class Display real-time channel error');
+        if (classDisplayChannel) {
+            try {
+                client.removeChannel(classDisplayChannel);
+            } catch (err) {
+                console.warn('Error removing previous class display channel:', err);
             }
-        });
+            classDisplayChannel = null;
+        }
+
+        classDisplayChannel = client
+            .channel('class-display-realtime')
+            .on('postgres_changes', {
+                event: '*',
+                schema: 'public',
+                table: 'project_items_out'
+            }, async () => {
+                await Promise.all([
+                    refreshProjectsFromSupabase(),
+                    refreshInventoryFromSupabase(),
+                    refreshUsersFromSupabase()
+                ]);
+                if (document.getElementById('page-class-display')?.classList.contains('active')) {
+                    renderClassDisplay(false);
+                }
+            })
+            .subscribe(status => {
+                if (status === 'CHANNEL_ERROR') {
+                    console.warn('Class Display real-time channel error');
+                }
+            });
+    } catch (e) {
+        console.warn('Unable to initialize class display realtime listener:', e);
+    }
 }
 
 function getSupabaseClientForCurrentPage() {
@@ -11837,7 +13103,7 @@ document.getElementById('bulk-user-perms-btn')?.addEventListener('click', async 
    MODAL & NOTIFICATION HELPERS
    ======================================= */
 function openModal(contentHtml) {
-    dynamicModal.classList.remove('debug-modal', 'class-modal', 'order-request-modal', 'transfer-project-modal', 'transfer-scan-modal');
+    dynamicModal.classList.remove('debug-modal', 'class-modal', 'order-request-modal', 'transfer-project-modal', 'transfer-scan-modal', 'item-timeline-modal');
     const safeFragment = sanitizeModalHtml(contentHtml);
     dynamicModal.replaceChildren(safeFragment);
     modalContainer.classList.remove('hidden');
@@ -11853,7 +13119,7 @@ function closeModal(options = {}) {
 
     modalContainer.classList.add('hidden');
     dynamicModal.replaceChildren();
-    dynamicModal.classList.remove('debug-modal', 'class-modal', 'order-request-modal', 'transfer-project-modal', 'transfer-scan-modal');
+    dynamicModal.classList.remove('debug-modal', 'class-modal', 'order-request-modal', 'transfer-project-modal', 'transfer-scan-modal', 'item-timeline-modal');
     document.body.classList.remove('modal-open');
 }
 
@@ -12152,14 +13418,13 @@ async function openAddItemModal({ initialItemType = 'item', initialBundleCompone
         <div class="modal-body">
             <div class="form-group">
                 <label>Item Name</label>
-                <select id="add-item-type" class="form-control">
-                    <option value="item" ${initialType === 'item' ? 'selected' : ''}>Item (Tracked, Sign In/Out)</option>
-                    <option value="consumable" ${initialType === 'consumable' ? 'selected' : ''}>Consumable (No Stock Tracking)</option>
-                    <option value="bundle" ${initialType === 'bundle' ? 'selected' : ''}>Bundle (Grouped Items)</option>
+                <input type="text" id="add-name" class="form-control" placeholder="e.g. Servo Motor">
+            </div>
+            <div class="form-group">
                 <label>Main Category</label>
                 <select id="add-category" class="form-control">
                     ${categoryOptions}
-            ${buildBundleComponentEditorHtml({ components: initialBundleComponents.length > 0 ? initialBundleComponents : [] })}
+                </select>
                 ${categories.length === 0 ? '<small class="text-muted">No categories found yet. This item will be saved as Uncategorized.</small>' : ''}
             </div>
             <div class="form-group">
@@ -12200,13 +13465,13 @@ async function openAddItemModal({ initialItemType = 'item', initialBundleCompone
             <div class="form-group">
                 <label>Item Type</label>
                 <select id="add-item-type" class="form-control">
-                    <option value="item">Item (Tracked, Sign In/Out)</option>
-                    <option value="consumable">Consumable (No Stock Tracking)</option>
-                    <option value="bundle">Bundle (Grouped Items)</option>
+                    <option value="item" ${initialType === 'item' ? 'selected' : ''}>Item (Tracked, Sign In/Out)</option>
+                    <option value="consumable" ${initialType === 'consumable' ? 'selected' : ''}>Consumable (No Stock Tracking)</option>
+                    <option value="bundle" ${initialType === 'bundle' ? 'selected' : ''}>Bundle (Grouped Items)</option>
                 </select>
                 <small class="text-muted">Items are tracked with sign-in/out. Consumables don't show stock levels.</small>
             </div>
-            ${buildBundleComponentEditorHtml()}
+            ${buildBundleComponentEditorHtml({ components: initialBundleComponents.length > 0 ? initialBundleComponents : [] })}
             <div id="add-stock-threshold-group" class="grid-2-col inventory-stock-control-group" style="gap:1rem">
                 <div class="form-group">
                     <label>Initial Stock</label>
@@ -12450,6 +13715,12 @@ function openEditProjectModal(projectId) {
             showToast('Project name is required.', 'error');
             return;
         }
+
+        project.name = name;
+        project.description = desc;
+        project.status = status;
+        project.collaborators = collaborators;
+        project.collaboratorRoles = collaboratorRoles;
 
         const updated = await updateProjectInSupabase(project.id, {
             name,
@@ -14326,12 +15597,18 @@ if (inventoryEditToggle && inventoryEditMenu) {
         e.stopPropagation();
         const isHidden = inventoryEditMenu.classList.toggle('hidden');
         inventoryEditToggle.setAttribute('aria-expanded', !isHidden ? 'true' : 'false');
+        const caret = inventoryEditToggle.querySelector('.ph-caret-down, .ph-caret-up');
+        if (caret) {
+            caret.className = !isHidden ? 'ph ph-caret-up' : 'ph ph-caret-down';
+        }
     });
 
     document.addEventListener('click', (e) => {
         if (!inventoryEditMenu.contains(e.target) && !inventoryEditToggle.contains(e.target)) {
             inventoryEditMenu.classList.add('hidden');
             inventoryEditToggle.setAttribute('aria-expanded', 'false');
+            const caret = inventoryEditToggle.querySelector('.ph-caret-down, .ph-caret-up');
+            if (caret) caret.className = 'ph ph-caret-down';
         }
     });
 }
@@ -14356,7 +15633,679 @@ if (addItemMenuToggle && addItemActionsMenu) {
 document.getElementById('add-bundle-btn')?.addEventListener('click', () => {
     addItemActionsMenu?.classList.add('hidden');
     addItemMenuToggle?.setAttribute('aria-expanded', 'false');
-    openAddItemModal({ initialItemType: 'bundle' });
+    openBundleManagementModal({ initialTab: 'create' });
+});
+
+/* =======================================
+   ITEM BUNDLE CREATION & MANAGEMENT MODAL
+   (Only for Teachers & Devs)
+   ======================================= */
+async function openBundleManagementModal({ editBundleId = null, initialTab = 'create' } = {}) {
+    if (currentUser?.role !== 'teacher' && currentUser?.role !== 'dev') {
+        showToast('Only teachers and developers can create or manage item bundles.', 'error');
+        return;
+    }
+
+    if (typeof ensurePrivilegedActionAuth === 'function') {
+        const authOk = await ensurePrivilegedActionAuth('managing item bundles');
+        if (!authOk) return;
+    }
+
+    let activeTab = initialTab;
+    let currentEditBundleId = editBundleId;
+
+    let componentRows = [];
+    if (currentEditBundleId) {
+        const existingItem = inventoryItems.find(i => String(i.id) === String(currentEditBundleId));
+        if (existingItem && Array.isArray(existingItem.bundleComponents) && existingItem.bundleComponents.length > 0) {
+            componentRows = existingItem.bundleComponents.map(c => ({
+                componentItemId: String(c.componentItemId || c.itemId || ''),
+                componentQuantity: Math.max(1, parseInt(c.componentQuantity || c.quantity, 10) || 1)
+            }));
+        }
+    }
+    if (componentRows.length === 0) {
+        componentRows = [{ componentItemId: '', componentQuantity: 1 }];
+    }
+
+    function calculateBundleCapacity(rows) {
+        const valid = (rows || []).filter(r => r.componentItemId && r.componentQuantity > 0);
+        if (valid.length === 0) return null;
+        let minCap = Infinity;
+        let hasZeroStock = false;
+        let zeroStockItemName = '';
+        for (const row of valid) {
+            const item = inventoryItems.find(i => String(i.id) === String(row.componentItemId));
+            if (!item) {
+                minCap = 0;
+                hasZeroStock = true;
+                break;
+            }
+            const stock = Math.max(0, parseInt(item.stock, 10) || 0);
+            const cap = Math.floor(stock / row.componentQuantity);
+            if (cap === 0) {
+                hasZeroStock = true;
+                zeroStockItemName = item.name;
+            }
+            if (cap < minCap) minCap = cap;
+        }
+        return {
+            capacity: minCap === Infinity ? 0 : minCap,
+            hasZeroStock,
+            zeroStockItemName,
+            validCount: valid.length
+        };
+    }
+
+    function renderModal() {
+        const editingBundle = currentEditBundleId ? inventoryItems.find(i => String(i.id) === String(currentEditBundleId)) : null;
+        const allBundles = (inventoryItems || []).filter(i => isBundleItemType(i?.item_type) || (Array.isArray(i?.bundleComponents) && i.bundleComponents.length > 0));
+
+        const selectableItems = (inventoryItems || [])
+            .filter(i => (!editingBundle || String(i.id) !== String(editingBundle.id)) && !isBundleItemType(i.item_type))
+            .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+
+        const categoryOptionsHtml = categories.length > 0
+            ? categories.map(c => {
+                const selected = editingBundle ? (editingBundle.category === c) : (c.toLowerCase().includes('bundle') || c.toLowerCase().includes('kit'));
+                return `<option value="${escapeHtml(c)}" ${selected ? 'selected' : ''}>${escapeHtml(c)}</option>`;
+            }).join('')
+            : '<option value="Kits & Bundles">Kits & Bundles</option>';
+
+        const subCategoryOptionsHtml = buildInventoryOptionSelectHtml(subCategories, editingBundle?.subCategory || 'General', 'General');
+        const brandOptionsHtml = buildInventoryOptionSelectHtml(brands, editingBundle?.brand || 'Unspecified', 'Unspecified');
+
+        const activeTags = (typeof visibilityTags !== 'undefined' && Array.isArray(visibilityTags)) ? visibilityTags : [];
+        const existingTags = editingBundle ? (editingBundle.visibility_tags || []) : [];
+        const tagsHtml = activeTags.map(tag => {
+            const isChecked = existingTags.includes(tag.name);
+            return `
+                <label style="display:inline-flex; align-items:center; gap:0.4rem; font-size:0.875rem; margin-right:1rem; margin-bottom:0.35rem; cursor:pointer;">
+                    <input type="checkbox" class="bundle-visibility-tag-checkbox" value="${escapeHtml(tag.name)}" ${isChecked ? 'checked' : ''}>
+                    ${escapeHtml(tag.name)}
+                </label>
+            `;
+        }).join('');
+
+        const capacityInfo = calculateBundleCapacity(componentRows);
+
+        let bodyHtml = '';
+
+        if (activeTab === 'create') {
+            const componentRowsHtml = componentRows.map((row, idx) => {
+                const selectedItem = selectableItems.find(i => String(i.id) === String(row.componentItemId));
+                const itemOptions = selectableItems.map(item => `
+                    <option value="${escapeHtml(item.id)}" ${String(item.id) === String(row.componentItemId) ? 'selected' : ''} data-stock="${item.stock ?? 0}">
+                        ${escapeHtml(item.name)} (Stock: ${item.stock ?? 0}${item.sku ? ' | SKU: ' + escapeHtml(item.sku) : ''})
+                    </option>
+                `).join('');
+
+                const stockBadge = selectedItem
+                    ? (selectedItem.stock <= 0
+                        ? `<span style="font-size:0.8rem;color:#ef4444;font-weight:600;"><i class="ph ph-x-circle"></i> Out of stock (0)</span>`
+                        : `<span style="font-size:0.8rem;color:#22c55e;font-weight:500;"><i class="ph ph-check-circle"></i> ${selectedItem.stock} in stock</span>`)
+                    : `<span style="font-size:0.8rem;color:var(--text-muted);">Select item</span>`;
+
+                return `
+                    <div class="bundle-component-builder-row glass-panel" data-row-index="${idx}" style="padding:0.75rem; display:grid; grid-template-columns:minmax(0, 1fr) 110px 140px 42px; gap:0.65rem; align-items:center; margin-bottom:0.5rem;">
+                        <div>
+                            <label style="font-size:0.75rem; color:var(--text-muted); display:block; margin-bottom:0.25rem;">Component Item</label>
+                            <select class="form-control bundle-comp-select" data-row-index="${idx}" style="height:38px; font-size:0.875rem;">
+                                <option value="">-- Choose item from inventory --</option>
+                                ${itemOptions}
+                            </select>
+                        </div>
+                        <div>
+                            <label style="font-size:0.75rem; color:var(--text-muted); display:block; margin-bottom:0.25rem;">Quantity</label>
+                            <input type="number" min="1" class="form-control bundle-comp-qty" data-row-index="${idx}" value="${row.componentQuantity || 1}" style="height:38px; font-size:0.875rem;">
+                        </div>
+                        <div>
+                            <label style="font-size:0.75rem; color:var(--text-muted); display:block; margin-bottom:0.25rem;">Available</label>
+                            <div class="bundle-comp-stock-display" style="height:38px; display:flex; align-items:center;">
+                                ${stockBadge}
+                            </div>
+                        </div>
+                        <div style="display:flex; justify-content:center; align-items:flex-end;">
+                            <button type="button" class="btn btn-secondary bundle-comp-remove-btn" data-row-index="${idx}" title="Remove Component" style="height:38px; width:38px; padding:0; display:flex; align-items:center; justify-content:center; color:#ef4444;" ${componentRows.length <= 1 ? 'disabled style="opacity:0.4;cursor:not-allowed;"' : ''}>
+                                <i class="ph ph-trash"></i>
+                            </button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            let capacityBanner = '';
+            if (capacityInfo && capacityInfo.validCount > 0) {
+                if (capacityInfo.capacity > 0) {
+                    capacityBanner = `
+                        <div style="background:rgba(34,197,94,0.12); border:1px solid rgba(34,197,94,0.35); border-radius:8px; padding:0.75rem 1rem; display:flex; align-items:center; gap:0.75rem; margin-top:0.75rem;">
+                            <i class="ph ph-package" style="font-size:1.6rem; color:#22c55e;"></i>
+                            <div>
+                                <strong style="color:var(--text-primary); font-size:0.95rem;">Calculated Bundle Availability: <span style="color:#22c55e;">${capacityInfo.capacity} bundle(s)</span></strong>
+                                <div style="font-size:0.825rem; color:var(--text-muted);">Based on current component stock levels, you can assemble up to ${capacityInfo.capacity} complete bundles for student checkout.</div>
+                            </div>
+                        </div>
+                    `;
+                } else {
+                    capacityBanner = `
+                        <div style="background:rgba(239,68,68,0.12); border:1px solid rgba(239,68,68,0.35); border-radius:8px; padding:0.75rem 1rem; display:flex; align-items:center; gap:0.75rem; margin-top:0.75rem;">
+                            <i class="ph ph-warning" style="font-size:1.6rem; color:#ef4444;"></i>
+                            <div>
+                                <strong style="color:#ef4444; font-size:0.95rem;">Bundle Currently Out of Stock (0 Assemblable)</strong>
+                                <div style="font-size:0.825rem; color:var(--text-muted);">${capacityInfo.zeroStockItemName ? `"${escapeHtml(capacityInfo.zeroStockItemName)}" has 0 stock.` : 'One or more required components are currently out of stock.'}</div>
+                            </div>
+                        </div>
+                    `;
+                }
+            }
+
+            bodyHtml = `
+                <div style="display:flex; flex-direction:column; gap:1.15rem; max-height:65vh; overflow-y:auto; padding-right:0.35rem;">
+                    <div style="background:rgba(147,51,234,0.08); border:1px solid rgba(147,51,234,0.25); border-radius:8px; padding:0.75rem 1rem; display:flex; align-items:center; gap:0.75rem;">
+                        <i class="ph ph-info" style="font-size:1.35rem; color:#c084fc;"></i>
+                        <span style="font-size:0.85rem; color:var(--text-secondary);">
+                            Bundles group items so students sign out all necessary components in a single checkout. Component stocks are dynamically deducted and restored on return.
+                        </span>
+                    </div>
+
+                    <div class="form-group" style="margin:0;">
+                        <label style="font-weight:600;">Bundle Name <span style="color:#ef4444;">*</span></label>
+                        <input type="text" id="bundle-builder-name" class="form-control" placeholder="e.g. Arduino Uno Robotics Starter Kit" value="${escapeHtml(editingBundle?.name || '')}">
+                    </div>
+
+                    <div class="grid-2-col" style="gap:1rem;">
+                        <div class="form-group" style="margin:0;">
+                            <label style="font-weight:600;">Category</label>
+                            <select id="bundle-builder-category" class="form-control">
+                                ${categoryOptionsHtml}
+                            </select>
+                        </div>
+                        <div class="form-group" style="margin:0;">
+                            <label style="font-weight:600;">Sub Category</label>
+                            <select id="bundle-builder-sub-category" class="form-control">
+                                ${subCategoryOptionsHtml}
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="grid-2-col" style="gap:1rem;">
+                        <div class="form-group" style="margin:0;">
+                            <label style="font-weight:600;">Barcode / SKU</label>
+                            <input type="text" id="bundle-builder-sku" class="form-control" placeholder="Auto-fills or custom barcode" value="${escapeHtml(editingBundle?.sku || editingBundle?.barcode || '')}">
+                            <small class="text-muted">Auto-generated composite SKU or scan a custom bundle barcode.</small>
+                        </div>
+                        <div class="form-group" style="margin:0;">
+                            <label style="font-weight:600;">Storage Location</label>
+                            <input type="text" id="bundle-builder-storage-location" class="form-control" placeholder="e.g. Cabinet B2, Shelf 3" value="${escapeHtml(editingBundle?.storageLocation || '')}">
+                        </div>
+                    </div>
+
+                    <div class="grid-2-col" style="gap:1rem;">
+                        <div class="form-group" style="margin:0;">
+                            <label style="font-weight:600;">Brand / Maker</label>
+                            <select id="bundle-builder-brand" class="form-control">
+                                ${brandOptionsHtml}
+                            </select>
+                        </div>
+                        <div class="form-group" style="margin:0;">
+                            <label style="font-weight:600;">Part Number (Optional)</label>
+                            <input type="text" id="bundle-builder-part-number" class="form-control" placeholder="e.g. ROBOT-KIT-01" value="${escapeHtml(editingBundle?.partNumber || '')}">
+                        </div>
+                    </div>
+
+                    <!-- Component Items Builder Section -->
+                    <div style="border-top:1px solid rgba(255,255,255,0.08); padding-top:1rem;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem;">
+                            <div>
+                                <label style="font-weight:600; font-size:1rem; margin:0; display:flex; align-items:center; gap:0.4rem;">
+                                    <i class="ph ph-stack" style="color:#c084fc;"></i> Bundle Components <span style="color:#ef4444;">*</span>
+                                </label>
+                                <small class="text-muted">Specify which items and how many of each are included in this bundle.</small>
+                            </div>
+                            <button type="button" class="btn btn-secondary btn-sm" id="bundle-builder-add-row-btn" style="display:flex; align-items:center; gap:0.35rem;">
+                                <i class="ph ph-plus"></i> Add Component
+                            </button>
+                        </div>
+
+                        <div id="bundle-builder-rows-container">
+                            ${componentRowsHtml}
+                        </div>
+
+                        ${capacityBanner}
+                    </div>
+
+                    <!-- Access & Visibility Controls -->
+                    <div style="border-top:1px solid rgba(255,255,255,0.08); padding-top:1rem; display:flex; flex-direction:column; gap:0.85rem;">
+                        <div class="form-group" style="margin:0;">
+                            <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer; font-weight:500;">
+                                <input type="checkbox" id="bundle-builder-door-unlock" ${editingBundle ? (editingBundle.requiresDoorUnlock ? 'checked' : '') : 'checked'}>
+                                Bundle Requires Door Unlock (Triggers relay during student checkout)
+                            </label>
+                            <small class="text-muted">If any component is inside a locked door cabinet, leave this checked.</small>
+                        </div>
+
+                        <div class="form-group" style="margin:0;">
+                            <label style="font-weight:600;">Visibility Level</label>
+                            <select id="bundle-builder-visibility-level" class="form-control">
+                                <option value="standard" ${editingBundle?.visibility_level === 'standard' ? 'selected' : ''}>Standard (Class-based visibility)</option>
+                                <option value="low" ${editingBundle?.visibility_level === 'low' ? 'selected' : ''}>Low (Limited visibility)</option>
+                                <option value="hidden" ${editingBundle?.visibility_level === 'hidden' ? 'selected' : ''}>Hidden (Not visible to students)</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group" style="margin:0;">
+                            <label style="font-weight:600;">Visibility Tags</label>
+                            <small class="text-muted" style="display:block; margin-bottom:0.4rem;">Select tags to allow students enrolled in matching classes to view and sign out this bundle.</small>
+                            <div class="glass-panel" style="padding:0.75rem;">
+                                ${tagsHtml || '<p class="text-muted text-sm" style="margin:0;">No visibility tags configured.</p>'}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        } else {
+            // Existing Bundles List Tab
+            if (allBundles.length === 0) {
+                bodyHtml = `
+                    <div style="text-align:center; padding:3rem 1rem; color:var(--text-muted);">
+                        <i class="ph ph-package" style="font-size:3rem; opacity:0.35; display:block; margin-bottom:0.75rem;"></i>
+                        <h4 style="font-size:1.1rem; color:var(--text-primary); margin-bottom:0.35rem;">No Item Bundles Configured</h4>
+                        <p style="font-size:0.875rem; margin-bottom:1.25rem;">Group individual inventory items together to create easily checkoutable kits.</p>
+                        <button type="button" class="btn btn-primary" id="bundle-list-empty-create-btn">
+                            <i class="ph ph-plus"></i> Create Your First Bundle
+                        </button>
+                    </div>
+                `;
+            } else {
+                const bundleCardsHtml = allBundles.map(bundle => {
+                    const comps = Array.isArray(bundle.bundleComponents) ? bundle.bundleComponents : [];
+                    const bundleCapacity = calculateBundleCapacity(comps.map(c => ({
+                        componentItemId: c.componentItemId || c.itemId,
+                        componentQuantity: c.componentQuantity || c.quantity || 1
+                    })));
+
+                    const compPills = comps.map(c => {
+                        const item = inventoryItems.find(i => String(i.id) === String(c.componentItemId || c.itemId));
+                        const qty = c.componentQuantity || c.quantity || 1;
+                        const stock = item ? (item.stock ?? 0) : 0;
+                        const isLow = stock < qty;
+                        return `
+                            <span class="badge" style="background:${isLow ? 'rgba(239,68,68,0.15)' : 'rgba(255,255,255,0.08)'}; color:${isLow ? '#ef4444' : 'var(--text-secondary)'}; border:1px solid ${isLow ? 'rgba(239,68,68,0.3)' : 'rgba(255,255,255,0.1)'}; font-size:0.78rem; padding:0.25rem 0.5rem;">
+                                <strong>${qty}x</strong> ${escapeHtml(item?.name || 'Unknown Item')} <small style="opacity:0.75;">(Stock: ${stock})</small>
+                            </span>
+                        `;
+                    }).join('');
+
+                    const capBadge = bundleCapacity && bundleCapacity.capacity > 0
+                        ? `<span class="badge" style="background:rgba(34,197,94,0.15); color:#22c55e; border:1px solid rgba(34,197,94,0.35); font-weight:600;"><i class="ph ph-check-circle"></i> ${bundleCapacity.capacity} Available to Assemble</span>`
+                        : `<span class="badge" style="background:rgba(239,68,68,0.15); color:#ef4444; border:1px solid rgba(239,68,68,0.35); font-weight:600;"><i class="ph ph-warning"></i> 0 Available (Restock Needed)</span>`;
+
+                    return `
+                        <div class="glass-panel" style="padding:1rem; border-radius:10px; margin-bottom:0.75rem; border:1px solid rgba(255,255,255,0.08);">
+                            <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:0.5rem; gap:1rem;">
+                                <div>
+                                    <h4 style="margin:0 0 0.25rem 0; font-size:1.05rem; display:flex; align-items:center; gap:0.5rem;">
+                                        <i class="ph ph-package" style="color:#c084fc;"></i> ${escapeHtml(bundle.name)}
+                                    </h4>
+                                    <div style="display:flex; flex-wrap:wrap; gap:0.4rem; align-items:center; font-size:0.8rem; color:var(--text-muted);">
+                                        <span class="badge" style="background:rgba(255,255,255,0.06); color:var(--text-muted);">${escapeHtml(bundle.category || 'Bundles')}</span>
+                                        ${bundle.sku ? `<span>SKU: <code>${escapeHtml(bundle.sku)}</code></span>` : ''}
+                                        ${bundle.storageLocation ? `<span><i class="ph ph-map-pin"></i> ${escapeHtml(bundle.storageLocation)}</span>` : ''}
+                                        ${bundle.requiresDoorUnlock ? '<span style="color:#f59e0b;"><i class="ph ph-lock-key"></i> Door Lock Required</span>' : ''}
+                                    </div>
+                                </div>
+                                <div style="display:flex; align-items:center; gap:0.5rem; flex-shrink:0;">
+                                    ${capBadge}
+                                    <button type="button" class="btn btn-secondary btn-sm bundle-item-edit-btn" data-bundle-id="${escapeHtml(bundle.id)}" title="Edit Bundle">
+                                        <i class="ph ph-pencil-simple"></i> Edit
+                                    </button>
+                                    <button type="button" class="btn btn-danger btn-sm bundle-item-delete-btn" data-bundle-id="${escapeHtml(bundle.id)}" title="Delete Bundle" style="color:#ef4444;">
+                                        <i class="ph ph-trash"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            <div style="display:flex; flex-wrap:wrap; gap:0.35rem; align-items:center; padding-top:0.5rem; border-top:1px solid rgba(255,255,255,0.05);">
+                                <span style="font-size:0.75rem; color:var(--text-muted); margin-right:0.25rem;">Components (${comps.length}):</span>
+                                ${compPills || '<span class="text-muted text-xs">No components defined</span>'}
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+
+                bodyHtml = `
+                    <div style="max-height:65vh; overflow-y:auto; padding-right:0.35rem;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem;">
+                            <span style="font-size:0.875rem; color:var(--text-muted);">Active Item Bundles (${allBundles.length})</span>
+                            <button type="button" class="btn btn-primary btn-sm" id="bundle-list-new-btn" style="display:flex; align-items:center; gap:0.35rem;">
+                                <i class="ph ph-plus"></i> New Bundle
+                            </button>
+                        </div>
+                        ${bundleCardsHtml}
+                    </div>
+                `;
+            }
+        }
+
+        const modalHtml = `
+            <div class="modal-header">
+                <div style="display:flex; align-items:center; gap:0.6rem;">
+                    <div style="width:36px; height:36px; border-radius:8px; background:rgba(147,51,234,0.2); display:flex; align-items:center; justify-content:center; color:#c084fc; flex-shrink:0;">
+                        <i class="ph ph-package" style="font-size:1.35rem;"></i>
+                    </div>
+                    <div>
+                        <h3 style="margin:0; font-size:1.15rem;">${editingBundle ? 'Edit Item Bundle' : 'Create Item Bundle'}</h3>
+                        <small class="text-muted">${editingBundle ? 'Modify bundle configuration and components' : 'Assemble tracked inventory items into a single checkoutable bundle'}</small>
+                    </div>
+                </div>
+                <button class="close-btn" id="bundle-modal-close-x"><i class="ph ph-x"></i></button>
+            </div>
+            <div style="display:flex; gap:0.5rem; padding:0.6rem 1.25rem 0.25rem 1.25rem; border-bottom:1px solid rgba(255,255,255,0.08); background:rgba(0,0,0,0.15);">
+                <button type="button" class="btn ${activeTab === 'create' ? 'btn-primary' : 'btn-secondary'} btn-sm" id="bundle-tab-btn-create">
+                    <i class="ph ${editingBundle ? 'ph-pencil-simple' : 'ph-plus'}"></i> ${editingBundle ? 'Edit Bundle' : 'Create Bundle'}
+                </button>
+                <button type="button" class="btn ${activeTab === 'list' ? 'btn-primary' : 'btn-secondary'} btn-sm" id="bundle-tab-btn-list">
+                    <i class="ph ph-stack"></i> Existing Bundles (${allBundles.length})
+                </button>
+            </div>
+            <div class="modal-body" style="padding-top:1rem;">
+                ${bodyHtml}
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="bundle-modal-close-footer">Cancel</button>
+                ${activeTab === 'create' ? `
+                    <button class="btn btn-primary" id="bundle-builder-submit-btn">
+                        <i class="ph ph-check"></i> ${editingBundle ? 'Save Bundle Changes' : 'Create Bundle'}
+                    </button>
+                ` : ''}
+            </div>
+        `;
+
+        openModal(modalHtml);
+
+        document.getElementById('bundle-tab-btn-create')?.addEventListener('click', () => {
+            activeTab = 'create';
+            renderModal();
+        });
+        document.getElementById('bundle-tab-btn-list')?.addEventListener('click', () => {
+            activeTab = 'list';
+            renderModal();
+        });
+        document.getElementById('bundle-list-empty-create-btn')?.addEventListener('click', () => {
+            currentEditBundleId = null;
+            componentRows = [{ componentItemId: '', componentQuantity: 1 }];
+            activeTab = 'create';
+            renderModal();
+        });
+        document.getElementById('bundle-list-new-btn')?.addEventListener('click', () => {
+            currentEditBundleId = null;
+            componentRows = [{ componentItemId: '', componentQuantity: 1 }];
+            activeTab = 'create';
+            renderModal();
+        });
+
+        document.getElementById('bundle-modal-close-x')?.addEventListener('click', closeModal);
+        document.getElementById('bundle-modal-close-footer')?.addEventListener('click', closeModal);
+
+        if (activeTab === 'list') {
+            document.querySelectorAll('.bundle-item-edit-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const bundleId = btn.getAttribute('data-bundle-id');
+                    const bundle = inventoryItems.find(i => String(i.id) === String(bundleId));
+                    if (bundle) {
+                        currentEditBundleId = bundle.id;
+                        componentRows = (Array.isArray(bundle.bundleComponents) && bundle.bundleComponents.length > 0)
+                            ? bundle.bundleComponents.map(c => ({
+                                componentItemId: String(c.componentItemId || c.itemId || ''),
+                                componentQuantity: Math.max(1, parseInt(c.componentQuantity || c.quantity, 10) || 1)
+                            }))
+                            : [{ componentItemId: '', componentQuantity: 1 }];
+                        activeTab = 'create';
+                        renderModal();
+                    }
+                });
+            });
+
+            document.querySelectorAll('.bundle-item-delete-btn').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    const bundleId = btn.getAttribute('data-bundle-id');
+                    const bundle = inventoryItems.find(i => String(i.id) === String(bundleId));
+                    if (!bundle) return;
+
+                    const confirmed = confirm(`Are you sure you want to delete the bundle "${bundle.name}"?\n\nIndividual component items will remain in inventory.`);
+                    if (!confirmed) return;
+
+                    btn.disabled = true;
+                    btn.innerHTML = '<i class="ph ph-spinner ph-spin"></i>';
+
+                    try {
+                        if (typeof saveInventoryItemBundleComponentsInSupabase === 'function') {
+                            await saveInventoryItemBundleComponentsInSupabase(bundle.id, []);
+                        }
+                        if (typeof deleteInventoryItemFromSupabase === 'function') {
+                            await deleteInventoryItemFromSupabase(bundle.id);
+                        }
+                        if (typeof addLog === 'function') {
+                            addLog(currentUser.id, 'Bundle Deleted', `Deleted item bundle "${bundle.name}"`);
+                        }
+                        await Promise.all([refreshInventoryFromSupabase(), refreshCategoriesFromSupabase()]);
+                        if (typeof hydrateInventoryItemBundles === 'function') hydrateInventoryItemBundles();
+                        if (typeof renderInventory === 'function') renderInventory();
+                        if (typeof loadDashboard === 'function') loadDashboard();
+                        if (typeof renderDashboard === 'function') renderDashboard();
+
+                        showToast(`Bundle "${bundle.name}" deleted.`, 'info');
+                        renderModal();
+                    } catch (err) {
+                        console.error('Error deleting bundle:', err);
+                        showToast('Failed to delete bundle.', 'error');
+                        btn.disabled = false;
+                        btn.innerHTML = '<i class="ph ph-trash"></i>';
+                    }
+                });
+            });
+        }
+
+        if (activeTab === 'create') {
+            const nameInput = document.getElementById('bundle-builder-name');
+            const categorySelect = document.getElementById('bundle-builder-category');
+            const subCategorySelect = document.getElementById('bundle-builder-sub-category');
+            const brandSelect = document.getElementById('bundle-builder-brand');
+            const skuInput = document.getElementById('bundle-builder-sku');
+
+            let userTouchedSku = !!(editingBundle && editingBundle.sku);
+            skuInput?.addEventListener('input', () => { userTouchedSku = true; });
+
+            const syncSku = () => {
+                if (userTouchedSku) return;
+                const composed = composeInventoryBarcode({
+                    mainCategory: categorySelect?.value || 'Bundles',
+                    subCategory: subCategorySelect?.value || 'General',
+                    brand: brandSelect?.value || 'Unspecified',
+                    itemName: nameInput?.value || ''
+                });
+                if (composed && skuInput) {
+                    skuInput.value = composed;
+                }
+            };
+
+            nameInput?.addEventListener('input', syncSku);
+            categorySelect?.addEventListener('change', syncSku);
+            subCategorySelect?.addEventListener('change', syncSku);
+            brandSelect?.addEventListener('change', syncSku);
+
+            document.getElementById('bundle-builder-add-row-btn')?.addEventListener('click', () => {
+                componentRows.push({ componentItemId: '', componentQuantity: 1 });
+                renderModal();
+            });
+
+            document.querySelectorAll('.bundle-comp-select').forEach(sel => {
+                sel.addEventListener('change', (e) => {
+                    const rIdx = parseInt(e.target.getAttribute('data-row-index'), 10);
+                    if (!isNaN(rIdx) && componentRows[rIdx]) {
+                        componentRows[rIdx].componentItemId = e.target.value;
+                        renderModal();
+                    }
+                });
+            });
+
+            document.querySelectorAll('.bundle-comp-qty').forEach(input => {
+                input.addEventListener('input', (e) => {
+                    const rIdx = parseInt(e.target.getAttribute('data-row-index'), 10);
+                    if (!isNaN(rIdx) && componentRows[rIdx]) {
+                        componentRows[rIdx].componentQuantity = Math.max(1, parseInt(e.target.value, 10) || 1);
+                    }
+                });
+                input.addEventListener('change', () => {
+                    renderModal();
+                });
+            });
+
+            document.querySelectorAll('.bundle-comp-remove-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const rIdx = parseInt(btn.getAttribute('data-row-index'), 10);
+                    if (!isNaN(rIdx) && componentRows.length > 1) {
+                        componentRows.splice(rIdx, 1);
+                        renderModal();
+                    }
+                });
+            });
+
+            document.getElementById('bundle-builder-submit-btn')?.addEventListener('click', async () => {
+                const name = nameInput?.value.trim() || '';
+                if (!name) {
+                    showToast('Please enter a name for the bundle.', 'error');
+                    nameInput?.focus();
+                    return;
+                }
+
+                const validRows = componentRows.filter(r => r.componentItemId);
+                if (validRows.length === 0) {
+                    showToast('Please select at least one component item for this bundle.', 'error');
+                    return;
+                }
+
+                const consolidatedMap = new Map();
+                for (const row of validRows) {
+                    const id = String(row.componentItemId);
+                    const qty = Math.max(1, parseInt(row.componentQuantity, 10) || 1);
+                    consolidatedMap.set(id, (consolidatedMap.get(id) || 0) + qty);
+                }
+                const finalComponents = Array.from(consolidatedMap.entries()).map(([componentItemId, componentQuantity]) => ({
+                    componentItemId,
+                    componentQuantity
+                }));
+
+                const mainCategory = categorySelect?.value || 'Bundles & Kits';
+                const subCategory = subCategorySelect?.value || 'General';
+                const brand = brandSelect?.value || 'Unspecified';
+                const sku = skuInput?.value.trim() || composeInventoryBarcode({
+                    mainCategory,
+                    subCategory,
+                    brand,
+                    itemName: name
+                }) || generateId('BNDL');
+                const storageLocation = document.getElementById('bundle-builder-storage-location')?.value.trim() || '';
+                const partNumber = document.getElementById('bundle-builder-part-number')?.value.trim() || '';
+                const visibilityLevel = document.getElementById('bundle-builder-visibility-level')?.value || 'standard';
+                const requiresDoorUnlock = document.getElementById('bundle-builder-door-unlock')?.checked !== false;
+
+                const selectedTags = Array.from(document.querySelectorAll('.bundle-visibility-tag-checkbox:checked')).map(cb => cb.value);
+
+                const submitBtn = document.getElementById('bundle-builder-submit-btn');
+                submitBtn.disabled = true;
+                submitBtn.innerHTML = '<i class="ph ph-spinner ph-spin"></i> Saving Bundle...';
+
+                try {
+                    let bundleId = null;
+                    if (editingBundle) {
+                        bundleId = editingBundle.id;
+                        const updates = {
+                            name,
+                            category: mainCategory,
+                            subCategory,
+                            sku,
+                            partNumber,
+                            storageLocation,
+                            brand,
+                            supplier: brand,
+                            item_type: 'bundle',
+                            visibility_level: visibilityLevel,
+                            requiresDoorUnlock
+                        };
+                        const updated = await updateItemInSupabase(bundleId, updates);
+                        if (!updated) {
+                            showToast('Failed to update item bundle.', 'error');
+                            submitBtn.disabled = false;
+                            submitBtn.innerHTML = '<i class="ph ph-check"></i> Save Bundle Changes';
+                            return;
+                        }
+                    } else {
+                        bundleId = generateId('ITEM');
+                        const newItem = {
+                            id: bundleId,
+                            name,
+                            category: mainCategory,
+                            subCategory,
+                            sku,
+                            partNumber,
+                            storageLocation,
+                            brand,
+                            supplier: brand,
+                            item_type: 'bundle',
+                            stock: 0,
+                            threshold: 0,
+                            visibility_level: visibilityLevel,
+                            requiresDoorUnlock
+                        };
+                        const created = await addItemToSupabase(newItem);
+                        if (!created) {
+                            showToast('Failed to create item bundle.', 'error');
+                            submitBtn.disabled = false;
+                            submitBtn.innerHTML = '<i class="ph ph-check"></i> Create Bundle';
+                            return;
+                        }
+                        bundleId = created.id || bundleId;
+                    }
+
+                    if (typeof saveInventoryItemBundleComponentsInSupabase === 'function') {
+                        await saveInventoryItemBundleComponentsInSupabase(bundleId, finalComponents);
+                    }
+
+                    if (typeof setItemVisibilityTagsInSupabase === 'function') {
+                        await setItemVisibilityTagsInSupabase(bundleId, selectedTags);
+                    }
+
+                    if (typeof addLog === 'function') {
+                        addLog(currentUser.id, editingBundle ? 'Bundle Updated' : 'Bundle Created', `${editingBundle ? 'Updated' : 'Created'} item bundle "${name}" with ${finalComponents.length} components`);
+                    }
+
+                    await Promise.all([refreshInventoryFromSupabase(), refreshCategoriesFromSupabase()]);
+                    if (typeof hydrateInventoryItemBundles === 'function') hydrateInventoryItemBundles();
+                    if (typeof renderInventory === 'function') renderInventory();
+                    if (typeof loadDashboard === 'function') loadDashboard();
+                    if (typeof renderDashboard === 'function') renderDashboard();
+
+                    showToast(editingBundle ? 'Item bundle updated successfully!' : 'Item bundle created successfully!', 'success');
+                    closeModal();
+                } catch (err) {
+                    console.error('Error saving bundle:', err);
+                    showToast('Failed to save item bundle.', 'error');
+                    submitBtn.disabled = false;
+                    submitBtn.innerHTML = '<i class="ph ph-check"></i> ' + (editingBundle ? 'Save Bundle Changes' : 'Create Bundle');
+                }
+            });
+        }
+    }
+
+    renderModal();
+}
+
+document.getElementById('manage-bundles-btn')?.addEventListener('click', () => {
+    inventoryEditMenu?.classList.add('hidden');
+    inventoryEditToggle?.setAttribute('aria-expanded', 'false');
+    const caret = inventoryEditToggle?.querySelector('.ph-caret-down, .ph-caret-up');
+    if (caret) caret.className = 'ph ph-caret-down';
+    openBundleManagementModal();
 });
 
 /* =======================================
@@ -14948,9 +16897,6 @@ function getDefaultKioskSettings() {
         showOrderForm: true,
         showCredentialRequest: true,
         brandingText: '',
-        startTime: '08:00',
-        endTime: '18:00',
-        enforceHours: true,
         doorOpenWarningSeconds: 300,
         doorOpenBlockSeconds: 600,
         doorUnlockDuration: 2
@@ -14974,9 +16920,6 @@ async function renderKioskSettings() {
     document.getElementById('kiosk-show-credential-request').checked = settings.showCredentialRequest;
     document.getElementById('kiosk-branding-text').value = settings.brandingText;
     document.getElementById('kiosk-door-unlock-duration').value = settings.doorUnlockDuration;
-    document.getElementById('kiosk-start-time').value = settings.startTime;
-    document.getElementById('kiosk-end-time').value = settings.endTime;
-    document.getElementById('kiosk-enforce-hours').checked = settings.enforceHours;
 
     // Set up save button
     const saveBtn = document.getElementById('save-kiosk-settings-btn');
@@ -14996,10 +16939,7 @@ async function handleSaveKioskSettings() {
         brandingText: document.getElementById('kiosk-branding-text').value.trim(),
         doorOpenWarningSeconds: Math.round(Number(kioskRuntimeSettings?.doorOpenWarningSeconds) || 300),
         doorOpenBlockSeconds: Math.round(Number(kioskRuntimeSettings?.doorOpenBlockSeconds) || 600),
-        doorUnlockDuration: parseFloat(document.getElementById('kiosk-door-unlock-duration').value) || 2,
-        startTime: document.getElementById('kiosk-start-time').value,
-        endTime: document.getElementById('kiosk-end-time').value,
-        enforceHours: document.getElementById('kiosk-enforce-hours').checked
+        doorUnlockDuration: parseFloat(document.getElementById('kiosk-door-unlock-duration').value) || 2
     };
 
     // Validation
@@ -15016,19 +16956,6 @@ async function handleSaveKioskSettings() {
     if (settings.doorUnlockDuration < 0.5 || settings.doorUnlockDuration > 10) {
         showToast('Door unlock duration must be between 0.5 and 10 seconds.', 'error');
         return;
-    }
-
-    if (settings.enforceHours) {
-        const startMinutes = parseTimeToMinutes(settings.startTime);
-        const endMinutes = parseTimeToMinutes(settings.endTime);
-        if (startMinutes === null || endMinutes === null) {
-            showToast('Start and end time must be valid.', 'error');
-            return;
-        }
-        if (startMinutes === endMinutes) {
-            showToast('End time must be after start time.', 'error');
-            return;
-        }
     }
 
     const result = await saveKioskSettingsToSupabase(settings, kioskId);
@@ -15331,14 +17258,71 @@ function _trackPageVisit(pageId) {
     usageStats.pageVisits[pageId] = (usageStats.pageVisits[pageId] || 0) + 1;
 }
 
-// ── PIN gate ─────────────────────────────────────────────────────────
-function openDebugMenuGated() {
-    if (!debugConfig.pinHash) {
-        if (!userCanPerformPrivilegedActions()) {
-            showToast('Debug menu not configured. Log in as teacher or developer to set the PIN.', 'error');
-            return;
+// ── Staff & PIN Debug Gate ───────────────────────────────────────────
+async function verifyStaffCredentialsForDebug(identity, password) {
+    const rawIdentity = String(identity || '').trim();
+    const rawPass = String(password || '').trim();
+    if (!rawIdentity || !rawPass) return { success: false, reason: 'Please enter both username/barcode and password.' };
+
+    const normIdentity = rawIdentity.toLowerCase();
+
+    // 1. Check in mockUsers
+    let user = (Array.isArray(mockUsers) ? mockUsers : []).find(u => {
+        const id = String(u.id || '').trim().toLowerCase();
+        const name = String(u.name || '').trim().toLowerCase();
+        const barcode = String(u.barcode || u.user_barcode || u.card_barcode || '').trim().toLowerCase();
+        const email = String(u.email || '').trim().toLowerCase();
+        const username = String(u.username || '').trim().toLowerCase();
+        return id === normIdentity || name === normIdentity || barcode === normIdentity || email === normIdentity || username === normIdentity;
+    });
+
+    // 2. If not found in mockUsers, check via Supabase
+    if (!user) {
+        try {
+            const client = typeof requireSupabaseClient === 'function' ? requireSupabaseClient('verifyStaffCredentialsForDebug') : null;
+            if (client) {
+                const { data: byId } = await client.from('users').select('*').ilike('id', rawIdentity).maybeSingle();
+                if (byId) user = byId;
+                if (!user) {
+                    const { data: byName } = await client.from('users').select('*').ilike('name', rawIdentity).maybeSingle();
+                    if (byName) user = byName;
+                }
+                if (!user) {
+                    const { data: byBarcode } = await client.from('users').select('*').eq('barcode', rawIdentity).maybeSingle();
+                    if (byBarcode) user = byBarcode;
+                }
+            }
+        } catch (e) {
+            console.warn('Database lookup error during staff debug verification:', e);
         }
-        _promptSetDebugPin();
+    }
+
+    if (!user) {
+        return { success: false, reason: 'No matching user found.' };
+    }
+
+    const role = String(user.role || '').toLowerCase();
+    if (role !== 'teacher' && role !== 'developer') {
+        return { success: false, reason: 'Account does not have Teacher or Developer privileges.' };
+    }
+
+    const expectedHash = typeof getUserPrivilegedPasswordHash === 'function' ? getUserPrivilegedPasswordHash(user) : '';
+    const enteredHash = await hashDebugPin(rawPass);
+
+    const matchesHash = expectedHash && enteredHash && expectedHash.toLowerCase() === enteredHash.toLowerCase();
+    const matchesPlain = [user.auth_password, user.authentication_password, user.password].some(p => p && String(p).trim() === rawPass);
+    const isChangeMe = (!expectedHash && !user.auth_password) && rawPass.toLowerCase() === 'changeme';
+
+    if (matchesHash || matchesPlain || isChangeMe) {
+        return { success: true, user };
+    }
+
+    return { success: false, reason: 'Incorrect admin password.' };
+}
+
+function openDebugMenuGated() {
+    if (typeof userCanPerformPrivilegedActions === 'function' && userCanPerformPrivilegedActions()) {
+        openDebugMenu(debugConfig.kioskLocked ? 'session' : 'system');
         return;
     }
     _promptEnterDebugPin();
@@ -15347,7 +17331,7 @@ function openDebugMenuGated() {
 function _promptSetDebugPin() {
     const html = `
         <div class="modal-header debug-modal-header">
-            <h3 style="color:#a78bfa"><i class="ph ph-lock-key"></i> Set Debug PIN</h3>
+            <h3 style="color:var(--accent-primary)"><i class="ph ph-lock-key"></i> Set Debug PIN</h3>
             <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
         </div>
         <div class="modal-body">
@@ -15378,7 +17362,7 @@ function _promptSetDebugPin() {
             return;
         }
 
-        if (hasStaffPasswordHashConflict(pinHash)) {
+        if (typeof hasStaffPasswordHashConflict === 'function' && hasStaffPasswordHashConflict(pinHash)) {
             showToast('Debug PIN cannot match a teacher/developer authentication password.', 'error');
             return;
         }
@@ -15404,25 +17388,91 @@ function _promptSetDebugPin() {
 let _pinAttempts = 0;
 function _promptEnterDebugPin() {
     _pinAttempts = 0;
+    const hasPin = Boolean(debugConfig.pinHash);
+
     const html = `
         <div class="modal-header debug-modal-header">
-            <h3 style="color:#a78bfa"><i class="ph ph-lock-key"></i> Debug Access</h3>
+            <h3 style="color:var(--accent-primary)"><i class="ph ph-lock-key"></i> Debug Console Access</h3>
             <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>
         </div>
-        <div class="modal-body">
-            <p class="text-secondary mb-4">Enter the debug PIN to continue.</p>
-            <div class="form-group">
-                <input type="password" id="dbg-pin-input" class="form-control" maxlength="8" inputmode="numeric" placeholder="PIN" autofocus>
-                <small id="dbg-pin-err" class="text-danger" style="display:none;margin-top:0.25rem"></small>
+        <div class="modal-body" style="padding: 1.25rem;">
+            <div style="display: flex; gap: 0.5rem; margin-bottom: 1.25rem; border-bottom: 1px solid var(--glass-border); padding-bottom: 0.75rem;">
+                <button type="button" id="dbg-tab-pin-btn" class="btn btn-sm ${hasPin ? 'btn-primary' : 'btn-secondary'}" style="flex:1;">
+                    <i class="ph ph-hash"></i> Debug PIN
+                </button>
+                <button type="button" id="dbg-tab-staff-btn" class="btn btn-sm ${!hasPin ? 'btn-primary' : 'btn-secondary'}" style="flex:1;">
+                    <i class="ph ph-user-shield"></i> Teacher / Dev Admin
+                </button>
             </div>
-        </div>
-        <div class="modal-footer">
-            <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-            <button class="btn btn-primary" id="dbg-enter-pin-btn">Enter</button>
+
+            <!-- PIN Form View -->
+            <div id="dbg-form-pin" style="${hasPin ? '' : 'display:none;'}">
+                <p class="text-secondary mb-3" style="font-size:0.9rem;">Enter the debug PIN to unlock the debug menu.</p>
+                <div class="form-group">
+                    <input type="password" id="dbg-pin-input" class="form-control" maxlength="8" inputmode="numeric" placeholder="Enter PIN" autofocus>
+                    <small id="dbg-pin-err" class="text-danger" style="display:none;margin-top:0.35rem;display:block;"></small>
+                </div>
+                <div style="margin-top:1.25rem;display:flex;justify-content:flex-end;gap:0.5rem;">
+                    <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="dbg-enter-pin-btn">Unlock with PIN</button>
+                </div>
+            </div>
+
+            <!-- Staff / Dev Form View -->
+            <div id="dbg-form-staff" style="${!hasPin ? '' : 'display:none;'}">
+                <p class="text-secondary mb-3" style="font-size:0.9rem;">Sign in with Teacher or Developer admin credentials to access the console.</p>
+                <div class="form-group mb-3">
+                    <label style="font-size:0.75rem;text-transform:uppercase;font-weight:700;color:var(--text-muted);display:block;margin-bottom:0.3rem;">Username, Barcode, or Email</label>
+                    <input type="text" id="dbg-staff-identity" class="form-control" placeholder="e.g. teacher username or scan barcode" autocomplete="username">
+                </div>
+                <div class="form-group">
+                    <label style="font-size:0.75rem;text-transform:uppercase;font-weight:700;color:var(--text-muted);display:block;margin-bottom:0.3rem;">Admin Password</label>
+                    <input type="password" id="dbg-staff-password" class="form-control" placeholder="Password" autocomplete="current-password">
+                    <small id="dbg-staff-err" class="text-danger" style="display:none;margin-top:0.35rem;display:block;"></small>
+                </div>
+                <div style="margin-top:1.25rem;display:flex;justify-content:flex-end;gap:0.5rem;">
+                    <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="dbg-enter-staff-btn">Authenticate & Enter</button>
+                </div>
+            </div>
         </div>`;
     openModal(html);
+
+    // Tab switching
+    const pinTabBtn = document.getElementById('dbg-tab-pin-btn');
+    const staffTabBtn = document.getElementById('dbg-tab-staff-btn');
+    const pinForm = document.getElementById('dbg-form-pin');
+    const staffForm = document.getElementById('dbg-form-staff');
+
+    pinTabBtn?.addEventListener('click', () => {
+        pinTabBtn.classList.remove('btn-secondary');
+        pinTabBtn.classList.add('btn-primary');
+        staffTabBtn?.classList.remove('btn-primary');
+        staffTabBtn?.classList.add('btn-secondary');
+        if (pinForm) pinForm.style.display = '';
+        if (staffForm) staffForm.style.display = 'none';
+        document.getElementById('dbg-pin-input')?.focus();
+    });
+
+    staffTabBtn?.addEventListener('click', () => {
+        staffTabBtn.classList.remove('btn-secondary');
+        staffTabBtn.classList.add('btn-primary');
+        pinTabBtn?.classList.remove('btn-primary');
+        pinTabBtn?.classList.add('btn-secondary');
+        if (staffForm) staffForm.style.display = '';
+        if (pinForm) pinForm.style.display = 'none';
+        document.getElementById('dbg-staff-identity')?.focus();
+    });
+
     const tryPin = async () => {
         const val = (document.getElementById('dbg-pin-input')?.value || '').trim();
+        const errEl = document.getElementById('dbg-pin-err');
+
+        if (!val) {
+            if (errEl) { errEl.style.display = 'block'; errEl.textContent = 'Please enter the debug PIN.'; }
+            return;
+        }
+
         _pinAttempts++;
         const pinHash = await hashDebugPin(val);
         if (pinHash && pinHash === debugConfig.pinHash) {
@@ -15430,14 +17480,51 @@ function _promptEnterDebugPin() {
             closeModal();
             openDebugMenu(debugConfig.kioskLocked ? 'session' : 'system');
         } else {
-            const errEl = document.getElementById('dbg-pin-err');
-            if (errEl) { errEl.style.display = ''; errEl.textContent = `Incorrect PIN. Attempt ${_pinAttempts}/5.`; }
+            if (errEl) { errEl.style.display = 'block'; errEl.textContent = `Incorrect PIN. Attempt ${_pinAttempts}/5.`; }
             if (document.getElementById('dbg-pin-input')) document.getElementById('dbg-pin-input').value = '';
             if (_pinAttempts >= 5) { closeModal(); showToast('Too many incorrect PIN attempts.', 'error'); }
         }
     };
+
+    const tryStaffAuth = async () => {
+        const identity = (document.getElementById('dbg-staff-identity')?.value || '').trim();
+        const pass = (document.getElementById('dbg-staff-password')?.value || '').trim();
+        const errEl = document.getElementById('dbg-staff-err');
+
+        if (!identity || !pass) {
+            if (errEl) { errEl.style.display = 'block'; errEl.textContent = 'Please enter both your identity and password.'; }
+            return;
+        }
+
+        const authBtn = document.getElementById('dbg-enter-staff-btn');
+        if (authBtn) {
+            authBtn.disabled = true;
+            authBtn.innerHTML = '<i class="ph ph-spinner ph-spin"></i> Verifying...';
+        }
+
+        try {
+            const res = await verifyStaffCredentialsForDebug(identity, pass);
+            if (res.success && res.user) {
+                _pinAttempts = 0;
+                closeModal();
+                showToast(`Admin access verified: ${res.user.name} (${res.user.role})`, 'success');
+                openDebugMenu(debugConfig.kioskLocked ? 'session' : 'system');
+            } else {
+                if (errEl) { errEl.style.display = 'block'; errEl.textContent = res.reason || 'Invalid teacher/developer credentials.'; }
+                if (authBtn) { authBtn.disabled = false; authBtn.textContent = 'Authenticate & Enter'; }
+            }
+        } catch (e) {
+            if (errEl) { errEl.style.display = 'block'; errEl.textContent = 'Verification error occurred.'; }
+            if (authBtn) { authBtn.disabled = false; authBtn.textContent = 'Authenticate & Enter'; }
+        }
+    };
+
     document.getElementById('dbg-enter-pin-btn')?.addEventListener('click', tryPin);
     document.getElementById('dbg-pin-input')?.addEventListener('keydown', e => { if (e.key === 'Enter') tryPin(); });
+
+    document.getElementById('dbg-enter-staff-btn')?.addEventListener('click', tryStaffAuth);
+    document.getElementById('dbg-staff-identity')?.addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('dbg-staff-password')?.focus(); });
+    document.getElementById('dbg-staff-password')?.addEventListener('keydown', e => { if (e.key === 'Enter') tryStaffAuth(); });
 }
 
 // ── Trigger mechanisms ────────────────────────────────────────────────
@@ -15715,8 +17802,8 @@ function openDebugMenu(initialTab = 'system') {
     const html = `
         <div class="modal-header debug-modal-header">
             <div style="display:flex;align-items:center;gap:0.6rem">
-                <i class="ph ph-bug" style="color:#a78bfa;font-size:1.3rem"></i>
-                <h3 style="color:#a78bfa;margin:0">Debug Console</h3>
+                <i class="ph ph-bug" style="color:var(--accent-primary);font-size:1.3rem"></i>
+                <h3 style="color:var(--accent-primary);margin:0">Debug Console</h3>
                 ${debugConfig.debugModeActive ? '<span class="badge" style="background:rgba(239,68,68,0.2);color:var(--danger);font-size:0.65rem;padding:0.1rem 0.4rem">● LIVE</span>' : ''}
             </div>
             <button class="close-btn" onclick="closeModal()"><i class="ph ph-x"></i></button>

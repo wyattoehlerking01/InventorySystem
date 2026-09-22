@@ -192,7 +192,7 @@ sudo LED_PIN=17 DOOR_SENSOR_PIN=22 python3 LED_Door.py
 ```bash
 curl http://127.0.0.1:8090/status
 curl http://127.0.0.1:8090/telemetry
-curl "http://127.0.0.1:8090/trigger?userId=test"
+curl "http://127.0.0.1:8090/trigger?userid=123"
 ```
 
 Expected behavior:

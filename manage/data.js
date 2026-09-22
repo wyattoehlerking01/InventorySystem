@@ -6,28 +6,44 @@
 const { SUPABASE_URL, SUPABASE_KEY } = window.APP_ENV || {};
 const activeKioskId = String(window.APP_ENV?.KIOSK_ID ?? window.APP_ENV?.kioskId ?? '').trim();
 
-function resolveLedTriggerUrl() {
+function resolveLedTriggerUrl(userId) {
     const explicitUrl = String(window.APP_ENV?.LED_TRIGGER_URL || '').trim();
-    if (explicitUrl) return explicitUrl;
+    let base = explicitUrl;
+    if (!base) {
+        const gpioUrl = String(window.APP_ENV?.GPIO_SERVER_URL || '').trim();
+        if (gpioUrl) {
+            try {
+                const parsed = new URL(gpioUrl);
+                parsed.pathname = '/trigger';
+                parsed.search = '';
+                parsed.hash = '';
+                base = parsed.toString();
+            } catch {
+                base = '';
+            }
+        }
+    }
+    if (!base) return '';
 
-    const gpioUrl = String(window.APP_ENV?.GPIO_SERVER_URL || '').trim();
-    if (!gpioUrl) return '';
+    const effectiveUserId = userId || (typeof currentUser !== 'undefined' && currentUser?.id) || (typeof window !== 'undefined' && window.currentUser?.id) || '';
+    if (!effectiveUserId) return base;
 
     try {
-        const parsed = new URL(gpioUrl);
-        parsed.pathname = '/trigger';
-        parsed.search = '';
-        parsed.hash = '';
+        const parsed = new URL(base, (typeof window !== 'undefined' && window.location?.origin) || 'http://127.0.0.1:8090');
+        parsed.searchParams.set('userid', String(effectiveUserId));
         return parsed.toString();
     } catch {
-        return '';
+        const sep = base.includes('?') ? '&' : '?';
+        return `${base}${sep}userid=${encodeURIComponent(String(effectiveUserId))}`;
     }
 }
 
 const LED_TRIGGER_URL = resolveLedTriggerUrl();
 
-function notifySignoutLedTrigger() {
-    if (!LED_TRIGGER_URL) return;
+function notifySignoutLedTrigger(userId) {
+    const effectiveUserId = userId || (typeof currentUser !== 'undefined' && currentUser?.id) || (typeof window !== 'undefined' && window.currentUser?.id) || '';
+    const targetUrl = resolveLedTriggerUrl(effectiveUserId);
+    if (!targetUrl) return;
     if (typeof fetch !== 'function') {
         console.warn('LED trigger skipped: fetch is unavailable in this environment.');
         return;
@@ -35,7 +51,7 @@ function notifySignoutLedTrigger() {
 
     // Fire-and-forget: this should never block checkout UX.
     Promise.resolve().then(() => {
-        void fetch(LED_TRIGGER_URL, {
+        void fetch(targetUrl, {
             method: 'GET',
             mode: 'no-cors',
             cache: 'no-store',
@@ -781,6 +797,90 @@ function getLastProjectItemOutError() {
    ======================================= */
 
 /**
+ * Load only public catalog / metadata needed before user login.
+ * Does NOT load sensitive records (activity logs, users, requests, projects, door sessions).
+ */
+async function loadPreLoginData() {
+    requireSupabaseClient('loadPreLoginData');
+
+    try {
+        await Promise.all([
+            loadCategories(),
+            loadVisibilityTags(),
+            loadInventoryItems(),
+            loadInventoryItemBundles(),
+            loadInventoryItemVisibility()
+        ]);
+        console.log('Pre-login public catalog data loaded successfully.');
+    } catch (error) {
+        console.error('Error loading pre-login data from Supabase:', error);
+        throw error;
+    }
+}
+
+/**
+ * Load role-appropriate user data after successful authentication.
+ */
+async function loadUserData(user) {
+    if (!user) return;
+    requireSupabaseClient('loadUserData');
+
+    try {
+        const isElevated = user.role === 'teacher' || user.role === 'developer';
+
+        const promises = [
+            loadUsers(),
+            loadProjects(),
+            loadStudentClasses(),
+            loadProjectCollaborators(),
+            loadProjectItemsOut(),
+            loadInventoryItems(),
+            loadInventoryItemBundles(),
+            loadInventoryItemVisibility()
+        ];
+
+        if (isElevated) {
+            promises.push(
+                loadDoorSensorEvents(),
+                loadActivityLogs(),
+                loadHelpRequests(),
+                loadExtensionRequests(),
+                loadOrderRequests(),
+                loadSystemFlags()
+            );
+        } else {
+            // Student: Clear elevated queues and logs
+            activityLogs = [];
+            helpRequests = [];
+            extensionRequests = [];
+            orderRequests = [];
+            systemFlags = [];
+        }
+
+        await Promise.all(promises);
+        console.log(`User data loaded successfully for ${user.role} ${user.name}`);
+    } catch (error) {
+        console.error('Error loading user data from Supabase:', error);
+        throw error;
+    }
+}
+
+/**
+ * Wipe all sensitive session data on logout.
+ */
+function clearSensitiveDataOnLogout() {
+    activityLogs = [];
+    helpRequests = [];
+    extensionRequests = [];
+    orderRequests = [];
+    systemFlags = [];
+    projects = [];
+    studentClasses = [];
+    mockUsers = [];
+    console.log('Cleared sensitive session data on logout.');
+}
+
+/**
  * Load all data from Supabase tables
  */
 async function loadAllData() {
@@ -855,10 +955,17 @@ async function loadUsers() {
         return false;
     };
 
-    const { data, error } = await dbClient.from('users').select('*');
+    let { data, error } = await dbClient
+        .from('users')
+        .select('id, name, email, role, grade, barcode, avatar, personal_items_enabled, status, created_at');
+
     if (error) {
-        console.error('Error loading users:', error);
-        return;
+        const fallback = await dbClient.from('users').select('*');
+        if (fallback.error) {
+            console.error('Error loading users:', fallback.error);
+            return;
+        }
+        data = fallback.data;
     }
 
     let permissionsByUserId = {};
@@ -995,7 +1102,8 @@ function hydrateInventoryItemBundles() {
 
     const bundleItems = new Set((inventoryItemBundles || []).map(row => String(row.bundle_item_id || '')));
     inventoryItems = inventoryItems.map(item => {
-        if (!bundleItems.has(String(item.id || ''))) return item;
+        const isBundle = isBundleItemType(item.item_type) || bundleItems.has(String(item.id || ''));
+        if (!isBundle) return item;
 
         const bundleComponents = getBundleComponentRowsForBundleItem(item.id)
             .map(component => ({
@@ -1007,6 +1115,7 @@ function hydrateInventoryItemBundles() {
 
         return {
             ...item,
+            item_type: 'bundle',
             bundleComponents,
             bundleStock,
             stock: bundleStock
@@ -1104,7 +1213,11 @@ async function loadVisibilityTags() {
  * Load activity logs from public.activity_logs table
  */
 async function loadActivityLogs() {
-    const { data, error } = await dbClient.from('activity_logs').select('*').order('timestamp', { ascending: false });
+    const { data, error } = await dbClient
+        .from('activity_logs')
+        .select('*')
+        .order('timestamp', { ascending: false })
+        .limit(100);
     if (error) {
         console.error('Error loading activity logs:', error);
         return;
@@ -1579,6 +1692,13 @@ async function loadProjectItemsOut() {
         return message.includes('does not exist') || code === '42P01' || code === 'PGRST204';
     };
 
+    // Reset itemsOut on all existing projects to prevent accumulation on reloads
+    if (Array.isArray(projects)) {
+        projects.forEach(p => {
+            p.itemsOut = [];
+        });
+    }
+
     const [itemsOutResult, bundleTxResult] = await Promise.all([
         dbClient.from('project_items_out').select('*'),
         dbClient.from('project_item_bundle_transactions').select('*')
@@ -1609,10 +1729,24 @@ async function loadProjectItemsOut() {
     (itemsOutResult.data || []).forEach(io => {
         if (io.bundle_transaction_id) return;
 
-        const project = projects.find(p => p.id === io.project_id);
-        if (!project) return;
+        let project = projects.find(p => p.id === io.project_id);
+        if (!project) {
+            const isPersonal = String(io.project_id || '').startsWith('PERS-');
+            const isClass = String(io.project_id || '').startsWith('CLASS-');
+            const assignedUserId = io.assigned_to_user_id ?? io.assignedToUserId ?? io.signed_out_by_user_id ?? '';
+            project = {
+                id: io.project_id,
+                name: isPersonal ? 'My Items (Personal)' : (isClass ? 'Class Checkout' : 'Project Items'),
+                ownerId: assignedUserId,
+                collaborators: [],
+                collaboratorRoles: {},
+                itemsOut: [],
+                status: 'Active'
+            };
+            projects.push(project);
+        }
 
-        project.itemsOut.push({
+        const ioRecord = {
             id: io.id,
             itemId: io.item_id,
             quantity: io.quantity,
@@ -1620,12 +1754,35 @@ async function loadProjectItemsOut() {
             dueDate: io.due_date,
             assignedToUserId: io.assigned_to_user_id ?? io.assignedToUserId ?? null,
             signedOutByUserId: io.signed_out_by_user_id ?? io.signedOutByUserId ?? null
-        });
+        };
+
+        const alreadyExists = (project.itemsOut || []).some(existing => 
+            (existing.id && io.id && existing.id === io.id) ||
+            (existing.itemId === io.item_id && existing.signoutDate === io.signout_date && existing.quantity === io.quantity && String(existing.assignedToUserId || '') === String(ioRecord.assignedToUserId || ''))
+        );
+
+        if (!alreadyExists) {
+            project.itemsOut.push(ioRecord);
+        }
     });
 
     Object.values(bundleTransactions).forEach(tx => {
-        const project = projects.find(p => p.id === tx.project_id);
-        if (!project) return;
+        let project = projects.find(p => p.id === tx.project_id);
+        if (!project) {
+            const isPersonal = String(tx.project_id || '').startsWith('PERS-');
+            const isClass = String(tx.project_id || '').startsWith('CLASS-');
+            const assignedUserId = tx.assigned_to_user_id ?? tx.assignedToUserId ?? tx.signed_out_by_user_id ?? '';
+            project = {
+                id: tx.project_id,
+                name: isPersonal ? 'My Items (Personal)' : (isClass ? 'Class Checkout' : 'Project Items'),
+                ownerId: assignedUserId,
+                collaborators: [],
+                collaboratorRoles: {},
+                itemsOut: [],
+                status: 'Active'
+            };
+            projects.push(project);
+        }
 
         const children = (bundleChildren[String(tx.id || '')] || []).map(row => ({
             id: row.id,
@@ -1638,18 +1795,24 @@ async function loadProjectItemsOut() {
             bundleTransactionId: row.bundle_transaction_id
         }));
 
-        project.itemsOut.push({
-            id: tx.id,
-            itemId: tx.bundle_item_id,
-            quantity: tx.bundle_quantity,
-            signoutDate: tx.signout_date,
-            dueDate: tx.due_date,
-            assignedToUserId: tx.assigned_to_user_id ?? tx.assignedToUserId ?? null,
-            signedOutByUserId: tx.signed_out_by_user_id ?? tx.signedOutByUserId ?? null,
-            bundleTransactionId: tx.id,
-            bundleComponents: children,
-            isBundle: true
-        });
+        const alreadyExists = (project.itemsOut || []).some(existing => 
+            existing.id && tx.id && existing.id === tx.id
+        );
+
+        if (!alreadyExists) {
+            project.itemsOut.push({
+                id: tx.id,
+                itemId: tx.bundle_item_id,
+                quantity: tx.bundle_quantity,
+                signoutDate: tx.signout_date,
+                dueDate: tx.due_date,
+                assignedToUserId: tx.assigned_to_user_id ?? tx.assignedToUserId ?? null,
+                signedOutByUserId: tx.signed_out_by_user_id ?? tx.signedOutByUserId ?? null,
+                bundleTransactionId: tx.id,
+                bundleComponents: children,
+                isBundle: true
+            });
+        }
     });
 }
 
@@ -2900,7 +3063,7 @@ async function insertProjectItemOutToSupabase(itemOut, { triggerLed = true } = {
     }
 
     if (triggerLed && shouldTriggerLedForItem(itemOut)) {
-        notifySignoutLedTrigger();
+        notifySignoutLedTrigger(itemOut?.userId || itemOut?.user_id);
     }
     return data?.[0];
 }
@@ -2982,7 +3145,7 @@ async function addProjectItemOutBatchToSupabase(itemOuts) {
     }
 
     if (shouldTriggerLed) {
-        notifySignoutLedTrigger();
+        notifySignoutLedTrigger(items?.[0]?.userId || items?.[0]?.user_id);
     }
 
     return insertedRows;
@@ -3837,17 +4000,39 @@ async function setItemVisibilityTagsInSupabase(itemId, tagNames) {
  * Add project collaborator
  */
 async function addProjectCollaboratorToSupabase(projectId, userId, memberRole = 'collaborator') {
-    const { data, error } = await dbClient.from('project_collaborators').insert([{
+    const role = typeof normalizeMemberRole === 'function' ? normalizeMemberRole(memberRole) : (memberRole || 'collaborator');
+    
+    // Maintain in-memory state immediately so newly added members are recognized right away
+    if (Array.isArray(projects)) {
+        const targetProj = projects.find(p => p.id === projectId);
+        if (targetProj) {
+            targetProj.collaborators = targetProj.collaborators || [];
+            if (!targetProj.collaborators.includes(userId)) {
+                targetProj.collaborators.push(userId);
+            }
+            targetProj.collaboratorRoles = targetProj.collaboratorRoles || {};
+            targetProj.collaboratorRoles[userId] = role;
+        }
+    }
+
+    let { data, error } = await dbClient.from('project_collaborators').insert([{
         project_id: projectId,
         user_id: userId,
-        member_role: 'collaborator'
+        member_role: role
     }]).select();
     
     if (error) {
-        console.error('Error adding project collaborator:', error);
-        return null;
+        const fallback = await dbClient.from('project_collaborators').insert([{
+            project_id: projectId,
+            user_id: userId
+        }]).select();
+        if (fallback.error) {
+            console.warn('Error adding project collaborator in Supabase:', error, fallback.error);
+            return { project_id: projectId, user_id: userId, member_role: role };
+        }
+        return fallback.data?.[0] || { project_id: projectId, user_id: userId, member_role: role };
     }
-    return data?.[0];
+    return data?.[0] || { project_id: projectId, user_id: userId, member_role: role };
 }
 
 /**
@@ -3889,6 +4074,16 @@ async function addProjectTransferToSupabase(transfer) {
  * Remove project collaborator
  */
 async function removeProjectCollaboratorFromSupabase(projectId, userId) {
+    if (Array.isArray(projects)) {
+        const targetProj = projects.find(p => p.id === projectId);
+        if (targetProj) {
+            targetProj.collaborators = (targetProj.collaborators || []).filter(id => id !== userId);
+            if (targetProj.collaboratorRoles) {
+                delete targetProj.collaboratorRoles[userId];
+            }
+        }
+    }
+
     const { error } = await dbClient.from('project_collaborators')
         .delete()
         .eq('project_id', projectId)
@@ -3926,6 +4121,196 @@ function addLog(userId, action, details) {
     });
     
     return log;
+}
+
+/**
+ * Fetch database event data and compute timeline status changes for a selected inventory item.
+ */
+async function fetchItemTimelineData(itemId) {
+    if (!itemId) return { item: null, activityLogs: [], itemsOutRows: [], transfersRows: [], doorJobsRows: [], extensionRows: [], error: 'Item ID required' };
+
+    let freshItem = null;
+    let dbLogs = [];
+    let itemsOutRows = [];
+    let transfersRows = [];
+    let doorJobsRows = [];
+    let extensionRows = [];
+
+    // 1. Fetch fresh item record from DB
+    try {
+        if (dbClient) {
+            const { data, error } = await dbClient
+                .from('inventory_items')
+                .select('*')
+                .eq('id', itemId)
+                .maybeSingle();
+            if (!error && data) {
+                freshItem = {
+                    ...data,
+                    main_category: data.main_category ?? data.mainCategory ?? data.category ?? 'Uncategorized',
+                    sub_category: data.sub_category ?? data.subCategory ?? 'General',
+                    category: data.category ?? data.main_category ?? data.mainCategory ?? 'Uncategorized',
+                    brand: data.brand ?? data.supplier ?? 'Unspecified',
+                    storageLocation: data.storageLocation ?? data.storage_location ?? data.location ?? null,
+                    imageLink: data.imageLink ?? data.image_link ?? null,
+                    supplierListingLink: data.supplierListingLink ?? data.supplier_listing_link ?? null,
+                    requiresDoorUnlock: data.requiresDoorUnlock ?? data.requires_door_unlock ?? true,
+                    sku: data.sku ?? data.barcode ?? (typeof getInventoryItemBarcode === 'function' ? getInventoryItemBarcode(data) : data.sku)
+                };
+            }
+        }
+    } catch (e) {
+        console.warn('Could not query inventory_items directly:', e);
+    }
+
+    if (!freshItem && Array.isArray(inventoryItems)) {
+        freshItem = inventoryItems.find(i => String(i.id) === String(itemId)) || null;
+    }
+
+    if (!freshItem) {
+        return { item: null, activityLogs: [], itemsOutRows: [], transfersRows: [], doorJobsRows: [], extensionRows: [], error: 'Item not found' };
+    }
+
+    // 2. Query activity_logs from DB
+    try {
+        if (dbClient) {
+            const { data, error } = await dbClient
+                .from('activity_logs')
+                .select('*')
+                .order('timestamp', { ascending: false })
+                .limit(500);
+            if (!error && Array.isArray(data)) {
+                dbLogs = data;
+            }
+
+            // Also search specifically for this item ID in details to capture older events
+            const { data: specificLogs, error: specificError } = await dbClient
+                .from('activity_logs')
+                .select('*')
+                .ilike('details', `%${itemId}%`)
+                .order('timestamp', { ascending: false })
+                .limit(100);
+            if (!specificError && Array.isArray(specificLogs)) {
+                const existingMap = new Set(dbLogs.map(l => String(l.id)));
+                specificLogs.forEach(l => {
+                    if (l && l.id && !existingMap.has(String(l.id))) {
+                        dbLogs.push(l);
+                        existingMap.add(String(l.id));
+                    }
+                });
+            }
+        }
+    } catch (e) {
+        console.warn('Could not query activity_logs directly:', e);
+    }
+
+    // Merge with in-memory activityLogs
+    if (Array.isArray(activityLogs) && activityLogs.length > 0) {
+        const existingMap = new Set(dbLogs.map(l => String(l.id)));
+        activityLogs.forEach(l => {
+            if (l && l.id && !existingMap.has(String(l.id))) {
+                dbLogs.push(l);
+                existingMap.add(String(l.id));
+            }
+        });
+    }
+
+    // 3. Query project_items_out from DB
+    try {
+        if (dbClient) {
+            const { data, error } = await dbClient
+                .from('project_items_out')
+                .select('*')
+                .eq('item_id', itemId)
+                .order('signout_date', { ascending: false });
+            if (!error && Array.isArray(data)) {
+                itemsOutRows = data;
+            }
+        }
+    } catch (e) {
+        console.warn('Could not query project_items_out directly:', e);
+    }
+
+    // Merge with in-memory projects itemsOut
+    if (Array.isArray(projects)) {
+        projects.forEach(p => {
+            (p.itemsOut || []).forEach(io => {
+                if (String(io.itemId || io.item_id) === String(itemId)) {
+                    const match = itemsOutRows.some(r => String(r.id) === String(io.id) || (r.project_id === (io.projectId || p.id) && r.signout_date === io.signoutDate));
+                    if (!match) {
+                        itemsOutRows.push({
+                            id: io.id || `out-${Math.random()}`,
+                            project_id: io.projectId || p.id,
+                            item_id: io.itemId,
+                            quantity: io.quantity || 1,
+                            signout_date: io.signoutDate,
+                            due_date: io.dueDate,
+                            assigned_to_user_id: io.assignedToUserId,
+                            signed_out_by_user_id: io.signedOutByUserId
+                        });
+                    }
+                }
+            });
+        });
+    }
+
+    // 4. Query project_item_transfers
+    try {
+        if (dbClient) {
+            const { data, error } = await dbClient
+                .from('project_item_transfers')
+                .select('*')
+                .eq('item_id', itemId)
+                .order('created_at', { ascending: false });
+            if (!error && Array.isArray(data)) {
+                transfersRows = data;
+            }
+        }
+    } catch (e) {
+        // Safe to ignore
+    }
+
+    // 5. Query door_unlock_jobs
+    try {
+        if (dbClient) {
+            const { data, error } = await dbClient
+                .from('door_unlock_jobs')
+                .select('*')
+                .eq('item_id', itemId)
+                .order('created_at', { ascending: false })
+                .limit(50);
+            if (!error && Array.isArray(data)) {
+                doorJobsRows = data;
+            }
+        }
+    } catch (e) {
+        // Safe to ignore
+    }
+
+    // 6. Query extension_requests
+    try {
+        if (dbClient) {
+            const { data, error } = await dbClient
+                .from('extension_requests')
+                .select('*')
+                .eq('item_id', itemId)
+                .order('created_at', { ascending: false });
+            if (!error && Array.isArray(data)) {
+                extensionRows = data;
+            }
+        }
+    } catch (e) {
+        // Safe to ignore
+    }
+
+    return {
+        item: freshItem,
+        activityLogs: dbLogs,
+        itemsOutRows,
+        transfersRows,
+        doorJobsRows,
+        extensionRows
+    };
 }
 
 

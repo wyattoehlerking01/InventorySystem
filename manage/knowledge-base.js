@@ -6,6 +6,7 @@
 (function () {
     const KB_PINNED_STORAGE_KEY = 'lchs_kb_pinned_guides';
     const KB_CUSTOM_STORAGE_KEY = 'lchs_kb_custom_guides';
+    const KB_DELETED_STORAGE_KEY = 'lchs_kb_deleted_guides';
 
     // Built-in Curated Guides
     const DEFAULT_GUIDES = [
@@ -683,6 +684,46 @@
         renderKnowledgeBaseContent();
     }
 
+    function getDeletedGuideIds() {
+        try {
+            const raw = localStorage.getItem(KB_DELETED_STORAGE_KEY);
+            return raw ? JSON.parse(raw) : [];
+        } catch {
+            return [];
+        }
+    }
+
+    function deleteGuide(guideId) {
+        if (!guideId) return;
+
+        // Remove from custom guides if present
+        const customList = getCustomGuides();
+        const updatedCustom = customList.filter(g => g.id !== guideId);
+        localStorage.setItem(KB_CUSTOM_STORAGE_KEY, JSON.stringify(updatedCustom));
+
+        // Add to deleted guide list
+        const deleted = getDeletedGuideIds();
+        if (!deleted.includes(guideId)) {
+            deleted.push(guideId);
+            localStorage.setItem(KB_DELETED_STORAGE_KEY, JSON.stringify(deleted));
+        }
+
+        // Remove from pinned guides if present
+        const pinned = getPinnedGuideIds().filter(id => id !== guideId);
+        localStorage.setItem(KB_PINNED_STORAGE_KEY, JSON.stringify(pinned));
+        updatePinnedBadgeCount();
+
+        if (typeof closeModal === 'function') {
+            closeModal();
+        }
+
+        if (typeof showToast === 'function') {
+            showToast('Resource deleted.', 'info');
+        }
+
+        renderKnowledgeBaseContent();
+    }
+
     function getCustomGuides() {
         try {
             const raw = localStorage.getItem(KB_CUSTOM_STORAGE_KEY);
@@ -705,8 +746,9 @@
     }
 
     function getAllGuides() {
+        const deleted = getDeletedGuideIds();
         const custom = getCustomGuides();
-        return [...custom, ...DEFAULT_GUIDES];
+        return [...custom, ...DEFAULT_GUIDES].filter(g => !deleted.includes(g.id));
     }
 
     function updatePinnedBadgeCount() {
@@ -884,9 +926,14 @@
                                     <i class="ph ${guide.categoryIcon || 'ph-book-open'}"></i>
                                     ${escapeHtml(guide.categoryName || guide.category)}
                                 </span>
-                                <button class="kb-pin-btn ${isPinned ? 'pinned' : ''}" data-id="${escapeHtml(guide.id)}" title="${isPinned ? 'Unpin from quick access' : 'Pin to quick access'}" aria-label="Pin resource">
-                                    <i class="ph${isPinned ? '-fill' : ''} ph-bookmark-simple"></i>
-                                </button>
+                                <div class="flex" style="gap:0.35rem;align-items:center;">
+                                    <button class="kb-pin-btn ${isPinned ? 'pinned' : ''}" data-id="${escapeHtml(guide.id)}" title="${isPinned ? 'Unpin from quick access' : 'Pin to quick access'}" aria-label="Pin resource">
+                                        <i class="ph${isPinned ? '-fill' : ''} ph-bookmark-simple"></i>
+                                    </button>
+                                    <button class="kb-delete-card-btn" data-id="${escapeHtml(guide.id)}" title="Delete resource" aria-label="Delete resource">
+                                        <i class="ph ph-trash"></i>
+                                    </button>
+                                </div>
                             </div>
                             <h4 class="kb-card-title">${escapeHtml(guide.title)}</h4>
                             <p class="kb-card-summary">${escapeHtml(guide.summary)}</p>
@@ -916,7 +963,7 @@
 
         container.querySelectorAll('.kb-card').forEach(card => {
             card.addEventListener('click', (e) => {
-                if (e.target.closest('.kb-pin-btn')) return;
+                if (e.target.closest('.kb-pin-btn') || e.target.closest('.kb-delete-card-btn')) return;
                 const id = card.getAttribute('data-id');
                 openGuideDetailModal(id);
             });
@@ -929,243 +976,261 @@
                 togglePinGuide(id);
             });
         });
+
+        container.querySelectorAll('.kb-delete-card-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const id = e.currentTarget.getAttribute('data-id');
+                const all = getAllGuides();
+                const targetGuide = all.find(g => g.id === id);
+                const title = targetGuide ? targetGuide.title : 'this resource';
+                if (confirm(`Are you sure you want to delete "${title}"?`)) {
+                    deleteGuide(id);
+                }
+            });
+        });
     }
 
     // ==========================================
-    // INTERACTIVE CALCULATORS & WORKBENCH TOOLS
+    // INTERACTIVE CALCULATORS & WORKBENCH TOOLS (CARD-BASED)
     // ==========================================
     function renderCalculatorsView(container) {
         container.innerHTML = `
             <div class="kb-calc-hub">
                 <div class="kb-calc-nav">
-                    <button class="btn btn-secondary kb-calc-tab-btn active" data-tool="gear">
+                    <button class="btn btn-secondary kb-calc-tab-btn active" data-tool="all">
+                        <i class="ph ph-squares-four"></i> All Calculators
+                    </button>
+                    <button class="btn btn-secondary kb-calc-tab-btn" data-tool="gear">
                         <i class="ph ph-gear-six"></i> Gear Ratio & Speed
                     </button>
                     <button class="btn btn-secondary kb-calc-tab-btn" data-tool="wire">
                         <i class="ph ph-lightning"></i> AWG Wire & Voltage Drop
                     </button>
                     <button class="btn btn-secondary kb-calc-tab-btn" data-tool="tap">
-                        <i class="ph ph-wrench"></i> Fastener & Tap Drill Finder
+                        <i class="ph ph-wrench"></i> Fastener & Tap Finder
                     </button>
                     <button class="btn btn-secondary kb-calc-tab-btn" data-tool="3dprint">
-                        <i class="ph ph-cube"></i> 3D Filament & Slicer Specs
+                        <i class="ph ph-cube"></i> 3D Filament & Slicer
                     </button>
                 </div>
 
-                <!-- Tool 1: Gear Ratio & Speed -->
-                <div class="kb-tool-panel" id="kb-tool-gear">
-                    <div class="kb-calc-card glass-panel">
-                        <div class="kb-calc-header">
-                            <div>
-                                <h3><i class="ph ph-gear-six"></i> Gear Ratio & Linear Drive Speed Calculator</h3>
-                                <p class="text-muted text-sm">Calculate overall mechanical reduction, final shaft output RPM, and robot linear speed.</p>
-                            </div>
-                        </div>
-                        <div class="kb-calc-grid">
-                            <div class="kb-calc-inputs">
-                                <div class="form-group">
-                                    <label>Motor Preset</label>
-                                    <select class="form-control" id="gear-motor-preset">
-                                        <option value="6000" selected>Kraken X60 (6,000 RPM)</option>
-                                        <option value="5676">NEO Brushless (5,676 RPM)</option>
-                                        <option value="6380">Falcon 500 (6,380 RPM)</option>
-                                        <option value="5330">CIM Motor (5,330 RPM)</option>
-                                        <option value="18730">775pro / Redline (18,730 RPM)</option>
-                                        <option value="custom">Custom Motor RPM...</option>
-                                    </select>
-                                </div>
-                                <div class="form-group hidden" id="gear-custom-rpm-group">
-                                    <label>Custom Free Speed (RPM)</label>
-                                    <input type="number" class="form-control" id="gear-custom-rpm" value="6000" min="100" max="50000">
-                                </div>
-                                <div class="flex" style="gap:1rem;">
-                                    <div class="form-group flex-1">
-                                        <label>Driving Gear (Pinion Teeth)</label>
-                                        <input type="number" class="form-control" id="gear-driving-teeth" value="12" min="1" max="200">
-                                    </div>
-                                    <div class="form-group flex-1">
-                                        <label>Driven Gear (Bull Gear Teeth)</label>
-                                        <input type="number" class="form-control" id="gear-driven-teeth" value="60" min="1" max="200">
-                                    </div>
-                                </div>
-                                <div class="flex" style="gap:1rem;">
-                                    <div class="form-group flex-1">
-                                        <label>Second Stage Driving (Optional)</label>
-                                        <input type="number" class="form-control" id="gear-driving-2" value="1" min="1" max="200">
-                                    </div>
-                                    <div class="form-group flex-1">
-                                        <label>Second Stage Driven (Optional)</label>
-                                        <input type="number" class="form-control" id="gear-driven-2" value="1" min="1" max="200">
-                                    </div>
-                                </div>
-                                <div class="form-group">
-                                    <label>Drive Wheel Diameter (Inches)</label>
-                                    <input type="number" class="form-control" id="gear-wheel-dia" value="4.0" step="0.25" min="0.5" max="24.0">
+                <div class="kb-calc-cards-stack" style="display:flex;flex-direction:column;gap:1.5rem;">
+                    <!-- Calculator Card 1: Gear Ratio & Speed -->
+                    <div class="kb-tool-panel" id="kb-tool-gear">
+                        <div class="kb-calc-card glass-panel">
+                            <div class="kb-calc-header">
+                                <div>
+                                    <h3><i class="ph ph-gear-six"></i> Gear Ratio & Linear Drive Speed Calculator</h3>
+                                    <p class="text-muted text-sm">Calculate overall mechanical reduction, final shaft output RPM, and robot linear speed.</p>
                                 </div>
                             </div>
+                            <div class="kb-calc-grid">
+                                <div class="kb-calc-inputs">
+                                    <div class="form-group">
+                                        <label>Motor Preset</label>
+                                        <select class="form-control" id="gear-motor-preset">
+                                            <option value="6000" selected>Kraken X60 (6,000 RPM)</option>
+                                            <option value="5676">NEO Brushless (5,676 RPM)</option>
+                                            <option value="6380">Falcon 500 (6,380 RPM)</option>
+                                            <option value="5330">CIM Motor (5,330 RPM)</option>
+                                            <option value="18730">775pro / Redline (18,730 RPM)</option>
+                                            <option value="custom">Custom Motor RPM...</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group hidden" id="gear-custom-rpm-group">
+                                        <label>Custom Free Speed (RPM)</label>
+                                        <input type="number" class="form-control" id="gear-custom-rpm" value="6000" min="100" max="50000">
+                                    </div>
+                                    <div class="flex" style="gap:1rem;">
+                                        <div class="form-group flex-1">
+                                            <label>Driving Gear (Pinion Teeth)</label>
+                                            <input type="number" class="form-control" id="gear-driving-teeth" value="12" min="1" max="200">
+                                        </div>
+                                        <div class="form-group flex-1">
+                                            <label>Driven Gear (Bull Gear Teeth)</label>
+                                            <input type="number" class="form-control" id="gear-driven-teeth" value="60" min="1" max="200">
+                                        </div>
+                                    </div>
+                                    <div class="flex" style="gap:1rem;">
+                                        <div class="form-group flex-1">
+                                            <label>Second Stage Driving (Optional)</label>
+                                            <input type="number" class="form-control" id="gear-driving-2" value="1" min="1" max="200">
+                                        </div>
+                                        <div class="form-group flex-1">
+                                            <label>Second Stage Driven (Optional)</label>
+                                            <input type="number" class="form-control" id="gear-driven-2" value="1" min="1" max="200">
+                                        </div>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Drive Wheel Diameter (Inches)</label>
+                                        <input type="number" class="form-control" id="gear-wheel-dia" value="4.0" step="0.25" min="0.5" max="24.0">
+                                    </div>
+                                </div>
 
-                            <div class="kb-calc-results">
-                                <div class="kb-result-box highlight">
-                                    <span class="kb-result-label">Overall Reduction Ratio</span>
-                                    <span class="kb-result-val" id="gear-res-ratio">5.00 : 1</span>
-                                    <span class="text-xs text-muted" id="gear-res-ratio-desc">5.0x Torque Multiplier</span>
-                                </div>
-                                <div class="kb-result-box">
-                                    <span class="kb-result-label">Final Shaft Output Speed</span>
-                                    <span class="kb-result-val" id="gear-res-rpm">1,200 RPM</span>
-                                    <span class="text-xs text-muted">Free speed under no load</span>
-                                </div>
-                                <div class="kb-result-box">
-                                    <span class="kb-result-label">Theoretical Linear Surface Speed</span>
-                                    <span class="kb-result-val" id="gear-res-speed">20.9 ft/sec</span>
-                                    <span class="text-xs text-muted" id="gear-res-speed-metric">6.38 m/s (14.3 mph)</span>
-                                </div>
-                                <div class="kb-result-box">
-                                    <span class="kb-result-label">Estimated Real-World Speed (~82% Load)</span>
-                                    <span class="kb-result-val" id="gear-res-real-speed" style="color:var(--accent-primary);">17.2 ft/sec</span>
-                                    <span class="text-xs text-muted">Accounting for friction & carpet drag</span>
+                                <div class="kb-calc-results">
+                                    <div class="kb-result-box highlight">
+                                        <span class="kb-result-label">Overall Reduction Ratio</span>
+                                        <span class="kb-result-val" id="gear-res-ratio">5.00 : 1</span>
+                                        <span class="text-xs text-muted" id="gear-res-ratio-desc">5.0x Torque Multiplier</span>
+                                    </div>
+                                    <div class="kb-result-box">
+                                        <span class="kb-result-label">Final Shaft Output Speed</span>
+                                        <span class="kb-result-val" id="gear-res-rpm">1,200 RPM</span>
+                                        <span class="text-xs text-muted">Free speed under no load</span>
+                                    </div>
+                                    <div class="kb-result-box">
+                                        <span class="kb-result-label">Theoretical Linear Surface Speed</span>
+                                        <span class="kb-result-val" id="gear-res-speed">20.9 ft/sec</span>
+                                        <span class="text-xs text-muted" id="gear-res-speed-metric">6.38 m/s (14.3 mph)</span>
+                                    </div>
+                                    <div class="kb-result-box">
+                                        <span class="kb-result-label">Estimated Real-World Speed (~82% Load)</span>
+                                        <span class="kb-result-val" id="gear-res-real-speed" style="color:var(--accent-primary);">17.2 ft/sec</span>
+                                        <span class="text-xs text-muted">Accounting for friction & carpet drag</span>
+                                    </div>
                                 </div>
                             </div>
                         </div>
                     </div>
-                </div>
 
-                <!-- Tool 2: Wire Gauge & Voltage Drop -->
-                <div class="kb-tool-panel hidden" id="kb-tool-wire">
-                    <div class="kb-calc-card glass-panel">
-                        <div class="kb-calc-header">
-                            <div>
-                                <h3><i class="ph ph-lightning"></i> AWG Wire Gauge & Voltage Drop Calculator</h3>
-                                <p class="text-muted text-sm">Calculate circuit resistance, voltage loss, and verify safe ampacity for 12V DC systems.</p>
+                    <!-- Calculator Card 2: Wire Gauge & Voltage Drop -->
+                    <div class="kb-tool-panel" id="kb-tool-wire">
+                        <div class="kb-calc-card glass-panel">
+                            <div class="kb-calc-header">
+                                <div>
+                                    <h3><i class="ph ph-lightning"></i> AWG Wire Gauge & Voltage Drop Calculator</h3>
+                                    <p class="text-muted text-sm">Calculate circuit resistance, voltage loss, and verify safe ampacity for 12V DC systems.</p>
+                                </div>
+                            </div>
+                            <div class="kb-calc-grid">
+                                <div class="kb-calc-inputs">
+                                    <div class="form-group">
+                                        <label>Circuit Nominal Voltage</label>
+                                        <select class="form-control" id="wire-voltage">
+                                            <option value="12" selected>12V DC (Main Robot Battery)</option>
+                                            <option value="5">5V DC (Sensors / Coprocessor)</option>
+                                            <option value="24">24V DC (Pneumatic / Industrial)</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Continuous Current Load (Amps)</label>
+                                        <input type="number" class="form-control" id="wire-current" value="30" min="0.5" max="200" step="1">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Total Wire Length (Feet, One-Way)</label>
+                                        <input type="number" class="form-control" id="wire-length" value="6" min="0.5" max="100" step="0.5">
+                                        <small class="text-muted">Return path (2x length) is automatically calculated.</small>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Selected Wire Gauge (AWG)</label>
+                                        <select class="form-control" id="wire-awg-select">
+                                            <option value="6">6 AWG (Heavy Battery / Main PDP)</option>
+                                            <option value="10">10 AWG (High Power Motors / 40A Breaker)</option>
+                                            <option value="12" selected>12 AWG (Standard Motors / 30A Breaker)</option>
+                                            <option value="14">14 AWG (Medium Load / 20A Breaker)</option>
+                                            <option value="18">18 AWG (Low Power / 10A Breaker)</option>
+                                            <option value="22">22 AWG (Sensors / CAN Bus)</option>
+                                        </select>
+                                    </div>
+                                </div>
+
+                                <div class="kb-calc-results">
+                                    <div class="kb-result-box" id="wire-res-status-box">
+                                        <span class="kb-result-label">Safety & Ampacity Rating</span>
+                                        <span class="kb-result-val" id="wire-res-status" style="color:#22c55e;">Safe & Compliant</span>
+                                        <span class="text-xs text-muted" id="wire-res-awg-rec">Minimum recommended: 12 AWG</span>
+                                    </div>
+                                    <div class="kb-result-box highlight">
+                                        <span class="kb-result-label">Estimated Voltage Drop</span>
+                                        <span class="kb-result-val" id="wire-res-vdrop">0.57 V (4.75%)</span>
+                                        <span class="text-xs text-muted" id="wire-res-deliv">Delivered: 11.43 V at load</span>
+                                    </div>
+                                    <div class="kb-result-box">
+                                        <span class="kb-result-label">Total Loop Resistance</span>
+                                        <span class="kb-result-val" id="wire-res-ohm">0.0191 Ω (19.1 mΩ)</span>
+                                        <span class="text-xs text-muted">Copper wire @ 20°C</span>
+                                    </div>
+                                    <div class="kb-result-box">
+                                        <span class="kb-result-label">Power Dissipated as Heat</span>
+                                        <span class="kb-result-val" id="wire-res-watts">17.2 Watts</span>
+                                        <span class="text-xs text-muted">Heat generation along wire run</span>
+                                    </div>
+                                </div>
                             </div>
                         </div>
-                        <div class="kb-calc-grid">
-                            <div class="kb-calc-inputs">
-                                <div class="form-group">
-                                    <label>Circuit Nominal Voltage</label>
-                                    <select class="form-control" id="wire-voltage">
-                                        <option value="12" selected>12V DC (Main Robot Battery)</option>
-                                        <option value="5">5V DC (Sensors / Coprocessor)</option>
-                                        <option value="24">24V DC (Pneumatic / Industrial)</option>
-                                    </select>
-                                </div>
-                                <div class="form-group">
-                                    <label>Continuous Current Load (Amps)</label>
-                                    <input type="number" class="form-control" id="wire-current" value="30" min="0.5" max="200" step="1">
-                                </div>
-                                <div class="form-group">
-                                    <label>Total Wire Length (Feet, One-Way)</label>
-                                    <input type="number" class="form-control" id="wire-length" value="6" min="0.5" max="100" step="0.5">
-                                    <small class="text-muted">Return path (2x length) is automatically calculated.</small>
-                                </div>
-                                <div class="form-group">
-                                    <label>Selected Wire Gauge (AWG)</label>
-                                    <select class="form-control" id="wire-awg-select">
-                                        <option value="6">6 AWG (Heavy Battery / Main PDP)</option>
-                                        <option value="10">10 AWG (High Power Motors / 40A Breaker)</option>
-                                        <option value="12" selected>12 AWG (Standard Motors / 30A Breaker)</option>
-                                        <option value="14">14 AWG (Medium Load / 20A Breaker)</option>
-                                        <option value="18">18 AWG (Low Power / 10A Breaker)</option>
-                                        <option value="22">22 AWG (Sensors / CAN Bus)</option>
-                                    </select>
+                    </div>
+
+                    <!-- Calculator Card 3: Fastener & Tap Drill Finder -->
+                    <div class="kb-tool-panel" id="kb-tool-tap">
+                        <div class="kb-calc-card glass-panel">
+                            <div class="kb-calc-header">
+                                <div>
+                                    <h3><i class="ph ph-wrench"></i> Fastener, Tap & Clearance Drill Finder</h3>
+                                    <p class="text-muted text-sm">Select any screw size to view exact clearance holes, tap drills for aluminum vs steel, and required hex drivers.</p>
                                 </div>
                             </div>
+                            <div class="kb-calc-grid">
+                                <div class="kb-calc-inputs">
+                                    <div class="form-group">
+                                        <label>Standard Screw Size</label>
+                                        <select class="form-control" id="tap-screw-select">
+                                            <option value="4-40">#4-40 UNC</option>
+                                            <option value="6-32">#6-32 UNC</option>
+                                            <option value="8-32">#8-32 UNC</option>
+                                            <option value="10-32" selected>#10-32 UNF (Robotics Standard)</option>
+                                            <option value="10-24">#10-24 UNC (Coarse)</option>
+                                            <option value="1/4-20">1/4"-20 UNC</option>
+                                            <option value="1/4-28">1/4"-28 UNF</option>
+                                            <option value="M3">M3 x 0.5 mm Metric</option>
+                                            <option value="M4">M4 x 0.7 mm Metric</option>
+                                            <option value="M5">M5 x 0.8 mm Metric</option>
+                                            <option value="M6">M6 x 1.0 mm Metric</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Target Material Being Tapped</label>
+                                        <select class="form-control" id="tap-material-select">
+                                            <option value="aluminum" selected>Aluminum (6061-T6) / Soft Metals</option>
+                                            <option value="steel">Steel / Hard Alloys</option>
+                                            <option value="plastic">Polycarbonate / Delrin Plastic</option>
+                                        </select>
+                                    </div>
+                                </div>
 
-                            <div class="kb-calc-results">
-                                <div class="kb-result-box" id="wire-res-status-box">
-                                    <span class="kb-result-label">Safety & Ampacity Rating</span>
-                                    <span class="kb-result-val" id="wire-res-status" style="color:#22c55e;">Safe & Compliant</span>
-                                    <span class="text-xs text-muted" id="wire-res-awg-rec">Minimum recommended: 12 AWG</span>
-                                </div>
-                                <div class="kb-result-box highlight">
-                                    <span class="kb-result-label">Estimated Voltage Drop</span>
-                                    <span class="kb-result-val" id="wire-res-vdrop">0.57 V (4.75%)</span>
-                                    <span class="text-xs text-muted" id="wire-res-deliv">Delivered: 11.43 V at load</span>
-                                </div>
-                                <div class="kb-result-box">
-                                    <span class="kb-result-label">Total Loop Resistance</span>
-                                    <span class="kb-result-val" id="wire-res-ohm">0.0191 Ω (19.1 mΩ)</span>
-                                    <span class="text-xs text-muted">Copper wire @ 20°C</span>
-                                </div>
-                                <div class="kb-result-box">
-                                    <span class="kb-result-label">Power Dissipated as Heat</span>
-                                    <span class="kb-result-val" id="wire-res-watts">17.2 Watts</span>
-                                    <span class="text-xs text-muted">Heat generation along wire run</span>
+                                <div class="kb-calc-results" id="tap-drill-results-wrap">
+                                    <!-- Injected dynamically -->
                                 </div>
                             </div>
                         </div>
                     </div>
-                </div>
 
-                <!-- Tool 3: Fastener & Tap Drill Finder -->
-                <div class="kb-tool-panel hidden" id="kb-tool-tap">
-                    <div class="kb-calc-card glass-panel">
-                        <div class="kb-calc-header">
-                            <div>
-                                <h3><i class="ph ph-wrench"></i> Fastener, Tap & Clearance Drill Interactive Finder</h3>
-                                <p class="text-muted text-sm">Select any screw size to view exact clearance holes, tap drills for aluminum vs steel, and required hex drivers.</p>
-                            </div>
-                        </div>
-                        <div class="kb-calc-grid">
-                            <div class="kb-calc-inputs">
-                                <div class="form-group">
-                                    <label>Standard Screw Size</label>
-                                    <select class="form-control" id="tap-screw-select">
-                                        <option value="4-40">#4-40 UNC</option>
-                                        <option value="6-32">#6-32 UNC</option>
-                                        <option value="8-32">#8-32 UNC</option>
-                                        <option value="10-32" selected>#10-32 UNF (Robotics Standard)</option>
-                                        <option value="10-24">#10-24 UNC (Coarse)</option>
-                                        <option value="1/4-20">1/4"-20 UNC</option>
-                                        <option value="1/4-28">1/4"-28 UNF</option>
-                                        <option value="M3">M3 x 0.5 mm Metric</option>
-                                        <option value="M4">M4 x 0.7 mm Metric</option>
-                                        <option value="M5">M5 x 0.8 mm Metric</option>
-                                        <option value="M6">M6 x 1.0 mm Metric</option>
-                                    </select>
-                                </div>
-                                <div class="form-group">
-                                    <label>Target Material Being Tapped</label>
-                                    <select class="form-control" id="tap-material-select">
-                                        <option value="aluminum" selected>Aluminum (6061-T6) / Soft Metals</option>
-                                        <option value="steel">Steel / Hard Alloys</option>
-                                        <option value="plastic">Polycarbonate / Delrin Plastic</option>
-                                    </select>
+                    <!-- Calculator Card 4: 3D Filament Specs -->
+                    <div class="kb-tool-panel" id="kb-tool-3dprint">
+                        <div class="kb-calc-card glass-panel">
+                            <div class="kb-calc-header">
+                                <div>
+                                    <h3><i class="ph ph-cube"></i> 3D Printing Filament & Slicer Settings Matrix</h3>
+                                    <p class="text-muted text-sm">Select your component type to get recommended filament, perimeter wall counts, and nozzle temperatures.</p>
                                 </div>
                             </div>
-
-                            <div class="kb-calc-results" id="tap-drill-results-wrap">
-                                <!-- Injected dynamically -->
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Tool 4: 3D Filament Specs -->
-                <div class="kb-tool-panel hidden" id="kb-tool-3dprint">
-                    <div class="kb-calc-card glass-panel">
-                        <div class="kb-calc-header">
-                            <div>
-                                <h3><i class="ph ph-cube"></i> 3D Printing Filament & Slicer Settings Matrix</h3>
-                                <p class="text-muted text-sm">Select your component type to get recommended filament, perimeter wall counts, and nozzle temperatures.</p>
-                            </div>
-                        </div>
-                        <div class="kb-calc-grid">
-                            <div class="kb-calc-inputs">
-                                <div class="form-group">
-                                    <label>Component Application</label>
-                                    <select class="form-control" id="filament-app-select">
-                                        <option value="bracket" selected>Heavy Structural Bracket / Motor Mount</option>
-                                        <option value="intake">Intake Roller / Flexible Bumper</option>
-                                        <option value="sensor">Sensor Housing / Non-Load Cover</option>
-                                        <option value="gear">Custom Gear / High-Stress Pulley</option>
-                                        <option value="battery">Battery Retention Strap / Plate</option>
-                                    </select>
+                            <div class="kb-calc-grid">
+                                <div class="kb-calc-inputs">
+                                    <div class="form-group">
+                                        <label>Component Application</label>
+                                        <select class="form-control" id="filament-app-select">
+                                            <option value="bracket" selected>Heavy Structural Bracket / Motor Mount</option>
+                                            <option value="intake">Intake Roller / Flexible Bumper</option>
+                                            <option value="sensor">Sensor Housing / Non-Load Cover</option>
+                                            <option value="gear">Custom Gear / High-Stress Pulley</option>
+                                            <option value="battery">Battery Retention Strap / Plate</option>
+                                        </select>
+                                    </div>
                                 </div>
-                            </div>
 
-                            <div class="kb-calc-results" id="filament-results-wrap">
-                                <!-- Injected dynamically -->
+                                <div class="kb-calc-results" id="filament-results-wrap">
+                                    <!-- Injected dynamically -->
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -1173,16 +1238,21 @@
             </div>
         `;
 
-        // Tool Tab Switching
+        // Tool Filter/Switching
         container.querySelectorAll('.kb-calc-tab-btn').forEach(btn => {
             btn.addEventListener('click', (e) => {
                 container.querySelectorAll('.kb-calc-tab-btn').forEach(b => b.classList.remove('active'));
                 e.currentTarget.classList.add('active');
                 const tool = e.currentTarget.getAttribute('data-tool');
 
-                container.querySelectorAll('.kb-tool-panel').forEach(p => p.classList.add('hidden'));
-                const targetPanel = document.getElementById(`kb-tool-${tool}`);
-                if (targetPanel) targetPanel.classList.remove('hidden');
+                if (tool === 'all') {
+                    container.querySelectorAll('.kb-tool-panel').forEach(p => p.classList.remove('hidden'));
+                } else {
+                    container.querySelectorAll('.kb-tool-panel').forEach(p => {
+                        const isMatch = p.id === `kb-tool-${tool}`;
+                        p.classList.toggle('hidden', !isMatch);
+                    });
+                }
             });
         });
 
@@ -1582,13 +1652,16 @@
                 </div>
 
                 <div class="modal-footer kb-modal-footer">
-                    <div class="flex" style="gap:0.5rem;">
+                    <div class="flex" style="gap:0.5rem;flex-wrap:wrap;">
                         <button class="btn btn-secondary text-sm" id="kb-modal-pin-btn" data-id="${escapeHtml(guide.id)}">
                             <i class="ph${isPinned ? '-fill' : ''} ph-bookmark-simple"></i>
                             ${isPinned ? 'Pinned' : 'Pin to Quick Access'}
                         </button>
                         <button class="btn btn-secondary text-sm" id="kb-modal-print-btn">
                             <i class="ph ph-printer"></i> Print / Save PDF
+                        </button>
+                        <button class="btn btn-outline-danger text-sm" id="kb-modal-delete-btn" data-id="${escapeHtml(guide.id)}">
+                            <i class="ph ph-trash"></i> Delete Resource
                         </button>
                     </div>
                     <button class="btn btn-primary text-sm" onclick="closeModal()">
@@ -1622,6 +1695,13 @@
 
         document.getElementById('kb-modal-print-btn')?.addEventListener('click', () => {
             window.print();
+        });
+
+        document.getElementById('kb-modal-delete-btn')?.addEventListener('click', (e) => {
+            const id技巧 = e.currentTarget.getAttribute('data-id');
+            if (confirm(`Are you sure you want to delete "${guide.title}"?`)) {
+                deleteGuide(guide.id);
+            }
         });
     }
 

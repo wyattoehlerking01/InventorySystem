@@ -7,6 +7,10 @@ Integrates with Supabase for unlock job tracking.
 
 import json
 import os
+import time
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
 from flask import Flask, request, jsonify
 import gpiozero
 import logging
@@ -21,6 +25,60 @@ app = Flask(__name__)
 PORT = int(os.getenv("DOOR_CONTROLLER_PORT", "8090"))
 DOOR_PIN = int(os.getenv("DOOR_PIN", "17"))
 DOOR_PULSE_SECONDS = float(os.getenv("DOOR_PULSE_SECONDS", "3"))
+
+
+def _write_unlock_context(user_id, unlock_job_id=None):
+    try:
+        path = os.getenv("DOOR_UNLOCK_CONTEXT_FILE", "/var/lib/inventory-door/unlock-context.json")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        payload = {
+            "user_id": user_id,
+            "unlock_job_id": unlock_job_id,
+            "recorded_at": time.time()
+        }
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+    except Exception as e:
+        logger.warning(f"Could not write unlock context: {e}")
+
+
+def _log_activity_event(user_id, action="Door Unlock", details=None):
+    supabase_url = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+    supabase_key = (
+        os.getenv("SUPABASE_PI_RPC_KEY")
+        or os.getenv("SUPABASE_KEY")
+        or os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        or os.getenv("SUPABASE_ANON_KEY")
+        or ""
+    ).strip()
+    if not supabase_url or not supabase_key:
+        return
+    try:
+        url = f"{supabase_url}/rest/v1/activity_logs"
+        log_payload = {
+            "id": f"LOG-PI-{int(time.time() * 1000)}-{os.urandom(4).hex()}",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "user_id": user_id,
+            "action": action,
+            "details": details or f"Door triggered for user {user_id}"
+        }
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(log_payload).encode("utf-8"),
+            headers={
+                "apikey": supabase_key,
+                "Authorization": f"Bearer {supabase_key}",
+                "Content-Type": "application/json",
+                "Prefer": "return=minimal"
+            },
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=5):
+            pass
+        logger.info(f"Logged activity event to Supabase for user {user_id}")
+    except Exception as e:
+        logger.warning(f"Failed to send activity log to Supabase: {e}")
+
 
 # GPIO setup
 try:
@@ -40,16 +98,23 @@ def trigger():
         return jsonify({"status": "error", "message": "GPIO not initialized"}), 500
     
     try:
-        user_id = request.args.get('userId', 'SYSTEM')
+        user_id = (
+            request.args.get('userid')
+            or request.args.get('userId')
+            or request.args.get('actorUserId')
+            or 'SYSTEM'
+        )
         unlock_job_id = request.args.get('unlockJobId')
         
         logger.info(f"Trigger: userId={user_id}, jobId={unlock_job_id}")
         
+        _write_unlock_context(user_id, unlock_job_id)
+        _log_activity_event(user_id, action="Door Unlock", details=f"Door triggered pulse for user {user_id}")
+
         # Pulse the door
         door_lock.on()
         logger.info("Door activated (pulse)")
         
-        import time
         time.sleep(DOOR_PULSE_SECONDS)
         
         door_lock.off()

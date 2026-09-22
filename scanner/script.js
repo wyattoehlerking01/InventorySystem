@@ -1,25 +1,22 @@
-function updateUI() {
-    const total = State.items.length;
-    itemCount.textContent = total;
-    
-    const grouped = State.getGroupedItems();
-    itemList.innerHTML = Object.entries(grouped).map(([sku, qty]) => `
-      <li>
-        <div class="item-info">
-          <span><strong>${sku}</strong></span>
-        </div>
-        <div class="item-actions">
-          <button class="qty-btn" onclick="handleUpdateQty('${sku}', -1)">-</button>
-          <span><strong>${qty}</strong></span>
-          <button class="qty-btn" onclick="handleUpdateQty('${sku}', 1)">+</button>
-          <button class="remove-btn" onclick="handleRemoveItem('${sku}')">Remove</button>
-        </div>
-      </li>
-    `).reverse().join('');
+// Barcode scanner helper utilities
+export function sanitizeBarcode(rawText, detectedFormat) {
+  if (!rawText) return { sku: '', format: detectedFormat || 'UNKNOWN' };
+  let text = String(rawText).trim();
+  let formatLabel = detectedFormat ? detectedFormat.toUpperCase().replace(/_/g, ' ') : 'BARCODE';
 
-    clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(() => {
-      const payload = State.getPayload();
-      qrCodeGenerator.makeCode(payload);
-    }, 400);
+  if (/^\*[A-Za-z0-9\-.$/+% ]+\*$/.test(text) && text.length >= 3) {
+    text = text.substring(1, text.length - 1).trim();
+    formatLabel = 'CODE 39 (Libre 39)';
+  } else if (detectedFormat && (detectedFormat.toLowerCase().includes('code_39') || detectedFormat.toLowerCase().includes('code 39'))) {
+    formatLabel = 'CODE 39 (Libre 39)';
+    if (text.startsWith('*') && text.endsWith('*') && text.length > 2) {
+      text = text.slice(1, -1).trim();
+    }
+  } else if (detectedFormat && (detectedFormat.toLowerCase().includes('code_128') || detectedFormat.toLowerCase().includes('code 128'))) {
+    formatLabel = 'CODE 128';
+  } else if (detectedFormat && detectedFormat.toLowerCase().includes('qr')) {
+    formatLabel = 'QR CODE';
   }
+
+  return { sku: text, format: formatLabel };
+}

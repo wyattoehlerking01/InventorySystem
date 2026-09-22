@@ -2,8 +2,8 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Inventory Barcode Scanner</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Inventory Barcode Scanner - High Accuracy</title>
 
   <!-- Favicon for Browsers -->
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' height='24' viewBox='0 0 24 24' width='24' fill='%23e3e3e3'%3E%3Cpath d='M2 4h2v16H2V4zm4 0h1v16H6V4zm3 0h2v16H9V4zm4 0h1v16h-1V4zm3 0h2v16h-2V4zm3 0h1v16h-1V4z'/%3E%3C/svg%3E">
@@ -14,49 +14,68 @@
   <!-- Web App Manifest for Android PWA / Home Screen -->
   <link rel="manifest" href="data:application/json,%7B%22name%22%3A%22Inventory%20Barcode%20Scanner%22%2C%22short_name%22%3A%22Scanner%22%2C%22start_url%22%3A%22.%22%2C%22display%22%3A%22standalone%22%2C%22background_color%22%3A%22%23121212%22%2C%22theme_color%22%3A%22%23121212%22%2C%22icons%22%3A%5B%7B%22src%22%3A%22data%3Aimage%2Fsvg%2Bxml%2C%253Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20height%3D%27192%27%20viewBox%3D%270%200%2024%2024%27%20width%3D%27192%27%20fill%3D%27%2523e3e3e3%27%253E%253Crect%20width%3D%27100%2525%27%20height%3D%27100%2525%27%20fill%3D%27%2523121212%27%2F%253E%253Cpath%20d%3D%27M2%204h2v16H2V4zm4%200h1v16H6V4zm3%200h2v16H9V4zm4%200h1v16h-1V4zm3%200h2v16h-2V4zm3%200h1v16h-1V4z%27%20transform%3D%27scale(0.7)%20translate(5%2C%205)%27%2F%253E%253C%2Fsvg%253E%22%2C%22sizes%22%3A%22192x192%22%2C%22type%22%3A%22image%2Fsvg%2Bxml%22%7D%5D%7D">
 
-  <script src="https://unpkg.com/@zxing/library@latest"></script>
+  <!-- Barcode & QR Code Libraries -->
+  <script src="https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+
   <style>
     :root {
       --bg: #f4f4f9;
       --card-bg: #ffffff;
-      --text: #333333;
-      --subtext: #666666;
-      --accent: #007bff;
+      --text: #222222;
+      --subtext: #555555;
+      --accent: #0066cc;
+      --accent-hover: #0052a3;
       --danger: #dc3545;
-      --success: #28a745;
-      --border: #eeeeee;
+      --success: #198754;
+      --border: #e2e8f0;
       --qty-btn-bg: #e9ecef;
-      --qty-btn-text: #333333;
-      --modal-overlay: rgba(0, 0, 0, 0.6);
-      --modal-sku-bg: #eee;
-      --toggle-bg: rgba(0, 0, 0, 0.08);
+      --qty-btn-text: #222222;
+      --modal-overlay: rgba(0, 0, 0, 0.65);
+      --modal-sku-bg: #f1f5f9;
+      --toggle-bg: rgba(0, 0, 0, 0.07);
       --toggle-border: rgba(0, 0, 0, 0.15);
       --toggle-color: #333333;
-      --torch-active-bg: #6c757d;
-      --torch-active-text: #ffffff;
+      --torch-active-bg: #ffc107;
+      --torch-active-text: #1a1a1a;
+      --badge-bg: #e0e7ff;
+      --badge-text: #3730a3;
+      --laser-color: #00ff88;
+      --laser-shadow: rgba(0, 255, 136, 0.8);
+      --reticle-border: #00ff88;
     }
 
     [data-theme="dark"] {
-      --bg: #121212;
-      --card-bg: #1e1e1e;
-      --text: #e0e0e0;
-      --subtext: #aaaaaa;
-      --accent: #375a7f;
-      --danger: #d9534f;
-      --success: #4bbf73;
-      --border: #2c2c2c;
-      --qty-btn-bg: #2c2c2c;
-      --qty-btn-text: #e0e0e0;
-      --modal-overlay: rgba(0, 0, 0, 0.8);
-      --modal-sku-bg: #2c2c2c;
+      --bg: #0f172a;
+      --card-bg: #1e293b;
+      --text: #f1f5f9;
+      --subtext: #94a3b8;
+      --accent: #3b82f6;
+      --accent-hover: #2563eb;
+      --danger: #ef4444;
+      --success: #22c55e;
+      --border: #334155;
+      --qty-btn-bg: #334155;
+      --qty-btn-text: #f1f5f9;
+      --modal-overlay: rgba(0, 0, 0, 0.85);
+      --modal-sku-bg: #0f172a;
       --toggle-bg: rgba(255, 255, 255, 0.1);
       --toggle-border: rgba(255, 255, 255, 0.2);
       --toggle-color: #ffffff;
-      --torch-active-bg: #495057;
-      --torch-active-text: #ffffff;
+      --torch-active-bg: #fbbf24;
+      --torch-active-text: #1a1a1a;
+      --badge-bg: #312e81;
+      --badge-text: #c7d2fe;
+      --laser-color: #38ef7d;
+      --laser-shadow: rgba(56, 239, 125, 0.9);
+      --reticle-border: #38ef7d;
     }
     
+    * {
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+    }
+
     html, body {
       min-height: 100vh;
       margin: 0;
@@ -64,38 +83,64 @@
     }
 
     body {
-      font-family: system-ui, -apple-system, sans-serif;
-      padding: 16px;
-      padding-bottom: 56px;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      padding: 12px;
+      padding-bottom: 60px;
       background-color: var(--bg);
       color: var(--text);
       display: flex;
       flex-direction: column;
       align-items: center;
-      box-sizing: border-box;
       transition: background-color 0.2s ease, color 0.2s ease;
     }
 
     .max-brightness {
-      filter: brightness(1.5) contrast(1.1);
+      filter: brightness(1.2) contrast(1.05);
     }
 
     .container {
       width: 100%;
-      max-width: 420px;
+      max-width: 440px;
       display: flex;
       flex-direction: column;
-      gap: 16px;
+      gap: 14px;
       flex: 1;
     }
 
-    .scanner-card, .qr-card, .list-card {
+    .scanner-card, .qr-card, .list-card, .manual-card {
       background: var(--card-bg);
-      border-radius: 12px;
-      padding: 16px;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.08);
-      box-sizing: border-box;
+      border-radius: 14px;
+      padding: 14px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.06);
+      border: 1px solid var(--border);
       transition: background 0.2s ease;
+    }
+
+    .header-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+
+    .header-title {
+      font-size: 16px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .engine-badge {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 7px;
+      border-radius: 999px;
+      background: var(--badge-bg);
+      color: var(--badge-text);
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
     }
 
     .theme-icon-btn {
@@ -129,13 +174,43 @@
       fill: currentColor;
     }
 
+    /* Mode filter pills */
+    .mode-pills {
+      display: flex;
+      gap: 6px;
+      overflow-x: auto;
+      padding-bottom: 4px;
+      margin-bottom: 8px;
+      scrollbar-width: none;
+    }
+    .mode-pills::-webkit-scrollbar {
+      display: none;
+    }
+    .mode-pill {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 5px 9px;
+      border-radius: 20px;
+      border: 1px solid var(--border);
+      background: var(--qty-btn-bg);
+      color: var(--text);
+      cursor: pointer;
+      white-space: nowrap;
+      transition: all 0.15s ease;
+    }
+    .mode-pill.active {
+      background: var(--accent);
+      color: #ffffff;
+      border-color: var(--accent);
+    }
+
     .viewport {
       position: relative;
       width: 100%;
-      height: 180px;
-      border-radius: 8px;
+      height: 210px;
+      border-radius: 10px;
       overflow: hidden;
-      background: #000;
+      background: #000000;
     }
 
     video {
@@ -144,15 +219,39 @@
       object-fit: cover;
     }
 
+    #scanCanvas {
+      display: none;
+    }
+
     .scan-region {
       position: absolute;
-      top: 20%; left: 10%; right: 10%; bottom: 20%;
-      border: 2px dashed #00ff88;
-      border-radius: 6px;
-      box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.4);
+      top: 15%;
+      left: 6%;
+      right: 6%;
+      bottom: 15%;
+      border: 2px dashed var(--reticle-border);
+      border-radius: 8px;
+      box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.48);
       pointer-events: none;
       overflow: hidden;
     }
+
+    .scan-region-corners {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+    }
+    .corner-mark {
+      position: absolute;
+      width: 14px;
+      height: 14px;
+      border-color: var(--reticle-border);
+      border-style: solid;
+    }
+    .corner-tl { top: -2px; left: -2px; border-width: 3px 0 0 3px; }
+    .corner-tr { top: -2px; right: -2px; border-width: 3px 3px 0 0; }
+    .corner-bl { bottom: -2px; left: -2px; border-width: 0 0 3px 3px; }
+    .corner-br { bottom: -2px; right: -2px; border-width: 0 3px 3px 0; }
 
     .laser-line {
       display: none;
@@ -160,10 +259,10 @@
       top: 0;
       left: 0;
       width: 100%;
-      height: 2px;
-      background: #00ff88;
-      box-shadow: 0 0 8px #00ff88, 0 0 12px #00ff88;
-      animation: laserScan 3.5s infinite ease-in-out;
+      height: 3px;
+      background: var(--laser-color);
+      box-shadow: 0 0 10px var(--laser-shadow), 0 0 18px var(--laser-shadow);
+      animation: laserScan 2.4s infinite ease-in-out;
     }
 
     .scanner-active .laser-line {
@@ -171,54 +270,159 @@
     }
 
     @keyframes laserScan {
-      0% { top: 0%; opacity: 0.8; }
-      50% { top: 98%; opacity: 1; }
-      100% { top: 0%; opacity: 0.8; }
+      0% { top: 4%; opacity: 0.9; }
+      50% { top: 94%; opacity: 1; }
+      100% { top: 4%; opacity: 0.9; }
+    }
+
+    .scan-hint {
+      position: absolute;
+      bottom: 8px;
+      left: 0;
+      right: 0;
+      text-align: center;
+      font-size: 11px;
+      font-weight: 600;
+      color: #ffffff;
+      text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+      pointer-events: none;
+      opacity: 0.85;
+    }
+
+    .quick-status-overlay {
+      position: absolute;
+      top: 8px;
+      left: 8px;
+      right: 8px;
+      background: rgba(0,0,0,0.7);
+      backdrop-filter: blur(4px);
+      border-radius: 6px;
+      padding: 4px 8px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 11px;
+      color: #ffffff;
+      pointer-events: none;
     }
 
     .controls {
-      margin-top: 12px;
+      margin-top: 10px;
       display: flex;
       gap: 8px;
     }
 
+    .secondary-controls {
+      margin-top: 8px;
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+
     button {
-      width: 100%;
-      padding: 12px;
-      font-size: 15px;
+      padding: 11px;
+      font-size: 14px;
       font-weight: 600;
       border: none;
-      border-radius: 6px;
+      border-radius: 8px;
       cursor: pointer;
       background-color: var(--accent);
       color: white;
-      box-sizing: border-box;
       touch-action: manipulation;
+      transition: background-color 0.15s ease, transform 0.08s ease;
     }
 
-    button:disabled { background-color: #ccc; cursor: not-allowed; }
+    button:active {
+      transform: scale(0.98);
+    }
+
+    button:disabled { background-color: #94a3b8; cursor: not-allowed; opacity: 0.7; }
     button.btn-danger { background-color: var(--danger); }
     button.btn-success { background-color: var(--success); }
+    button.btn-secondary { background-color: var(--qty-btn-bg); color: var(--qty-btn-text); border: 1px solid var(--border); }
 
-    .torch-btn {
-      display: none;
-      width: 48px;
+    .btn-icon {
+      width: 44px;
+      height: 44px;
       flex-shrink: 0;
+      display: inline-flex;
       align-items: center;
       justify-content: center;
       padding: 0;
       background-color: var(--qty-btn-bg);
       color: var(--qty-btn-text);
       border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 16px;
     }
 
-    .scanner-active-controls .torch-btn {
-      display: flex;
-    }
-
-    .torch-btn.active {
+    .btn-icon.active {
       background-color: var(--torch-active-bg);
       color: var(--torch-active-text);
+      border-color: var(--torch-active-bg);
+    }
+
+    .zoom-btn-group {
+      display: flex;
+      gap: 4px;
+      margin-left: auto;
+    }
+
+    .zoom-btn {
+      padding: 5px 8px;
+      font-size: 11px;
+      font-weight: bold;
+      border-radius: 6px;
+      background: var(--qty-btn-bg);
+      color: var(--qty-btn-text);
+      border: 1px solid var(--border);
+      cursor: pointer;
+    }
+    .zoom-btn.active {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+
+    .camera-select {
+      flex: 1;
+      padding: 8px 10px;
+      font-size: 12px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--qty-btn-bg);
+      color: var(--qty-btn-text);
+    }
+
+    /* Manual Input Section */
+    .manual-toggle-btn {
+      font-size: 12px;
+      background: none;
+      border: none;
+      color: var(--accent);
+      padding: 4px 0;
+      cursor: pointer;
+      text-decoration: underline;
+      display: inline-block;
+      text-align: left;
+    }
+
+    .manual-input-box {
+      display: none;
+      gap: 6px;
+      margin-top: 6px;
+    }
+    .manual-input-box.open {
+      display: flex;
+    }
+    .manual-input-box input {
+      flex: 1;
+      padding: 8px 10px;
+      font-size: 14px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--card-bg);
+      color: var(--text);
     }
 
     .qr-container {
@@ -226,28 +430,29 @@
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      padding: 12px;
+      padding: 10px;
     }
 
     .qr-label {
-      font-size: 14px;
+      font-size: 13px;
       font-weight: 600;
-      margin-bottom: 12px;
+      margin-bottom: 10px;
       color: var(--text);
       text-align: center;
     }
 
-    #qrcode img {
+    #qrcode img, #qrcode canvas {
       margin: 0 auto;
       border: 8px solid white;
-      border-radius: 4px;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
     }
 
     ul {
       list-style: none;
       padding: 0;
       margin: 8px 0 0 0;
-      max-height: 240px;
+      max-height: 220px;
       overflow-y: auto;
     }
 
@@ -255,21 +460,30 @@
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding: 10px 0;
+      padding: 8px 0;
       border-bottom: 1px solid var(--border);
     }
 
     .item-info {
-      font-family: monospace;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
       font-size: 13px;
       display: flex;
       flex-direction: column;
+      gap: 2px;
+    }
+
+    .item-format-tag {
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--subtext);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
     }
 
     .item-actions {
       display: flex;
       align-items: center;
-      gap: 12px;
+      gap: 10px;
     }
 
     .qty-btn {
@@ -279,7 +493,7 @@
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      font-size: 14px;
+      font-size: 15px;
       font-weight: bold;
       background-color: var(--qty-btn-bg);
       color: var(--qty-btn-text);
@@ -290,21 +504,25 @@
       touch-action: manipulation;
     }
 
-    .qty-btn:active {
-      transform: scale(0.95);
-    }
-
     .remove-btn {
       width: auto;
-      padding: 6px 10px;
+      padding: 5px 9px;
       font-size: 11px;
       background-color: var(--danger);
       color: white;
       border-radius: 6px;
-      margin-left: 4px;
+      margin-left: 2px;
       touch-action: manipulation;
     }
 
+    .empty-cart-text {
+      text-align: center;
+      padding: 16px 0;
+      font-size: 13px;
+      color: var(--subtext);
+    }
+
+    /* Modal */
     .modal-overlay {
       display: none;
       position: fixed;
@@ -313,6 +531,7 @@
       z-index: 1000;
       align-items: center;
       justify-content: center;
+      backdrop-filter: blur(3px);
     }
 
     .modal-overlay.active {
@@ -322,24 +541,48 @@
     .modal {
       background: var(--card-bg);
       color: var(--text);
-      border-radius: 12px;
+      border-radius: 14px;
       padding: 20px;
-      width: 85%;
-      max-width: 320px;
-      box-shadow: 0 10px 25px rgba(0,0,0,0.3);
+      width: 88%;
+      max-width: 340px;
+      box-shadow: 0 12px 30px rgba(0,0,0,0.3);
       text-align: center;
+      border: 1px solid var(--border);
+      animation: modalPop 0.18s ease-out;
     }
 
-    .modal h3 { margin-top: 0; }
+    @keyframes modalPop {
+      0% { transform: scale(0.92); opacity: 0; }
+      100% { transform: scale(1); opacity: 1; }
+    }
+
+    .modal h3 {
+      margin-top: 0;
+      margin-bottom: 6px;
+      font-size: 17px;
+    }
+
+    .modal-format-badge {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 3px 8px;
+      border-radius: 6px;
+      background: var(--badge-bg);
+      color: var(--badge-text);
+      margin-bottom: 10px;
+    }
 
     .modal-sku {
-      font-family: monospace;
-      font-size: 16px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 17px;
+      font-weight: 700;
       background: var(--modal-sku-bg);
-      padding: 8px;
-      border-radius: 4px;
+      padding: 10px;
+      border-radius: 8px;
       word-break: break-all;
-      margin: 12px 0;
+      margin: 8px 0 14px 0;
+      border: 1px solid var(--border);
     }
 
     .modal-qty-picker {
@@ -347,13 +590,13 @@
       align-items: center;
       justify-content: center;
       gap: 16px;
-      margin: 16px 0;
+      margin: 14px 0 18px 0;
     }
 
     .modal-qty-val {
-      font-size: 18px;
+      font-size: 20px;
       font-weight: bold;
-      min-width: 32px;
+      min-width: 36px;
       text-align: center;
     }
 
@@ -364,13 +607,14 @@
 
     .modal-actions button {
       flex: 1;
+      padding: 11px;
     }
 
     .footer {
       margin-top: auto;
-      padding-top: 24px;
+      padding-top: 20px;
       padding-bottom: 8px;
-      font-size: 13px;
+      font-size: 12px;
       color: var(--subtext);
       text-align: center;
       width: 100%;
@@ -379,7 +623,7 @@
 </head>
 <body>
 
-<button id="themeIconBtn" class="theme-icon-btn" title="Toggle Theme">
+<button id="themeIconBtn" class="theme-icon-btn" title="Toggle Theme" aria-label="Toggle Theme">
   <svg id="iconSystem" viewBox="0 0 24 24"><path d="M4 6h16v10H4V6zm16-2H4c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h5l-1 2v1h8v-1l-1-2h5c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2z"/></svg>
   <svg id="iconSun" viewBox="0 0 24 24" style="display:none;"><path d="M12 7c-2.76 0-5 2.24-5 5s2.24 5 5 5 5-2.24 5-5-2.24-5-5-5zM2 13h2c.55 0 1-.45 1-1s-.45-1-1-1H2c-.55 0-1 .45-1 1s.45 1 1 1zm18 0h2c.55 0 1-.45 1-1s-.45-1-1-1h-2c-.55 0-1 .45-1 1s.45 1 1 1zM11 2v2c0 .55.45 1 1 1s1-.45 1-1V2c0-.55-.45-1-1-1s-1 .45-1 1zm0 18v2c0 .55.45 1 1 1s1-.45 1-1v-2c0-.55-.45-1-1-1s-1 .45-1 1zM5.99 4.58c-.39-.39-1.03-.39-1.41 0s-.39 1.03 0 1.41l1.06 1.06c.39.39 1.03.39 1.41 0s.39-1.03 0-1.41L5.99 4.58zm12.37 12.37c-.39-.39-1.03-.39-1.41 0s.39 1.03 0 1.41l1.06 1.06c.39.39 1.03.39 1.41 0s.39-1.03 0-1.41l-1.06-1.06zm1.06-10.96c.39-.39.39-1.03 0-1.41s-1.03-.39-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41s1.03.39 1.41 0l1.06-1.06zM7.05 18.36c.39-.39.39-1.03 0-1.41s-1.03-.39-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41s1.03.39 1.41 0l1.06-1.06z"/></svg>
   <svg id="iconMoon" viewBox="0 0 24 24" style="display:none;"><path d="M12.3 2a10 10 0 0 0 9.7 12.8 10 10 0 1 1-11.5-12.6c.6-.1 1.2-.2 1.8-.2z"/></svg>
@@ -387,15 +631,53 @@
 
 <div class="container" id="app">
   <div class="scanner-card">
-    <div class="viewport" id="viewport">
-      <video id="video" autoplay playsinline muted></video>
-      <div class="scan-region">
-        <div class="laser-line"></div>
+    <div class="header-bar">
+      <div class="header-title">
+        <span>Barcode Scanner</span>
       </div>
     </div>
+
+    <div class="viewport" id="viewport">
+      <video id="video" autoplay playsinline muted></video>
+      <canvas id="scanCanvas"></canvas>
+      <div class="scan-region">
+        <div class="scan-region-corners">
+          <div class="corner-mark corner-tl"></div>
+          <div class="corner-mark corner-tr"></div>
+          <div class="corner-mark corner-bl"></div>
+          <div class="corner-mark corner-br"></div>
+        </div>
+        <div class="laser-line"></div>
+      </div>
+      <div class="scan-hint" id="scanHint">Align barcode within box</div>
+      <div class="quick-status-overlay" id="quickStatus">
+        <span id="fpsDisplay">Ready</span>
+        <span id="resolutionDisplay">HD Camera</span>
+      </div>
+    </div>
+
     <div class="controls" id="controls">
       <button id="toggleBtn">Start Scanning</button>
-      <button id="torchBtn" class="torch-btn" disabled title="Toggle Flashlight">⚡</button>
+      <button id="torchBtn" class="btn-icon" disabled title="Toggle Flashlight">⚡</button>
+      <button id="switchCameraBtn" class="btn-icon" title="Switch Camera">🔄</button>
+    </div>
+
+    <div class="secondary-controls" id="zoomControls" style="display:none;">
+      <span style="font-size: 11px; color: var(--subtext); font-weight: 600;">Zoom:</span>
+      <div class="zoom-btn-group">
+        <button class="zoom-btn active" data-zoom="1">1x</button>
+        <button class="zoom-btn" data-zoom="1.5">1.5x</button>
+        <button class="zoom-btn" data-zoom="2">2x</button>
+        <button class="zoom-btn" data-zoom="3">3x</button>
+      </div>
+    </div>
+
+    <div style="margin-top: 10px; border-top: 1px solid var(--border); padding-top: 8px;">
+      <button id="toggleManualBtn" class="manual-toggle-btn" type="button">⌨️ Manual SKU / Barcode Entry</button>
+      <div class="manual-input-box" id="manualInputBox">
+        <input type="text" id="manualSkuInput" placeholder="Enter SKU or barcode..." autocomplete="off" spellcheck="false">
+        <button id="manualAddBtn" class="btn-secondary" style="width: auto; padding: 8px 12px;">Add</button>
+      </div>
     </div>
   </div>
 
@@ -409,34 +691,63 @@
   <div class="list-card">
     <div style="display: flex; justify-content: space-between; align-items: center;">
       <strong style="font-size: 14px;">Scanned Items (<span id="itemCount">0</span>)</strong>
-      <button id="clearBtn" class="btn-danger" style="width: auto; padding: 6px 12px;">Reset</button>
+      <button id="clearBtn" class="btn-danger" style="width: auto; padding: 6px 12px; font-size: 12px;">Reset</button>
     </div>
     <ul id="itemList"></ul>
   </div>
 
   <footer class="footer">
-    © 2026 W. Oehlerking
+    © 2026 LCHS Inventory System
   </footer>
 </div>
 
 <div class="modal-overlay" id="confirmModal">
   <div class="modal">
     <h3>Scanned Item</h3>
+    <span class="modal-format-badge" id="modalFormat">CODE 128</span>
     <div class="modal-sku" id="modalSku">---</div>
     <div class="modal-qty-picker">
-      <button id="modalMinusBtn" class="qty-btn">-</button>
+      <button id="modalMinusBtn" class="qty-btn" type="button">-</button>
       <span class="modal-qty-val" id="modalQty">1</span>
-      <button id="modalPlusBtn" class="qty-btn">+</button>
+      <button id="modalPlusBtn" class="qty-btn" type="button">+</button>
     </div>
     <div class="modal-actions">
-      <button id="modalCancelBtn" class="btn-danger">Cancel</button>
-      <button id="modalAddBtn" class="btn-success">Add to Batch</button>
+      <button id="modalCancelBtn" class="btn-danger" type="button">Cancel</button>
+      <button id="modalAddBtn" class="btn-success" type="button">Add to Batch</button>
     </div>
   </div>
 </div>
 
 <script>
-  function triggerHaptic(pattern = 30) {
+  /* =========================================================================
+     Audio Synthesizer (Beep feedback that works reliably on iOS & Android)
+     ========================================================================= */
+  let audioCtx = null;
+  function playSuccessBeep() {
+    try {
+      if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(880, audioCtx.currentTime); // A5 tone
+      osc.frequency.exponentialRampToValueAtTime(1200, audioCtx.currentTime + 0.08); // High chirp
+      gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.08);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start();
+      osc.stop(audioCtx.currentTime + 0.08);
+    } catch (e) {
+      // Audio context might fail before user gesture
+    }
+  }
+
+  function triggerHaptic(pattern = [40, 30, 40]) {
     if ('vibrate' in navigator) {
       try {
         navigator.vibrate(pattern);
@@ -444,6 +755,9 @@
     }
   }
 
+  /* =========================================================================
+     Theme Management
+     ========================================================================= */
   const themeIconBtn = document.getElementById('themeIconBtn');
   const iconSystem = document.getElementById('iconSystem');
   const iconSun = document.getElementById('iconSun');
@@ -483,15 +797,19 @@
 
   applyTheme('system');
 
-  const STORAGE_KEY = 'barcode_cart_items';
+  /* =========================================================================
+     State & Batch QR Generation
+     ========================================================================= */
+  const STORAGE_KEY = 'barcode_cart_items_v2';
 
   const State = {
     items: [],
     lastScanned: null,
+    lastScannedTime: 0,
 
     init() {
       try {
-        const stored = localStorage.getItem(STORAGE_KEY);
+        const stored = localStorage.getItem(STORAGE_KEY) || localStorage.getItem('barcode_cart_items');
         if (stored) {
           const parsed = JSON.parse(stored);
           if (Array.isArray(parsed)) {
@@ -511,19 +829,22 @@
       }
     },
 
-    addItems(sku, qty) {
+    addItems(sku, qty, format) {
       for (let i = 0; i < qty; i++) {
-        this.items.push(sku);
+        this.items.push({ sku, format: format || 'CODE 128' });
       }
       this.lastScanned = sku;
+      this.lastScannedTime = Date.now();
       this.save();
     },
 
     updateQuantity(sku, delta) {
       if (delta > 0) {
-        this.items.push(sku);
+        const existing = this.items.find(it => (typeof it === 'object' ? it.sku === sku : it === sku));
+        const format = (existing && typeof existing === 'object') ? existing.format : 'CODE 128';
+        this.items.push({ sku, format });
       } else if (delta < 0) {
-        const index = this.items.lastIndexOf(sku);
+        const index = this.items.map(it => (typeof it === 'object' ? it.sku : it)).lastIndexOf(sku);
         if (index !== -1) {
           this.items.splice(index, 1);
         }
@@ -532,29 +853,39 @@
     },
 
     removeItemCompletely(sku) {
-      this.items = this.items.filter(item => item !== sku);
+      this.items = this.items.filter(item => {
+        const itemSku = typeof item === 'object' ? item.sku : item;
+        return itemSku !== sku;
+      });
       this.save();
     },
     
     clear() {
       this.items = [];
       this.lastScanned = null;
+      this.lastScannedTime = 0;
       try {
         localStorage.removeItem(STORAGE_KEY);
+        localStorage.removeItem('barcode_cart_items');
       } catch (err) {
         console.warn('Failed to clear localStorage:', err);
       }
     },
     
     getPayload() {
-      const skus = this.items.join(',');
+      const skus = this.items.map(it => (typeof it === 'object' ? it.sku : it)).join(',');
       return `BATCH|${skus}|${this.items.length}`;
     },
 
     getGroupedItems() {
       const groups = {};
-      this.items.forEach(sku => {
-        groups[sku] = (groups[sku] || 0) + 1;
+      this.items.forEach(item => {
+        const sku = typeof item === 'object' ? item.sku : item;
+        const format = (typeof item === 'object' && item.format) ? item.format : 'BARCODE';
+        if (!groups[sku]) {
+          groups[sku] = { count: 0, format };
+        }
+        groups[sku].count += 1;
       });
       return groups;
     }
@@ -577,7 +908,10 @@
     } else {
       document.body.classList.remove('max-brightness');
       if (wakeLock) {
-        wakeLock.release().then(() => wakeLock = null);
+        try {
+          await wakeLock.release();
+        } catch (e) {}
+        wakeLock = null;
       }
     }
   }
@@ -600,43 +934,57 @@
     itemCount.textContent = total;
     
     const grouped = State.getGroupedItems();
-    itemList.innerHTML = Object.entries(grouped).map(([sku, qty]) => `
-      <li>
-        <div class="item-info">
-          <span><strong>${sku}</strong></span>
-        </div>
-        <div class="item-actions">
-          <button class="qty-btn" onclick="handleUpdateQty('${sku}', -1)">-</button>
-          <span><strong>${qty}</strong></span>
-          <button class="qty-btn" onclick="handleUpdateQty('${sku}', 1)">+</button>
-          <button class="remove-btn" onclick="handleRemoveItem('${sku}')">Remove</button>
-        </div>
-      </li>
-    `).reverse().join('');
+    const entries = Object.entries(grouped);
+
+    if (entries.length === 0) {
+      itemList.innerHTML = '<li class="empty-cart-text">No items scanned yet.</li>';
+    } else {
+      itemList.innerHTML = entries.map(([sku, data]) => {
+        const safeSku = sku.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        return `
+          <li>
+            <div class="item-info">
+              <span><strong>${safeSku}</strong></span>
+              <span class="item-format-tag">${data.format}</span>
+            </div>
+            <div class="item-actions">
+              <button class="qty-btn" onclick="handleUpdateQty('${safeSku}', -1)" type="button">-</button>
+              <span><strong>${data.count}</strong></span>
+              <button class="qty-btn" onclick="handleUpdateQty('${safeSku}', 1)" type="button">+</button>
+              <button class="remove-btn" onclick="handleRemoveItem('${safeSku}')" type="button">Remove</button>
+            </div>
+          </li>
+        `;
+      }).reverse().join('');
+    }
 
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
       const payload = State.getPayload();
       qrCodeGenerator.makeCode(payload);
-    }, 400);
+    }, 300);
   }
 
-  function handleUpdateQty(sku, delta) {
+  window.handleUpdateQty = function(sku, delta) {
     triggerHaptic(30);
     State.updateQuantity(sku, delta);
     updateUI();
-  }
+  };
 
-  function handleRemoveItem(sku) {
+  window.handleRemoveItem = function(sku) {
     triggerHaptic(50);
     State.removeItemCompletely(sku);
     updateUI();
-  }
+  };
 
   updateUI();
 
+  /* =========================================================================
+     Confirmation Modal
+     ========================================================================= */
   const confirmModal = document.getElementById('confirmModal');
   const modalSku = document.getElementById('modalSku');
+  const modalFormat = document.getElementById('modalFormat');
   const modalQty = document.getElementById('modalQty');
   const modalMinusBtn = document.getElementById('modalMinusBtn');
   const modalPlusBtn = document.getElementById('modalPlusBtn');
@@ -644,14 +992,17 @@
   const modalAddBtn = document.getElementById('modalAddBtn');
 
   let currentScannedSku = null;
+  let currentScannedFormat = 'CODE 128';
   let currentModalQty = 1;
   let isModalOpen = false;
 
-  function openModal(sku) {
+  function openModal(sku, format) {
     isModalOpen = true;
     currentScannedSku = sku;
+    currentScannedFormat = format || 'CODE 128';
     currentModalQty = 1;
     modalSku.textContent = sku;
+    modalFormat.textContent = currentScannedFormat;
     modalQty.textContent = currentModalQty;
     confirmModal.classList.add('active');
   }
@@ -664,55 +1015,300 @@
 
   modalMinusBtn.addEventListener('click', () => {
     if (currentModalQty > 1) {
-      triggerHaptic(30);
+      triggerHaptic(20);
       currentModalQty--;
       modalQty.textContent = currentModalQty;
     }
   });
 
   modalPlusBtn.addEventListener('click', () => {
-    triggerHaptic(30);
+    triggerHaptic(20);
     currentModalQty++;
     modalQty.textContent = currentModalQty;
   });
 
   modalCancelBtn.addEventListener('click', () => {
-    triggerHaptic(30);
+    triggerHaptic(20);
     closeModal();
   });
 
   modalAddBtn.addEventListener('click', () => {
     triggerHaptic(40);
     if (currentScannedSku) {
-      State.addItems(currentScannedSku, currentModalQty);
+      State.addItems(currentScannedSku, currentModalQty, currentScannedFormat);
       updateUI();
     }
     closeModal();
   });
 
-  const codeReader = new ZXing.BrowserMultiFormatReader();
+  /* =========================================================================
+     Manual Entry Support
+     ========================================================================= */
+  const toggleManualBtn = document.getElementById('toggleManualBtn');
+  const manualInputBox = document.getElementById('manualInputBox');
+  const manualSkuInput = document.getElementById('manualSkuInput');
+  const manualAddBtn = document.getElementById('manualAddBtn');
+
+  toggleManualBtn.addEventListener('click', () => {
+    manualInputBox.classList.toggle('open');
+    if (manualInputBox.classList.contains('open')) {
+      manualSkuInput.focus();
+    }
+  });
+
+  function submitManualSku() {
+    const rawVal = manualSkuInput.value.trim();
+    if (!rawVal) return;
+    const sanitized = sanitizeBarcodePayload(rawVal, 'MANUAL_ENTRY');
+    playSuccessBeep();
+    triggerHaptic([40, 40]);
+    openModal(sanitized.sku, sanitized.format);
+    manualSkuInput.value = '';
+  }
+
+  manualAddBtn.addEventListener('click', submitManualSku);
+  manualSkuInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      submitManualSku();
+    }
+  });
+
+  /* =========================================================================
+     Barcode Payload Sanitization & Libre 39 / Code 39 Normalization
+     ========================================================================= */
+  /**
+   * Code 39 / Libre 39 font specifics:
+   * Libre Barcode 39 and Libre Barcode 39 Text require start/stop asterisks ('*')
+   * to render valid barcodes (e.g., "*PART-1234*").
+   * Some barcode decoders return the text with the asterisks, while others strip them.
+   * This function normalizes the scanned string to the actual SKU/item code.
+   */
+  function sanitizeBarcodePayload(rawText, detectedFormat) {
+    if (!rawText) return { sku: '', format: detectedFormat || 'UNKNOWN' };
+    
+    let text = String(rawText).trim();
+    let formatLabel = detectedFormat ? detectedFormat.toUpperCase().replace(/_/g, ' ') : 'BARCODE';
+
+    // Strip unprintable control characters that may appear in Code 128 / FNC1 decodes
+    let text = String(rawText).replace(/[\u0000-\u001F\u007F-\u009F]/g, '').trim();
+    let formatLabel = detectedFormat ? detectedFormat.toUpperCase().replace(/_/g, ' ') : 'BARCODE';
+
+    // Libre Barcode 39 & Code 39 normalization:
+    // Code 39 frequently encloses barcodes in asterisks e.g. *ITM-1234*
+    // Some decoders strip them, some keep them. Both must be handled accurately.
+    const isCode39 = detectedFormat && (detectedFormat.toLowerCase().includes('code_39') || detectedFormat.toLowerCase().includes('code 39'));
+    const hasEnclosingAsterisks = text.length >= 3 && text.startsWith('*') && text.endsWith('*');
+
+    if (hasEnclosingAsterisks || isCode39) {
+      formatLabel = 'CODE 39 (Libre 39)';
+      if (hasEnclosingAsterisks) {
+        text = text.slice(1, -1).trim();
+      }
+    } else if (detectedFormat && (detectedFormat.toLowerCase().includes('code_128') || detectedFormat.toLowerCase().includes('code 128'))) {
+      formatLabel = 'CODE 128';
+    } else if (detectedFormat && detectedFormat.toLowerCase().includes('qr')) {
+      formatLabel = 'QR CODE';
+    }
+
+    return {
+      sku: text,
+      format: formatLabel
+    };
+  }
+
+  /* =========================================================================
+     Barcode Scanning Engine (Native BarcodeDetector + Optimized ZXing + ROI)
+     ========================================================================= */
   const toggleBtn = document.getElementById('toggleBtn');
   const torchBtn = document.getElementById('torchBtn');
+  const switchCameraBtn = document.getElementById('switchCameraBtn');
   const clearBtn = document.getElementById('clearBtn');
   const videoElem = document.getElementById('video');
   const viewportElem = document.getElementById('viewport');
-  const controlsElem = document.getElementById('controls');
+  const scanCanvas = document.getElementById('scanCanvas');
+  const canvasCtx = scanCanvas.getContext('2d', { willReadFrequently: true });
+  const fpsDisplay = document.getElementById('fpsDisplay');
+  const resolutionDisplay = document.getElementById('resolutionDisplay');
+  const engineBadge = document.getElementById('engineBadge');
+  const zoomControls = document.getElementById('zoomControls');
+  const modePills = document.querySelectorAll('.mode-pill');
+
   let isScanning = false;
   let activeVideoTrack = null;
+  let activeStream = null;
   let isTorchOn = false;
+  let availableVideoDevices = [];
+  let currentDeviceIndex = 0;
+  let currentZoom = 1;
+  let scanAnimationId = null;
+  let currentMode = 'all'; // 'all', '1d', 'code128', 'code39', 'qr'
 
-  async function checkAndEnableTorchSupport(track) {
+  // Native BarcodeDetector instance
+  let nativeBarcodeDetector = null;
+  let hasNativeDetector = false;
+
+  // ZXing MultiFormatReader configured with hints
+  let zxingReader = null;
+
+  modePills.forEach(pill => {
+    pill.addEventListener('click', () => {
+      modePills.forEach(p => p.classList.remove('active'));
+      pill.classList.add('active');
+      currentMode = pill.getAttribute('data-mode');
+      setupEngines();
+      triggerHaptic(20);
+    });
+  });
+
+  async function setupEngines() {
+    // 1. Setup Native BarcodeDetector if available
+    if ('BarcodeDetector' in window) {
+      try {
+        const supported = await window.BarcodeDetector.getSupportedFormats();
+        let targetFormats = [
+          'code_128',
+          'code_39',
+          'qr_code',
+          'ean_13',
+          'ean_8',
+          'upc_a',
+          'upc_e',
+          'code_93',
+          'itf',
+          'data_matrix'
+        ];
+
+        if (currentMode === '1d') {
+          targetFormats = ['code_128', 'code_39', 'code_93', 'ean_13', 'upc_a'];
+        } else if (currentMode === 'code128') {
+          targetFormats = ['code_128'];
+        } else if (currentMode === 'code39') {
+          targetFormats = ['code_39'];
+        } else if (currentMode === 'qr') {
+          targetFormats = ['qr_code'];
+        }
+
+        const validFormats = targetFormats.filter(f => supported.includes(f));
+        if (validFormats.length > 0) {
+          nativeBarcodeDetector = new window.BarcodeDetector({ formats: validFormats });
+          hasNativeDetector = true;
+          if (engineBadge) engineBadge.textContent = '⚡ Hardware Vision';
+        }
+      } catch (e) {
+        console.warn('Native BarcodeDetector init error:', e);
+        hasNativeDetector = false;
+      }
+    }
+
+    // 2. Setup ZXing MultiFormatReader with optimal hints
+    try {
+      if (window.ZXing) {
+        const hints = new Map();
+        const formats = [];
+
+        if (currentMode === 'all' || currentMode === '1d' || currentMode === 'code128') {
+          formats.push(ZXing.BarcodeFormat.CODE_128);
+        }
+        if (currentMode === 'all' || currentMode === '1d' || currentMode === 'code39') {
+          formats.push(ZXing.BarcodeFormat.CODE_39);
+        }
+        if (currentMode === 'all' || currentMode === 'qr') {
+          formats.push(ZXing.BarcodeFormat.QR_CODE);
+        }
+        if (currentMode === 'all' || currentMode === '1d') {
+          formats.push(ZXing.BarcodeFormat.EAN_13);
+          formats.push(ZXing.BarcodeFormat.EAN_8);
+          formats.push(ZXing.BarcodeFormat.UPC_A);
+          formats.push(ZXing.BarcodeFormat.UPC_E);
+          formats.push(ZXing.BarcodeFormat.CODE_93);
+          formats.push(ZXing.BarcodeFormat.ITF);
+        }
+
+        hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, formats);
+        hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+        hints.set(ZXing.DecodeHintType.CHARACTER_SET, 'UTF-8');
+
+        zxingReader = new ZXing.MultiFormatReader();
+        zxingReader.setHints(hints);
+      }
+    } catch (e) {
+      console.warn('ZXing reader init error:', e);
+    }
+  }
+
+  setupEngines();
+
+  async function getAvailableCameras() {
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return [];
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      availableVideoDevices = devices.filter(d => d.kind === 'videoinput');
+      return availableVideoDevices;
+    } catch (e) {
+      return [];
+    }
+  }
+
+  async function setupTorchAndZoomCapabilities(track) {
     activeVideoTrack = track;
     try {
       const capabilities = track.getCapabilities ? track.getCapabilities() : {};
+      
+      // Torch
       if (capabilities.torch) {
         torchBtn.disabled = false;
       } else {
         torchBtn.disabled = true;
       }
+
+      // Zoom
+      if (capabilities.zoom) {
+        zoomControls.style.display = 'flex';
+        setupZoomButtons(capabilities.zoom);
+      } else {
+        zoomControls.style.display = 'none';
+      }
+
+      // Settings readout
+      const settings = track.getSettings ? track.getSettings() : {};
+      if (settings.width && settings.height) {
+        resolutionDisplay.textContent = `${settings.width}x${settings.height}`;
+      }
     } catch (e) {
       torchBtn.disabled = true;
+      zoomControls.style.display = 'none';
     }
+  }
+
+  function setupZoomButtons(zoomCap) {
+    const minZoom = zoomCap.min || 1;
+    const maxZoom = zoomCap.max || 3;
+    const zoomBtns = document.querySelectorAll('.zoom-btn');
+    
+    zoomBtns.forEach(btn => {
+      const targetZoom = parseFloat(btn.getAttribute('data-zoom'));
+      if (targetZoom > maxZoom) {
+        btn.style.display = 'none';
+      } else {
+        btn.style.display = 'inline-block';
+      }
+
+      btn.onclick = async () => {
+        triggerHaptic(20);
+        zoomBtns.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        currentZoom = Math.min(Math.max(targetZoom, minZoom), maxZoom);
+        if (activeVideoTrack) {
+          try {
+            await activeVideoTrack.applyConstraints({
+              advanced: [{ zoom: currentZoom }]
+            });
+          } catch (err) {
+            console.warn('Failed to apply zoom:', err);
+          }
+        }
+      };
+    });
   }
 
   async function toggleTorch() {
@@ -720,11 +1316,9 @@
     triggerHaptic(30);
     try {
       isTorchOn = !isTorchOn;
-      
       await activeVideoTrack.applyConstraints({
         advanced: [{ torch: isTorchOn }]
       });
-      
       torchBtn.classList.toggle('active', isTorchOn);
     } catch (err) {
       console.warn("Failed to toggle flashlight:", err);
@@ -735,77 +1329,249 @@
 
   torchBtn.addEventListener('click', toggleTorch);
 
+  switchCameraBtn.addEventListener('click', async () => {
+    triggerHaptic(30);
+    if (availableVideoDevices.length <= 1) {
+      await getAvailableCameras();
+    }
+    if (availableVideoDevices.length > 1) {
+      currentDeviceIndex = (currentDeviceIndex + 1) % availableVideoDevices.length;
+      if (isScanning) {
+        stopScanning();
+        setTimeout(startScanning, 150);
+      }
+    }
+  });
+
+  /* =========================================================================
+     Main Scan Loop with High-Frequency Frame Inspection
+     ========================================================================= */
+  let lastFrameTime = performance.now();
+  let frameCount = 0;
+
+  function onSuccessfulDecode(rawText, format) {
+    if (isModalOpen) return;
+
+    const sanitized = sanitizeBarcodePayload(rawText, format);
+    if (!sanitized.sku) return;
+
+    // Prevent immediate duplicate re-trigger within 1.5 seconds if same SKU
+    const now = Date.now();
+    if (State.lastScanned === sanitized.sku && now - State.lastScannedTime < 1600) {
+      return;
+    }
+
+    playSuccessBeep();
+    triggerHaptic([60, 40, 60]);
+    openModal(sanitized.sku, sanitized.format);
+  }
+
+  async function processVideoFrame() {
+    if (!isScanning) return;
+
+    if (videoElem.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && videoElem.videoWidth > 0) {
+      const vw = videoElem.videoWidth;
+      const vh = videoElem.videoHeight;
+
+      // Track FPS
+      frameCount++;
+      const now = performance.now();
+      if (now - lastFrameTime >= 1000) {
+        fpsDisplay.textContent = `${frameCount} FPS`;
+        frameCount = 0;
+        lastFrameTime = now;
+      }
+
+      let detected = false;
+
+      // 1. First Pass: Hardware Native BarcodeDetector
+      if (hasNativeDetector && nativeBarcodeDetector && !isModalOpen) {
+        try {
+          const barcodes = await nativeBarcodeDetector.detect(videoElem);
+          if (barcodes && barcodes.length > 0) {
+            const best = barcodes[0];
+            if (best.rawValue) {
+              onSuccessfulDecode(best.rawValue, best.format);
+              detected = true;
+            }
+          }
+        } catch (e) {
+          // Fall through to ZXing
+        }
+      }
+
+      // 2. Second Pass: High-Accuracy ZXing Reader with Region-of-Interest (ROI) & Contrast Boost
+      if (!detected && !isModalOpen && zxingReader && window.ZXing) {
+        try {
+          // Setup canvas size
+          if (scanCanvas.width !== vw || scanCanvas.height !== vh) {
+            scanCanvas.width = vw;
+            scanCanvas.height = vh;
+          }
+
+          // Draw full frame
+          canvasCtx.drawImage(videoElem, 0, 0, vw, vh);
+
+          // Test central Region Of Interest (box) first with GlobalHistogramBinarizer (optimal for 1D CODE 128 / CODE 39)
+          const roiX = Math.floor(vw * 0.05);
+          const roiY = Math.floor(vh * 0.15);
+          const roiW = Math.floor(vw * 0.90);
+          const roiH = Math.floor(vh * 0.70);
+
+          const roiImageData = canvasCtx.getImageData(roiX, roiY, roiW, roiH);
+          const roiLuminance = new ZXing.RGBLuminanceSource(roiImageData.data, roiW, roiH);
+
+          try {
+            // Pass A: GlobalHistogramBinarizer on ROI (cleanest contrast thresholding for 1D lines)
+            const result = zxingReader.decode(new ZXing.BinaryBitmap(new ZXing.GlobalHistogramBinarizer(roiLuminance)));
+            if (result && result.getText()) {
+              const formatStr = ZXing.BarcodeFormat[result.getBarcodeFormat()] || 'CODE 128';
+              onSuccessfulDecode(result.getText(), formatStr);
+              detected = true;
+            }
+          } catch (zxingErr) {
+            // Pass B: Central barcode stripe band (isolates pure barcode bars, skipping bottom text of Libre 39 Text)
+            if (!detected) {
+              try {
+                const bandY = Math.floor(vh * 0.28);
+                const bandH = Math.floor(vh * 0.40);
+                const bandData = canvasCtx.getImageData(roiX, bandY, roiW, bandH);
+                const bandLuminance = new ZXing.RGBLuminanceSource(bandData.data, roiW, bandH);
+                const bandResult = zxingReader.decode(new ZXing.BinaryBitmap(new ZXing.GlobalHistogramBinarizer(bandLuminance)));
+                if (bandResult && bandResult.getText()) {
+                  const formatStr = ZXing.BarcodeFormat[bandResult.getBarcodeFormat()] || 'CODE 39';
+                  onSuccessfulDecode(bandResult.getText(), formatStr);
+                  detected = true;
+                }
+              } catch (eBand) {
+                // Pass C: HybridBinarizer on ROI
+                try {
+                  const hybridResult = zxingReader.decode(new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(roiLuminance)));
+                  if (hybridResult && hybridResult.getText()) {
+                    const formatStr = ZXing.BarcodeFormat[hybridResult.getBarcodeFormat()] || 'CODE 128';
+                    onSuccessfulDecode(hybridResult.getText(), formatStr);
+                    detected = true;
+                  }
+                } catch (eHybrid) {
+                  // Pass D: Full frame scan
+                  try {
+                    const fullImageData = canvasCtx.getImageData(0, 0, vw, vh);
+                    const fullSource = new ZXing.RGBLuminanceSource(fullImageData.data, vw, vh);
+                    const fullResult = zxingReader.decode(new ZXing.BinaryBitmap(new ZXing.GlobalHistogramBinarizer(fullSource)));
+                    if (fullResult && fullResult.getText()) {
+                      const formatStr = ZXing.BarcodeFormat[fullResult.getBarcodeFormat()] || 'CODE 128';
+                      onSuccessfulDecode(fullResult.getText(), formatStr);
+                      detected = true;
+                    }
+                  } catch (eFull) {
+                    // No barcode found in this frame
+                  }
+                }
+              }
+            }
+          }
+        } catch (canvasErr) {
+          console.warn('Canvas decode error:', canvasErr);
+        }
+      }
+    }
+
+    if (isScanning) {
+      scanAnimationId = requestAnimationFrame(processVideoFrame);
+    }
+  }
+
   async function startScanning() {
     try {
+      await getAvailableCameras();
+      
+      const constraints = {
+        video: {
+          facingMode: { ideal: 'environment' },
+          width: { ideal: 1920, min: 1280 },
+          height: { ideal: 1080, min: 720 },
+          focusMode: { ideal: 'continuous' }
+        },
+        audio: false
+      };
+
+      if (availableVideoDevices.length > 0) {
+        const selectedDevice = availableVideoDevices[currentDeviceIndex % availableVideoDevices.length];
+        if (selectedDevice && selectedDevice.deviceId) {
+          constraints.video.deviceId = { exact: selectedDevice.deviceId };
+        }
+      }
+
+      activeStream = await navigator.mediaDevices.getUserMedia(constraints);
+      videoElem.srcObject = activeStream;
+      await videoElem.play();
+
+      const tracks = activeStream.getVideoTracks();
+      if (tracks.length > 0) {
+        setupTorchAndZoomCapabilities(tracks[0]);
+      }
+
       isScanning = true;
       toggleBtn.textContent = 'Stop Scanning';
       toggleBtn.classList.add('btn-danger');
       viewportElem.classList.add('scanner-active');
-      controlsElem.classList.add('scanner-active-controls');
-
-      await codeReader.decodeFromVideoDevice(undefined, 'video', (result, err) => {
-        if (!activeVideoTrack && videoElem.srcObject) {
-          const stream = videoElem.srcObject;
-          const tracks = stream.getVideoTracks();
-          if (tracks.length > 0) {
-            checkAndEnableTorchSupport(tracks[0]);
-          }
-        }
-
-        if (result && !isModalOpen) {
-          const sku = result.getText().trim();
-          
-          if (State.lastScanned === sku) return;
-
-          triggerHaptic([100, 50, 100]);
-          openModal(sku);
-        }
-      });
-
       setMaxBrightness(true);
+
+      scanAnimationId = requestAnimationFrame(processVideoFrame);
     } catch (err) {
       console.error("Camera access failed:", err);
-      alert("Unable to access camera.");
-      stopScanning();
+      // Fallback with basic constraints if 1080p failed
+      try {
+        activeStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment' },
+          audio: false
+        });
+        videoElem.srcObject = activeStream;
+        await videoElem.play();
+        const tracks = activeStream.getVideoTracks();
+        if (tracks.length > 0) {
+          setupTorchAndZoomCapabilities(tracks[0]);
+        }
+        isScanning = true;
+        toggleBtn.textContent = 'Stop Scanning';
+        toggleBtn.classList.add('btn-danger');
+        viewportElem.classList.add('scanner-active');
+        setMaxBrightness(true);
+        scanAnimationId = requestAnimationFrame(processVideoFrame);
+      } catch (fallbackErr) {
+        alert("Unable to access camera. Please ensure camera permissions are granted.");
+        stopScanning();
+      }
     }
   }
 
   function stopScanning() {
-    codeReader.reset();
+    isScanning = false;
+    if (scanAnimationId) {
+      cancelAnimationFrame(scanAnimationId);
+      scanAnimationId = null;
+    }
 
     if (activeVideoTrack && isTorchOn) {
       activeVideoTrack.applyConstraints({ advanced: [{ torch: false }] }).catch(() => {});
     }
 
-    const stream = videoElem.srcObject;
-    if (stream) {
-      const tracks = stream.getTracks();
-      tracks.forEach(track => {
-        track.stop();
-        stream.removeTrack(track);
-      });
-      videoElem.srcObject = null;
-      videoElem.removeAttribute('src');
-      videoElem.load();
+    if (activeStream) {
+      activeStream.getTracks().forEach(track => track.stop());
+      activeStream = null;
     }
 
-    setTimeout(() => {
-      if (videoElem.srcObject) {
-        const lingeringStream = videoElem.srcObject;
-        lingeringStream.getTracks().forEach(track => track.stop());
-        videoElem.srcObject = null;
-      }
-    }, 50);
+    videoElem.srcObject = null;
+    videoElem.removeAttribute('src');
 
-    isScanning = false;
     activeVideoTrack = null;
     isTorchOn = false;
     torchBtn.disabled = true;
     torchBtn.classList.remove('active');
     viewportElem.classList.remove('scanner-active');
-    controlsElem.classList.remove('scanner-active-controls');
     toggleBtn.textContent = 'Start Scanning';
     toggleBtn.classList.remove('btn-danger');
+    fpsDisplay.textContent = 'Stopped';
     setMaxBrightness(false);
   }
 
